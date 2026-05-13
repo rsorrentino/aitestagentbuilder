@@ -1,0 +1,165 @@
+agent_name: "SalesforceCRMTester"
+application_type: "web"
+platform: "salesforce"
+base_url: "https://your-org.my.salesforce.com"
+
+# Salesforce credentials (use env vars in production)
+salesforce:
+  username: "${SF_USERNAME}"
+  password: "${SF_PASSWORD}"
+  security_token: "${SF_SECURITY_TOKEN}"
+  sandbox: false
+
+test_selection:
+  module:
+    - "Authentication"
+    - "Leads"
+    - "Contacts"
+    - "Opportunities"
+    - "Cases"
+    - "Reports"
+  priority:
+    - "High"
+    - "Critical"
+  tags:
+    - "salesforce"
+    - "crm"
+
+tools:
+  browser: "playwright"
+  http: "axios"
+
+ai:
+  provider: "claude"              # claude | copilot | openai
+  model: "claude-3-5-sonnet-latest"
+  fallback: "copilot"
+  self_healing: true              # Enable AI-powered selector recovery
+
+reporting:
+  formats:
+    - "json"
+    - "html"
+    - "junit"
+  includeScreenshots: true
+  includeLogs: true
+
+environment: "staging"
+max_parallel_tests: 3
+timeout: 60000
+retries: 2
+
+# Example test cases for Salesforce CRM modules
+example_test_cases:
+  - title: "Login to Salesforce"
+    module: "Authentication"
+    priority: "Critical"
+    steps:
+      - action: "navigate"
+        target: "https://your-org.my.salesforce.com"
+      - action: "salesforce_login"
+        data:
+          username: "${SF_USERNAME}"
+          password: "${SF_PASSWORD}"
+      - action: "wait_for_lightning"
+    expectedResults:
+      - "User is logged in and Lightning Experience is loaded"
+
+  - title: "Create a new Lead"
+    module: "Leads"
+    priority: "High"
+    steps:
+      - action: "navigate"
+        target: "/lightning/o/Lead/list"
+      - action: "click"
+        target: "a[title='New']"
+      - action: "fill"
+        target: "input[field-label='First Name']"
+        data:
+          value: "John"
+      - action: "fill"
+        target: "input[field-label='Last Name']"
+        data:
+          value: "Doe"
+      - action: "fill"
+        target: "input[field-label='Company']"
+        data:
+          value: "Acme Corp"
+      - action: "click"
+        target: "button[name='SaveEdit']"
+    expectedResults:
+      - "Lead 'John Doe' is created successfully"
+
+  - title: "Create a new Contact"
+    module: "Contacts"
+    priority: "High"
+    steps:
+      - action: "navigate"
+        target: "/lightning/o/Contact/list"
+      - action: "click"
+        target: "a[title='New']"
+      - action: "fill"
+        target: "input[field-label='First Name']"
+        data:
+          value: "Jane"
+      - action: "fill"
+        target: "input[field-label='Last Name']"
+        data:
+          value: "Smith"
+      - action: "fill"
+        target: "input[field-label='Email']"
+        data:
+          value: "jane.smith@example.com"
+      - action: "click"
+        target: "button[name='SaveEdit']"
+    expectedResults:
+      - "Contact 'Jane Smith' is saved successfully"
+
+  - title: "Create an Opportunity"
+    module: "Opportunities"
+    priority: "High"
+    steps:
+      - action: "navigate"
+        target: "/lightning/o/Opportunity/list"
+      - action: "click"
+        target: "a[title='New']"
+      - action: "fill"
+        target: "input[field-label='Opportunity Name']"
+        data:
+          value: "Q3 Enterprise Deal"
+      - action: "select"
+        target: "lightning-combobox[field-name='StageName']"
+        data:
+          value: "Prospecting"
+      - action: "fill"
+        target: "input[field-label='Close Date']"
+        data:
+          value: "12/31/2026"
+      - action: "click"
+        target: "button[name='SaveEdit']"
+    expectedResults:
+      - "Opportunity 'Q3 Enterprise Deal' is created successfully"
+
+  - title: "Create a Case"
+    module: "Cases"
+    priority: "High"
+    steps:
+      - action: "navigate"
+        target: "/lightning/o/Case/list"
+      - action: "click"
+        target: "a[title='New']"
+      - action: "fill"
+        target: "input[field-label='Subject']"
+        data:
+          value: "Unable to access portal"
+      - action: "select"
+        target: "lightning-combobox[field-name='Status']"
+        data:
+          value: "New"
+      - action: "select"
+        target: "lightning-combobox[field-name='Priority']"
+        data:
+          value: "High"
+      - action: "click"
+        target: "button[name='SaveEdit']"
+    expectedResults:
+      - "Case 'Unable to access portal' is created successfully"

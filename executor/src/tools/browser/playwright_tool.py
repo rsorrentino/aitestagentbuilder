@@ -22,13 +22,13 @@ class PlaywrightTool:
     async def initialize(self):
         """Initialize Playwright browser"""
         self.playwright = await async_playwright().start()
-        
+
         browser_map = {
             "chromium": self.playwright.chromium,
             "firefox": self.playwright.firefox,
             "webkit": self.playwright.webkit,
         }
-        
+
         browser_launcher = browser_map.get(self.browser_type, self.playwright.chromium)
         self.browser = await browser_launcher.launch(headless=self.headless)
         self.context = await self.browser.new_context(
@@ -36,6 +36,127 @@ class PlaywrightTool:
             record_video_dir="./videos" if not self.headless else None,
         )
         self.page = await self.context.new_page()
+
+    # ------------------------------------------------------------------
+    # Salesforce-specific helpers
+    # ------------------------------------------------------------------
+
+    async def salesforce_login(
+        self,
+        url: str,
+        username: str,
+        password: str,
+        timeout: int = 60000,
+    ) -> Dict[str, Any]:
+        """Log into Salesforce using standard login form.
+
+        Handles both Classic and Lightning login pages and waits for the
+        Lightning App Launcher to confirm successful login.
+        """
+        try:
+            await self.page.goto(url, wait_until="networkidle", timeout=timeout)
+
+            # Fill username
+            await self.page.fill("#username", username, timeout=timeout)
+            await self.page.fill("#password", password, timeout=timeout)
+            await self.page.click("#Login", timeout=timeout)
+
+            # Wait for Lightning shell or Classic home page
+            await self.page.wait_for_selector(
+                "one-app-nav-bar, .slds-icon-waffle, #home_Tab, .homeTab",
+                timeout=timeout,
+            )
+
+            return {"success": True, "url": self.page.url}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def wait_for_lightning(self, timeout: int = 30000) -> Dict[str, Any]:
+        """Wait for Salesforce Lightning Experience to finish rendering.
+
+        Polls until the aura-loading overlay disappears and the main
+        Lightning container is interactive.
+        """
+        try:
+            # Dismiss loading spinner if present
+            await self.page.wait_for_function(
+                """() => {
+                    const spinner = document.querySelector('.slds-spinner_container, .auraLoadingBox');
+                    return !spinner || spinner.style.display === 'none' || spinner.hidden;
+                }""",
+                timeout=timeout,
+            )
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def get_lightning_component(
+        self, selector: str, timeout: int = 30000
+    ) -> Dict[str, Any]:
+        """Retrieve a Salesforce Lightning Web Component (LWC) element.
+
+        LWC components may be inside shadow roots, so this helper evaluates
+        the selector through the regular DOM and pierces shadow roots where
+        necessary using the ``>>`` deep combinator supported by Playwright.
+        """
+        try:
+            # Playwright's page.locator supports deep combinators natively
+            locator = self.page.locator(selector)
+            await locator.wait_for(state="visible", timeout=timeout)
+            text = await locator.text_content(timeout=timeout)
+            return {"success": True, "text": text, "selector": selector}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def handle_classic_popup(self, action: str = "accept", timeout: int = 10000) -> Dict[str, Any]:
+        """Handle Salesforce Classic alert/confirm popups.
+
+        Args:
+            action: ``"accept"`` to confirm or ``"dismiss"`` to cancel.
+        """
+        try:
+            dialog_handled = False
+
+            async def _handler(dialog):
+                nonlocal dialog_handled
+                if action == "accept":
+                    await dialog.accept()
+                else:
+                    await dialog.dismiss()
+                dialog_handled = True
+
+            self.page.once("dialog", _handler)
+            # Wait briefly for a dialog to appear
+            await self.page.wait_for_timeout(timeout)
+
+            return {"success": True, "handled": dialog_handled}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def salesforce_navigate_to_app(self, app_name: str, timeout: int = 30000) -> Dict[str, Any]:
+        """Open a Salesforce app via the App Launcher."""
+        try:
+            # Click the App Launcher (waffle icon)
+            await self.page.click(
+                "one-app-nav-bar button[title='App Launcher'], .slds-icon-waffle",
+                timeout=timeout,
+            )
+            # Search for the app
+            search_box = self.page.locator(
+                "one-app-launcher-modal input, input[placeholder='Search apps and items...']"
+            )
+            await search_box.wait_for(state="visible", timeout=timeout)
+            await search_box.fill(app_name)
+            # Click first matching result
+            result = self.page.locator(
+                f"one-app-launcher-desktop-item a[data-label='{app_name}'],"
+                f" a:has-text('{app_name}')"
+            ).first
+            await result.click(timeout=timeout)
+            await self.wait_for_lightning(timeout=timeout)
+            return {"success": True, "app": app_name, "url": self.page.url}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     async def navigate(self, url: str) -> Dict[str, Any]:
         """Navigate to a URL"""
