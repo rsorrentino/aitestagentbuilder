@@ -1,0 +1,19 @@
+agent_name: "LoginTester"
+application_type: "web"
+base_url: "https://staging.myapp.com"
+test_selection:
+  module: ["Authentication"]
+  priority: ["High", "Critical"]
+  tags: ["login", "auth"]
+tools:
+  browser: "playwright"
+  http: "axios"
+reporting:
+  formats: ["json", "html", "junit"]
+  includeScreenshots: true
+  includeLogs: true
+environment: "staging"
+max_parallel_tests: 5
+timeout: 30000
+retries: 2
+
