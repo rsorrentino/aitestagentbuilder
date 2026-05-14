@@ -9,6 +9,8 @@ import { AgentsController } from '../controllers/agents.controller.js';
 import { TestCasesController } from '../controllers/testcases.controller.js';
 import { RunsController } from '../controllers/runs.controller.js';
 import { ReportsController } from '../controllers/reports.controller.js';
+import { ChatController } from '../controllers/chat.controller.js';
+import { LlmProvidersController } from '../controllers/llm-providers.controller.js';
 import { authenticate, optionalAuth, authorize } from '../../infra/auth/auth.middleware.js';
 import { rateLimiters } from '../../infra/rate-limit/rate-limiter.js';
 
@@ -29,6 +31,8 @@ const agentsController = new AgentsController();
 const testCasesController = new TestCasesController();
 const runsController = new RunsController();
 const reportsController = new ReportsController();
+const chatController = new ChatController();
+const llmProvidersController = new LlmProvidersController();
 
 // Ingestion routes (strict rate limiting for uploads)
 router.post('/ingestion/upload', 
@@ -54,6 +58,9 @@ router.get('/agents', requireAuth, (req, res) => agentsController.listAgents(req
 router.get('/agents/:id', requireAuth, (req, res) => agentsController.getAgent(req, res));
 router.put('/agents/:id', requireAuth, authorize('admin', 'user'), (req, res) => agentsController.updateAgent(req, res));
 router.delete('/agents/:id', requireAuth, authorize('admin'), (req, res) => agentsController.deleteAgent(req, res));
+
+// AI test generation endpoint
+router.post('/agents/:id/generate-tests', requireAuth, authorize('admin', 'user'), (req, res) => agentsController.generateTests(req, res));
 
 // Test Cases routes
 router.post('/testcases', requireAuth, authorize('admin', 'user'), (req, res) => testCasesController.createTestCase(req, res));
@@ -89,5 +96,11 @@ router.post('/auth/refresh', (req, res) => authController.refresh(req, res));
 router.post('/auth/api-keys', requireAuth, (req, res) => authController.createApiKey(req, res));
 router.get('/auth/api-keys', requireAuth, (req, res) => authController.listApiKeys(req, res));
 router.delete('/auth/api-keys/:id', requireAuth, (req, res) => authController.revokeApiKey(req, res));
+
+// Chat routes (conversational AI for test authoring)
+router.post('/chat', requireAuth, (req, res) => chatController.chat(req, res));
+
+// LLM provider health
+router.get('/llm/providers', requireAuth, (req, res) => llmProvidersController.listProviders(req, res));
 
 export default router;

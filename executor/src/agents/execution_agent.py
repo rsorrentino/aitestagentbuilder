@@ -8,6 +8,7 @@ from typing import Dict, Any, List, Optional
 from ..tools.browser.playwright_tool import get_playwright_tool
 from ..tools.api.http_tool import get_http_tool
 from ..tools.mobile.appium_tool import get_appium_tool
+from .self_healing_agent import SelfHealingAgent
 import os
 
 
@@ -17,9 +18,20 @@ class ExecutionAgent:
         self.application_type = config.get("application_type", "web")
         self.base_url = config.get("base_url", "")
         self.tools = config.get("tools", {})
+        self.platform = config.get("platform", "")
         self.playwright_tool = None
         self.http_tool = None
         self.appium_tool = None
+
+        # AI self-healing configuration
+        ai_config = config.get("ai", {})
+        self.self_healing_enabled = ai_config.get("self_healing", False)
+        ai_provider = ai_config.get("provider", "openai")
+        ai_model = ai_config.get("model")
+        self._self_healer: Optional[SelfHealingAgent] = (
+            SelfHealingAgent(provider=ai_provider, model=ai_model)
+            if self.self_healing_enabled else None
+        )
 
     async def initialize(self):
         """Initialize tools based on configuration"""
@@ -59,7 +71,37 @@ class ExecutionAgent:
             return {"success": False, "error": f"No suitable tool for application type: {self.application_type}"}
 
     async def _execute_web_action(self, action: str, target: str, data: Dict, context: Dict) -> Dict[str, Any]:
-        """Execute web action using Playwright"""
+        """Execute web action using Playwright, with optional self-healing on failure."""
+        result = await self._execute_web_action_once(action, target, data, context)
+
+        # Attempt self-healing if enabled and the step failed with a selector issue
+        if (
+            not result.get("success")
+            and self.self_healing_enabled
+            and self._self_healer
+            and self.playwright_tool
+            and self.playwright_tool.page
+        ):
+            error_msg = result.get("error", "")
+            if "Timeout" in error_msg or "selector" in error_msg.lower() or "locator" in error_msg.lower():
+                heal_result = await self._self_healer.suggest_selector(
+                    self.playwright_tool.page,
+                    failed_selector=target,
+                    action=action,
+                    context_description=str(context),
+                )
+                if heal_result.get("success") and heal_result.get("selector"):
+                    new_selector = heal_result["selector"]
+                    result = await self._execute_web_action_once(action, new_selector, data, context)
+                    if result.get("success"):
+                        result["healed"] = True
+                        result["original_selector"] = target
+                        result["healed_selector"] = new_selector
+
+        return result
+
+    async def _execute_web_action_once(self, action: str, target: str, data: Dict, context: Dict) -> Dict[str, Any]:
+        """Single attempt at executing a web action using Playwright."""
         if action.startswith("navigate") or action.startswith("go to"):
             url = target if target.startswith("http") else f"{self.base_url}{target}"
             return await self.playwright_tool.navigate(url)
@@ -84,6 +126,28 @@ class ExecutionAgent:
         elif action.startswith("screenshot"):
             path = data.get("path")
             return await self.playwright_tool.screenshot(path)
+
+        # --- Salesforce-specific actions ---
+        elif action == "salesforce_login":
+            sf = self.config.get("salesforce", {})
+            username = data.get("username") or sf.get("username", "")
+            password = data.get("password") or sf.get("password", "")
+            url = target or self.base_url
+            return await self.playwright_tool.salesforce_login(url, username, password)
+
+        elif action == "wait_for_lightning":
+            return await self.playwright_tool.wait_for_lightning()
+
+        elif action == "get_lightning_component":
+            return await self.playwright_tool.get_lightning_component(target)
+
+        elif action == "handle_classic_popup":
+            popup_action = data.get("action", "accept")
+            return await self.playwright_tool.handle_classic_popup(action=popup_action)
+
+        elif action == "salesforce_navigate_to_app":
+            app_name = target or data.get("app_name", "")
+            return await self.playwright_tool.salesforce_navigate_to_app(app_name)
 
         else:
             return {"success": False, "error": f"Unknown web action: {action}"}

@@ -5,10 +5,12 @@
 import { Request, Response } from 'express';
 import { AgentRepository } from '../../core/repositories/agent.repository.js';
 import { AgentCreateInput } from '../../core/domain/agent.js';
+import { AiTestGeneratorService } from '../../modules/agents/services/ai-test-generator.service.js';
 import logger from '../../infra/logger/index.js';
 
 export class AgentsController {
   private agentRepo = new AgentRepository();
+  private testGenerator = new AiTestGeneratorService();
 
   async createAgent(req: Request, res: Response): Promise<void> {
     try {
@@ -88,6 +90,40 @@ export class AgentsController {
       res.status(204).send();
     } catch (error: any) {
       logger.error('Agent deletion failed', { error: error.message });
+      res.status(500).json({ error: error.message });
+    }
+  }
+
+  /**
+   * POST /api/v1/agents/:id/generate-tests
+   * Uses the configured LLM to generate test cases for the agent's target URL.
+   */
+  async generateTests(req: Request, res: Response): Promise<void> {
+    try {
+      const { id } = req.params;
+      const agent = await this.agentRepo.findById(id);
+
+      if (!agent) {
+        res.status(404).json({ error: 'Agent not found' });
+        return;
+      }
+
+      const { description, count, modules } = req.body as {
+        description?: string;
+        count?: number;
+        modules?: string[];
+      };
+
+      const tests = await this.testGenerator.generateTests({
+        targetUrl: agent.config.base_url,
+        description: description || `Generate tests for ${agent.name}`,
+        count: count ?? 5,
+        modules: modules ?? agent.config.test_selection?.module,
+      });
+
+      res.json({ agentId: id, tests, count: tests.length });
+    } catch (error: any) {
+      logger.error('Test generation failed', { error: error.message });
       res.status(500).json({ error: error.message });
     }
   }

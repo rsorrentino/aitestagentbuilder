@@ -26,6 +26,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.96.0",
     "@types/jsonwebtoken": "^9.0.10",
     "axios": "^1.6.2",
     "commander": "^11.1.0",
