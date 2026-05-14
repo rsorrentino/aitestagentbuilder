@@ -207,6 +207,18 @@ export class RunRepository {
     return runs;
   }
 
+  async findAll(limit: number = 50): Promise<TestRun[]> {
+    const query = 'SELECT * FROM runs ORDER BY started_at DESC LIMIT $1';
+    const result = await this.db.query(query, [limit]);
+
+    const runs: TestRun[] = [];
+    for (const row of result.rows) {
+      const results = await this.findResultsByRunId(row.id);
+      runs.push(this.mapRowToRun(row, results));
+    }
+    return runs;
+  }
+
   private mapRowToRun(row: any, results: TestResult[]): TestRun {
     const finishedAt = row.finished_at ? new Date(row.finished_at) : undefined;
     const startedAt = new Date(row.started_at);

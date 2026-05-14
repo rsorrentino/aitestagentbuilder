@@ -13,6 +13,7 @@ export declare class RunRepository {
     findResultById(id: string): Promise<TestResult | null>;
     findResultsByRunId(runId: string): Promise<TestResult[]>;
     findByAgentId(agentId: string, limit?: number): Promise<TestRun[]>;
+    findAll(limit?: number): Promise<TestRun[]>;
     private mapRowToRun;
     private mapRowToResult;
 }

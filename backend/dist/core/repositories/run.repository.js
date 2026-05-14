@@ -176,6 +176,16 @@ export class RunRepository {
         }
         return runs;
     }
+    async findAll(limit = 50) {
+        const query = 'SELECT * FROM runs ORDER BY started_at DESC LIMIT $1';
+        const result = await this.db.query(query, [limit]);
+        const runs = [];
+        for (const row of result.rows) {
+            const results = await this.findResultsByRunId(row.id);
+            runs.push(this.mapRowToRun(row, results));
+        }
+        return runs;
+    }
     mapRowToRun(row, results) {
         const finishedAt = row.finished_at ? new Date(row.finished_at) : undefined;
         const startedAt = new Date(row.started_at);

@@ -13,6 +13,20 @@ export class IngestionController {
     documentRepo = new DocumentRepository();
     testCaseRepo = new TestCaseRepository();
     /**
+     * List all documents
+     */
+    async listDocuments(req, res) {
+        try {
+            const limit = parseInt(req.query.limit) || 100;
+            const documents = await this.documentRepo.findAll(limit);
+            res.json(documents);
+        }
+        catch (error) {
+            logger.error('Failed to list documents', { error: error.message });
+            res.status(500).json({ error: error.message });
+        }
+    }
+    /**
      * Upload and parse a document
      */
     async uploadDocument(req, res) {
