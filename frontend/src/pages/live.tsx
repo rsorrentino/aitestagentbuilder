@@ -8,10 +8,9 @@
 import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/router';
 import io, { Socket } from 'socket.io-client';
-import Link from 'next/link';
+import Layout from '../components/Layout';
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:3000';
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000/api/v1';
 
 interface TestEvent {
   type: 'screenshot' | 'log' | 'result' | 'progress' | 'completed';
@@ -21,6 +20,18 @@ interface TestEvent {
   screenshot?: string; // base64 PNG
   status?: string;
   timestamp: string;
+}
+
+function statusBadge(status: string) {
+  const m: Record<string, string> = {
+    running:   'badge badge-warning',
+    completed: 'badge badge-success',
+    failed:    'badge badge-danger',
+    cancelled: 'badge badge-neutral',
+    connecting:'badge badge-info',
+    connected: 'badge badge-info',
+  };
+  return m[status] ?? 'badge badge-neutral';
 }
 
 export default function LiveTestView() {
@@ -43,7 +54,6 @@ export default function LiveTestView() {
     socket.on('connect', () => {
       setConnected(true);
       setRunStatus('connected');
-      // Subscribe to this run's events
       socket.emit('subscribe_run', { runId });
     });
 
@@ -91,49 +101,81 @@ export default function LiveTestView() {
   }, [events]);
 
   const appendEvent = (event: TestEvent) => {
-    setEvents((prev) => [...prev.slice(-200), event]); // keep last 200 events
+    setEvents((prev) => [...prev.slice(-200), event]);
   };
 
-  return (
-    <div className="container">
-      <div className="header">
-        <Link href="/">← Dashboard</Link>
-        <h1>Live Test Execution</h1>
-        <div className="run-info">
-          <span>Run: {runId}</span>
-          <span className={`status-badge ${runStatus}`}>{runStatus}</span>
-          <span className={`ws-badge ${connected ? 'connected' : 'disconnected'}`}>
-            {connected ? '🟢 Live' : '🔴 Disconnected'}
-          </span>
-        </div>
-      </div>
+  const logTypeColor: Record<string, string> = {
+    result:    'var(--brand-600)',
+    completed: 'var(--success)',
+    progress:  'var(--gray-500)',
+    screenshot:'var(--warning)',
+    log:       'var(--gray-400)',
+  };
 
-      <div className="view-grid">
+  const actions = (
+    <div className="flex gap-3" style={{ alignItems: 'center' }}>
+      <span className="text-sm text-muted">Run: <span className="code">{String(runId ?? '—').slice(0, 12)}…</span></span>
+      <span className={statusBadge(runStatus)}>{runStatus}</span>
+      <span className={`badge ${connected ? 'badge-success' : 'badge-danger'}`}>
+        {connected ? '🟢 Live' : '🔴 Disconnected'}
+      </span>
+    </div>
+  );
+
+  return (
+    <Layout title="Live Execution" actions={actions}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, height: 'calc(100vh - 120px)' }}>
         {/* Screenshot viewport */}
-        <div className="screenshot-panel">
-          <h3>Browser Viewport</h3>
-          {latestScreenshot ? (
-            <img
-              src={`data:image/png;base64,${latestScreenshot}`}
-              alt="Latest browser screenshot"
-              className="screenshot-img"
-            />
-          ) : (
-            <div className="screenshot-placeholder">
-              {runStatus === 'connecting' ? 'Waiting for test run to start…' : 'No screenshot yet'}
-            </div>
-          )}
+        <div className="card" style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          <div className="card-header"><h3>🖥 Browser Viewport</h3></div>
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--gray-50)', overflow: 'hidden' }}>
+            {latestScreenshot ? (
+              <img
+                src={`data:image/png;base64,${latestScreenshot}`}
+                alt="Latest browser screenshot"
+                style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
+              />
+            ) : (
+              <div style={{ textAlign: 'center', color: 'var(--gray-400)' }}>
+                <div style={{ fontSize: 48, marginBottom: 12 }}>🖥</div>
+                <div style={{ fontSize: 14 }}>
+                  {runStatus === 'connecting' ? 'Waiting for test run to start…' : 'No screenshot yet'}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Event log */}
-        <div className="log-panel">
-          <h3>Execution Log</h3>
-          <div className="log-list">
+        <div className="card" style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          <div className="card-header">
+            <h3>📋 Execution Log</h3>
+            <span className="text-sm text-muted">{events.length} events</span>
+          </div>
+          <div style={{ flex: 1, overflowY: 'auto', padding: '4px 0', fontFamily: 'SFMono-Regular, Consolas, monospace', fontSize: 12 }}>
+            {events.length === 0 && (
+              <div style={{ padding: 24, color: 'var(--gray-400)', textAlign: 'center' }}>
+                Waiting for events…
+              </div>
+            )}
             {events.map((evt, i) => (
-              <div key={i} className={`log-entry ${evt.type}`}>
-                <span className="log-time">{evt.timestamp.split('T')[1].split('.')[0]}</span>
-                <span className={`log-type ${evt.type}`}>{evt.type}</span>
-                <span className="log-message">
+              <div
+                key={i}
+                style={{
+                  display: 'flex',
+                  gap: 8,
+                  padding: '3px 14px',
+                  borderLeft: `3px solid ${logTypeColor[evt.type] ?? 'transparent'}`,
+                  background: evt.type === 'result' ? 'var(--brand-50)' : evt.type === 'completed' ? '#f0fff4' : 'transparent',
+                }}
+              >
+                <span style={{ color: 'var(--gray-400)', minWidth: 60 }}>
+                  {evt.timestamp.split('T')[1].split('.')[0]}
+                </span>
+                <span style={{ color: logTypeColor[evt.type], minWidth: 80, textTransform: 'uppercase', fontSize: 10, fontWeight: 700, display: 'flex', alignItems: 'center' }}>
+                  {evt.type}
+                </span>
+                <span style={{ flex: 1, color: 'var(--gray-700)' }}>
                   {evt.message || (evt.type === 'screenshot' ? '📸 screenshot captured' : '')}
                 </span>
               </div>
@@ -142,102 +184,6 @@ export default function LiveTestView() {
           </div>
         </div>
       </div>
-
-      <style jsx>{`
-        .container {
-          max-width: 1400px;
-          margin: 0 auto;
-          padding: 20px;
-          font-family: sans-serif;
-        }
-        .header {
-          display: flex;
-          align-items: center;
-          gap: 20px;
-          margin-bottom: 20px;
-          flex-wrap: wrap;
-        }
-        h1 { margin: 0; font-size: 24px; }
-        .run-info {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          margin-left: auto;
-        }
-        .status-badge {
-          padding: 4px 10px;
-          border-radius: 12px;
-          font-size: 13px;
-          font-weight: 600;
-          background: #eee;
-        }
-        .status-badge.running { background: #fff3cd; color: #856404; }
-        .status-badge.completed { background: #d4edda; color: #155724; }
-        .status-badge.failed { background: #f8d7da; color: #721c24; }
-        .ws-badge { font-size: 13px; }
-        .view-grid {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 20px;
-        }
-        @media (max-width: 900px) {
-          .view-grid { grid-template-columns: 1fr; }
-        }
-        .screenshot-panel, .log-panel {
-          border: 1px solid #ddd;
-          border-radius: 8px;
-          overflow: hidden;
-        }
-        .screenshot-panel h3, .log-panel h3 {
-          background: #f5f5f5;
-          margin: 0;
-          padding: 10px 16px;
-          font-size: 14px;
-          border-bottom: 1px solid #ddd;
-        }
-        .screenshot-img {
-          width: 100%;
-          display: block;
-          object-fit: contain;
-          max-height: 540px;
-        }
-        .screenshot-placeholder {
-          height: 300px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          color: #999;
-          font-size: 14px;
-        }
-        .log-list {
-          height: 500px;
-          overflow-y: auto;
-          padding: 8px 0;
-        }
-        .log-entry {
-          display: flex;
-          gap: 8px;
-          padding: 4px 12px;
-          font-size: 12px;
-          font-family: monospace;
-          border-left: 3px solid transparent;
-        }
-        .log-entry.result { border-left-color: #4a90d9; background: #f0f7ff; }
-        .log-entry.completed { border-left-color: #28a745; background: #f0fff4; }
-        .log-entry.screenshot { border-left-color: #fd7e14; }
-        .log-time { color: #888; min-width: 60px; }
-        .log-type {
-          font-weight: 600;
-          min-width: 80px;
-          text-transform: uppercase;
-          font-size: 10px;
-        }
-        .log-type.result { color: #4a90d9; }
-        .log-type.completed { color: #28a745; }
-        .log-type.progress { color: #6c757d; }
-        .log-type.screenshot { color: #fd7e14; }
-        .log-message { flex: 1; }
-      `}</style>
-    </div>
+    </Layout>
   );
 }

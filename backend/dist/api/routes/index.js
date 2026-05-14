@@ -29,6 +29,9 @@ const reportsController = new ReportsController();
 const chatController = new ChatController();
 const llmProvidersController = new LlmProvidersController();
 // Ingestion routes (strict rate limiting for uploads)
+router.get('/ingestion/documents', requireAuth, (req, res) => {
+    ingestionController.listDocuments(req, res);
+});
 router.post('/ingestion/upload', requireAuth, authorize('admin', 'user'), rateLimiters.upload, upload.single('file'), (req, res) => {
     ingestionController.uploadDocument(req, res);
 });

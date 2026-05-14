@@ -62,12 +62,13 @@ export class RunsController {
       const { agentId } = req.query;
       const limit = parseInt(req.query.limit as string) || 50;
 
+      let runs;
       if (agentId) {
-        const runs = await this.runRepo.findByAgentId(agentId as string, limit);
-        res.json(runs);
+        runs = await this.runRepo.findByAgentId(agentId as string, limit);
       } else {
-        res.status(400).json({ error: 'agentId query parameter is required' });
+        runs = await this.runRepo.findAll(limit);
       }
+      res.json(runs);
     } catch (error: any) {
       logger.error('Failed to list runs', { error: error.message });
       res.status(500).json({ error: error.message });
