@@ -2,7 +2,7 @@
  * Salesforce CRM Quick-Start Wizard
  *
  * Guides users through setting up a Salesforce CRM test agent in minutes.
- * Step 1: Org details  →  Step 2: Modules  →  Step 3: AI config  →  Step 4: Done
+ * Step 1: Org details  →  Step 2: Modules  →  Step 3: AI config  →  Step 4: Agent created
  */
 
 import { useState } from 'react';

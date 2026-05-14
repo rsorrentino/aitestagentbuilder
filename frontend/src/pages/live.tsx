@@ -101,7 +101,7 @@ export default function LiveTestView() {
   }, [events]);
 
   const appendEvent = (event: TestEvent) => {
-    setEvents((prev) => [...prev.slice(-200), event]);
+    setEvents((prev) => [...prev.slice(-200), event]); // keep last 200 events to avoid memory growth
   };
 
   const logTypeColor: Record<string, string> = {
