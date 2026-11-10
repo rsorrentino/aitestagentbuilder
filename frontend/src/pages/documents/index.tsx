@@ -1,43 +1,56 @@
 /**
- * Documents Page — upload test books and manage extracted documents.
+ * Documents — upload test specifications and extract test cases with AI.
  */
 
-import { useState, useEffect, useRef } from 'react';
-import axios from 'axios';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
 import Layout from '../../components/Layout';
+import { api, errorMessage, statusBadge } from '../../lib/api';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000/api/v1';
-
-const SUPPORTED_TYPES = '.pdf,.docx,.xlsx,.csv,.txt,.md';
+const SUPPORTED_TYPES = '.pdf,.docx,.xlsx,.xls,.csv,.txt,.md,.html';
 
 function fileIcon(name: string) {
-  if (name.endsWith('.pdf'))  return '📕';
-  if (name.endsWith('.docx')) return '📘';
-  if (name.endsWith('.xlsx') || name.endsWith('.csv')) return '📊';
-  if (name.endsWith('.md'))   return '📝';
+  const n = name.toLowerCase();
+  if (n.endsWith('.pdf')) return '📕';
+  if (n.endsWith('.docx')) return '📘';
+  if (n.endsWith('.xlsx') || n.endsWith('.xls') || n.endsWith('.csv')) return '📊';
+  if (n.endsWith('.md')) return '📝';
   return '📄';
 }
 
+function formatSize(bytes?: number) {
+  if (!bytes) return '—';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
 export default function DocumentsPage() {
-  const [documents, setDocuments]   = useState<any[]>([]);
-  const [loading, setLoading]       = useState(true);
-  const [uploading, setUploading]   = useState(false);
+  const [documents, setDocuments] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
   const [extracting, setExtracting] = useState<string | null>(null);
-  const [error, setError]           = useState<string | null>(null);
-  const [success, setSuccess]       = useState<string | null>(null);
+  const [module, setModule] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+  const [aiReady, setAiReady] = useState<boolean | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => { fetchDocuments(); }, []);
-
-  const fetchDocuments = async () => {
-    setLoading(true);
+  const fetchDocuments = useCallback(async () => {
     try {
-      const res = await axios.get(`${API_URL}/ingestion/documents`).catch(() => ({ data: [] }));
-      setDocuments(Array.isArray(res.data) ? res.data : []);
+      const res = await api.get('/ingestion/documents');
+      setDocuments(res.data);
+    } catch (err) {
+      setError(errorMessage(err));
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    fetchDocuments();
+    api.get('/llm/providers').then((r) => setAiReady(!!r.data.anyConfigured)).catch(() => setAiReady(null));
+  }, [fetchDocuments]);
 
   const uploadFile = async (file: File) => {
     setUploading(true);
@@ -46,80 +59,84 @@ export default function DocumentsPage() {
     const fd = new FormData();
     fd.append('file', file);
     try {
-      await axios.post(`${API_URL}/ingestion/upload`, fd, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-      });
-      setSuccess(`"${file.name}" uploaded successfully!`);
+      await api.post('/ingestion/upload', fd);
+      setSuccess(`“${file.name}” uploaded. Click “Extract Tests” to turn it into test cases.`);
       await fetchDocuments();
-    } catch (err: any) {
-      setError(err.response?.data?.error ?? err.message);
+    } catch (err) {
+      setError(errorMessage(err));
     } finally {
       setUploading(false);
     }
   };
 
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    const file = e.dataTransfer.files[0];
-    if (file) uploadFile(file);
-  };
-
   const extract = async (docId: string) => {
     setExtracting(docId);
     setError(null);
+    setSuccess(null);
     try {
-      await axios.post(`${API_URL}/ingestion/documents/${docId}/extract`);
-      setSuccess('Test cases extracted and saved successfully!');
+      const res = await api.post(`/ingestion/documents/${docId}/extract`, { module: module.trim() || undefined });
+      const truncated = res.data.metadata?.truncated ? ' (document was long — only the first part was analysed)' : '';
+      setSuccess(`✅ ${res.data.extracted} test case(s) extracted with ${res.data.metadata?.provider}${truncated}.`);
       await fetchDocuments();
-    } catch (err: any) {
-      setError(err.response?.data?.error ?? err.message);
+    } catch (err) {
+      setError(errorMessage(err));
+      await fetchDocuments();
     } finally {
       setExtracting(null);
     }
   };
 
+  const remove = async (docId: string) => {
+    if (!confirm('Delete this document? Extracted test cases are kept.')) return;
+    try {
+      await api.delete(`/ingestion/documents/${docId}`);
+      setDocuments((prev) => prev.filter((d) => d.id !== docId));
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  };
+
   return (
     <Layout title="Documents">
-      {error   && <div className="alert alert-error">⚠️ {error}</div>}
-      {success && <div className="alert alert-success">✅ {success}</div>}
+      {aiReady === false && (
+        <div className="alert alert-warning">
+          No AI provider is configured, so extraction is unavailable. See <Link href="/settings/ai-providers">AI Providers</Link>.
+        </div>
+      )}
+      {error && <div className="alert alert-error">⚠️ {error}</div>}
+      {success && <div className="alert alert-success">{success}</div>}
 
-      {/* Upload zone */}
       <div
         className="card mb-6"
-        onDrop={handleDrop}
+        onDrop={(e) => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) uploadFile(f); }}
         onDragOver={(e) => e.preventDefault()}
         style={{ border: '2px dashed var(--gray-300)', cursor: 'pointer' }}
         onClick={() => fileRef.current?.click()}
       >
-        <div className="empty-state" style={{ padding: '40px 20px' }}>
+        <div className="empty-state" style={{ padding: '36px 20px' }}>
           {uploading ? (
-            <>
-              <div className="spinner" style={{ width: 36, height: 36 }} />
-              <p style={{ marginTop: 16 }}>Uploading…</p>
-            </>
+            <><div className="spinner" style={{ width: 36, height: 36 }} /><p style={{ marginTop: 16 }}>Uploading…</p></>
           ) : (
             <>
               <div className="empty-icon">📂</div>
-              <h3>Drop a file here or click to browse</h3>
-              <p>Supported: PDF, Word (.docx), Excel (.xlsx), CSV, Markdown (.md), TXT<br/>Max size: 50 MB</p>
+              <h3>Drop a test specification here or click to browse</h3>
+              <p>PDF, Word (.docx), Excel (.xlsx), CSV, Markdown, HTML or TXT · max 50 MB</p>
               <div className="btn btn-primary">Choose File</div>
             </>
           )}
         </div>
-        <input
-          ref={fileRef}
-          type="file"
-          accept={SUPPORTED_TYPES}
-          style={{ display: 'none' }}
-          onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadFile(f); e.target.value = ''; }}
-        />
+        <input ref={fileRef} type="file" accept={SUPPORTED_TYPES} style={{ display: 'none' }} data-testid="file-input"
+          onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadFile(f); e.target.value = ''; }} />
       </div>
 
-      {/* Document list */}
       <div className="card">
         <div className="card-header">
           <h3>Uploaded Documents</h3>
-          <button className="btn btn-secondary btn-sm" onClick={fetchDocuments}>↻ Refresh</button>
+          <div className="flex gap-2" style={{ alignItems: 'center' }}>
+            <input className="form-control" style={{ width: 220 }} value={module} onChange={(e) => setModule(e.target.value)}
+              placeholder="Default module (optional)" aria-label="Default module for extracted tests" />
+            <button className="btn btn-secondary btn-sm" onClick={fetchDocuments}>↻</button>
+          </div>
         </div>
         {loading ? (
           <div className="page-loading"><div className="spinner" /></div>
@@ -127,49 +144,37 @@ export default function DocumentsPage() {
           <div className="empty-state">
             <div className="empty-icon">📄</div>
             <h3>No documents yet</h3>
-            <p>Upload a test book — the AI will extract structured test cases from it automatically.</p>
+            <p>Upload a test book — the AI will extract structured, executable test cases from it.</p>
           </div>
         ) : (
           <div className="table-wrapper">
             <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Document</th>
-                  <th>Status</th>
-                  <th>Tests Found</th>
-                  <th>Uploaded</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
+              <thead><tr><th>Document</th><th>Status</th><th>Tests</th><th>Size</th><th>Uploaded</th><th>Actions</th></tr></thead>
               <tbody>
                 {documents.map((doc) => (
                   <tr key={doc.id}>
                     <td>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                        <span style={{ fontSize: 20 }}>{fileIcon(doc.fileName ?? doc.name ?? '')}</span>
+                        <span style={{ fontSize: 20 }}>{fileIcon(doc.name)}</span>
                         <div>
-                          <div style={{ fontWeight: 600, fontSize: 14 }}>{doc.fileName ?? doc.name ?? doc.id}</div>
-                          <div className="text-sm text-muted code">{doc.id.slice(0, 10)}…</div>
+                          <div className="fw-600" style={{ fontSize: 14 }}>{doc.name}</div>
+                          {doc.status === 'failed' && doc.error && <div className="text-sm text-danger">{doc.error}</div>}
                         </div>
                       </div>
                     </td>
-                    <td>
-                      <span className={
-                        doc.status === 'processed' ? 'badge badge-success' :
-                        doc.status === 'processing' ? 'badge badge-warning' :
-                        doc.status === 'failed' ? 'badge badge-danger' : 'badge badge-neutral'
-                      }>{doc.status ?? 'uploaded'}</span>
+                    <td><span className={statusBadge(doc.status)}>{extracting === doc.id ? 'processing' : doc.status}</span></td>
+                    <td className="fw-600">
+                      {doc.testCaseCount > 0 ? <Link href={`/testcases`}>{doc.testCaseCount}</Link> : '—'}
                     </td>
-                    <td className="fw-600">{doc.testCaseCount ?? doc.extractedCount ?? '—'}</td>
-                    <td className="text-sm text-muted">{new Date(doc.createdAt ?? doc.uploadedAt).toLocaleDateString()}</td>
+                    <td className="text-sm text-muted">{formatSize(doc.fileSize)}</td>
+                    <td className="text-sm text-muted">{new Date(doc.uploadedAt).toLocaleString()}</td>
                     <td>
-                      <button
-                        className="btn btn-secondary btn-sm"
-                        onClick={() => extract(doc.id)}
-                        disabled={extracting === doc.id}
-                      >
-                        {extracting === doc.id ? '…' : '🔍 Extract Tests'}
-                      </button>
+                      <div className="flex gap-2">
+                        <button className="btn btn-primary btn-sm" onClick={() => extract(doc.id)} disabled={!!extracting || aiReady === false}>
+                          {extracting === doc.id ? 'Extracting…' : doc.testCaseCount > 0 ? '🔍 Extract again' : '🔍 Extract Tests'}
+                        </button>
+                        <button className="btn btn-ghost btn-sm" onClick={() => remove(doc.id)} title="Delete document">🗑</button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -177,27 +182,6 @@ export default function DocumentsPage() {
             </table>
           </div>
         )}
-      </div>
-
-      {/* How it works */}
-      <div className="card" style={{ marginTop: 20 }}>
-        <div className="card-header"><h3>How It Works</h3></div>
-        <div className="card-body">
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16 }}>
-            {[
-              ['1. Upload', '📤', 'Upload your test specification document — PDF, Word, Excel, or plain text.'],
-              ['2. Extract', '🔍', 'The AI reads your document and extracts structured test cases automatically.'],
-              ['3. Review', '✅', 'Review and edit the extracted test cases in the Test Cases page.'],
-              ['4. Run', '▶', 'Assign test cases to an agent and trigger an automated test run.'],
-            ].map(([step, icon, desc]) => (
-              <div key={String(step)} style={{ textAlign: 'center', padding: 16 }}>
-                <div style={{ fontSize: 32, marginBottom: 8 }}>{icon}</div>
-                <div style={{ fontWeight: 700, marginBottom: 6 }}>{step}</div>
-                <div className="text-sm text-muted">{desc}</div>
-              </div>
-            ))}
-          </div>
-        </div>
       </div>
     </Layout>
   );

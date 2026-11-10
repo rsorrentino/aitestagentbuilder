@@ -6,15 +6,19 @@
  */
 
 import { useState } from 'react';
-import axios from 'axios';
+import { api, errorMessage } from '../../lib/api';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
 import Layout from '../../components/Layout';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000/api/v1';
 
 const SF_MODULES = ['Authentication', 'Leads', 'Contacts', 'Opportunities', 'Cases', 'Reports', 'Accounts', 'Dashboards'];
-const AI_PROVIDERS = ['claude', 'copilot', 'openai'];
+const AI_PROVIDERS = [
+  { value: '', label: 'Automatic (best available)' },
+  { value: 'anthropic', label: 'Anthropic Claude' },
+  { value: 'copilot', label: 'GitHub Copilot' },
+  { value: 'openai', label: 'OpenAI' },
+];
 
 type Step = 1 | 2 | 3 | 4;
 
@@ -43,9 +47,9 @@ const defaultState: WizardState = {
   sfToken: '',
   sandbox: false,
   selectedModules: ['Authentication', 'Leads', 'Contacts'],
-  priority: ['High', 'Critical'],
-  aiProvider: 'claude',
-  aiModel: 'claude-3-5-sonnet-latest',
+  priority: [],
+  aiProvider: '',
+  aiModel: '',
   selfHealing: true,
   maxParallelTests: 3,
   retries: 2,
@@ -90,13 +94,10 @@ export default function SalesforceWizard() {
           test_selection: {
             module: state.selectedModules,
             priority: state.priority,
-            tags: ['salesforce', 'crm'],
           },
           tools: { browser: 'playwright', http: 'axios' },
           ai: {
-            provider: state.aiProvider,
-            model: state.aiModel,
-            fallback: state.aiProvider === 'claude' ? 'copilot' : 'claude',
+            provider: state.aiProvider || undefined,
             self_healing: state.selfHealing,
           },
           reporting: { formats: ['json', 'html', 'junit'], includeScreenshots: true, includeLogs: true },
@@ -106,11 +107,11 @@ export default function SalesforceWizard() {
           retries: state.retries,
         },
       };
-      const res = await axios.post(`${API_URL}/agents`, payload);
+      const res = await api.post(`/agents`, payload);
       setCreatedAgent(res.data);
       setStep(4);
     } catch (err: any) {
-      setError(err.response?.data?.error ?? err.message);
+      setError(errorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -209,12 +210,8 @@ export default function SalesforceWizard() {
               <div className="form-group">
                 <label className="form-label">AI Provider</label>
                 <select className="form-control" value={state.aiProvider} onChange={(e) => update('aiProvider', e.target.value)}>
-                  {AI_PROVIDERS.map((p) => <option key={p} value={p}>{p}</option>)}
+                  {AI_PROVIDERS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
                 </select>
-              </div>
-              <div className="form-group">
-                <label className="form-label">Model</label>
-                <input className="form-control" value={state.aiModel} onChange={(e) => update('aiModel', e.target.value)} placeholder="claude-3-5-sonnet-latest" />
               </div>
               <label className="form-check mb-6">
                 <input type="checkbox" checked={state.selfHealing} onChange={(e) => update('selfHealing', e.target.checked)} />
@@ -242,7 +239,7 @@ export default function SalesforceWizard() {
                 {[
                   ['Agent ID', <span className="code">{createdAgent.id}</span>],
                   ['Modules', state.selectedModules.join(', ')],
-                  ['AI Provider', `${state.aiProvider} (${state.aiModel})`],
+                  ['AI Provider', AI_PROVIDERS.find((p) => p.value === state.aiProvider)?.label ?? 'Automatic'],
                   ['Self-Healing', state.selfHealing ? '✅ Enabled' : '✗ Disabled'],
                 ].map(([label, value]) => (
                   <div key={String(label)} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--gray-200)' }}>

@@ -2,23 +2,32 @@
  * Core Domain Model: Document
  */
 
-export type DocumentSourceType = 'pdf' | 'word' | 'excel' | 'markdown' | 'html' | 'confluence' | 'text';
+export type DocumentSourceType = 'pdf' | 'word' | 'excel' | 'csv' | 'markdown' | 'html' | 'confluence' | 'text';
+export type DocumentStatus = 'uploaded' | 'processing' | 'processed' | 'failed';
+
+/** Source types whose content is stored as UTF-8 text (the rest as base64). */
+export const TEXT_SOURCE_TYPES: DocumentSourceType[] = ['text', 'markdown', 'html', 'csv', 'confluence'];
 
 export interface Document {
   id: string;
   name: string;
   sourceType: DocumentSourceType;
-  content: string; // Raw content or file path
+  content?: string; // UTF-8 text for text formats, base64 for binary formats
   filePath?: string;
   fileSize?: number;
   mimeType?: string;
   uploadedAt: Date;
   uploadedBy?: string;
+  status?: DocumentStatus;
+  error?: string;
+  testCaseCount?: number;
   metadata?: {
     author?: string;
     version?: string;
     pages?: number;
     extractedAt?: Date;
+    provider?: string;
+    truncated?: boolean;
   };
 }
 

@@ -1,0 +1,12 @@
+# Runs the built-in demo tests against the demo app served by the backend.
+# Seed the tests once (npm run seed:demo), keep the backend running, then:
+#   cd backend && npm run cli -- run -c ../configs/demo-agent.yml
+agent_name: "Demo Shop (CLI)"
+application_type: "web"
+base_url: "http://localhost:3000/demo/"
+test_selection:
+  tags: ["demo"]
+environment: "demo"
+retries: 0
+ai:
+  self_healing: true

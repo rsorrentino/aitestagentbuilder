@@ -64,3 +64,9 @@ temp/
 
 # Reports (generated artifacts)
 reports/output/
+
+# Run artifacts (screenshots) and generated reports
+artifacts/
+reports/
+*.tsbuildinfo
+next-env.d.ts.bak

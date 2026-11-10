@@ -1,314 +1,205 @@
 /**
  * Orchestrator Service
- * Supervises the entire test execution workflow with improved concurrency
+ * Plans a run, executes it in the background and keeps run state up to date.
+ *
+ * EXECUTOR=node   (default) built-in Playwright executor (modules/execution)
+ * EXECUTOR=python legacy Python executor in /executor (optional)
  */
 
+import { spawn } from 'child_process';
+import { join } from 'path';
 import { Agent } from '../../../core/domain/agent.js';
 import { TestRun, TestRunCreateInput } from '../../../core/domain/run.js';
 import { AgentRepository } from '../../../core/repositories/agent.repository.js';
 import { RunRepository } from '../../../core/repositories/run.repository.js';
-import { PlannerAgentService } from '../../agents/services/planner-agent.service.js';
-import { EnvironmentAgentService } from '../../agents/services/environment-agent.service.js';
-import { getWebSocketService } from '../../../infra/websocket/server.js';
+import { PlannerAgentService, TestPlan } from '../../agents/services/planner-agent.service.js';
+import { RunExecutor } from '../../execution/run-executor.js';
+import { emitRunEvent } from '../../../infra/websocket/server.js';
+import { REPO_ROOT } from '../../../infra/config/env.js';
 import logger from '../../../infra/logger/index.js';
-import { spawn } from 'child_process';
-import { join } from 'path';
-import { EventEmitter } from 'events';
 
-/**
- * Concurrency manager for test execution
- */
-class ConcurrencyManager extends EventEmitter {
-  private running: Set<string> = new Set();
-  private queue: Array<{ runId: string; priority: number }> = [];
-  private maxConcurrent: number;
-
-  constructor(maxConcurrent: number = 5) {
-    super();
-    this.maxConcurrent = maxConcurrent;
-  }
-
-  async execute(runId: string, priority: number, task: () => Promise<void>): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const executeTask = async () => {
-        if (this.running.size >= this.maxConcurrent) {
-          this.queue.push({ runId, priority });
-          this.queue.sort((a, b) => b.priority - a.priority);
-          return;
-        }
-
-        this.running.add(runId);
-        this.emit('started', runId);
-
-        try {
-          await task();
-          resolve();
-        } catch (error) {
-          reject(error);
-        } finally {
-          this.running.delete(runId);
-          this.emit('completed', runId);
-
-          // Process next in queue
-          if (this.queue.length > 0 && this.running.size < this.maxConcurrent) {
-            const next = this.queue.shift();
-            if (next) {
-              // This will be handled by the caller
-              setImmediate(() => this.execute(next.runId, next.priority, task));
-            }
-          }
-        }
-      };
-
-      executeTask();
-    });
-  }
-
-  getRunningCount(): number {
-    return this.running.size;
-  }
-
-  getQueueLength(): number {
-    return this.queue.length;
+export class RunValidationError extends Error {
+  constructor(message: string, public statusCode = 400) {
+    super(message);
+    this.name = 'RunValidationError';
   }
 }
 
+interface QueuedRun {
+  runId: string;
+  agent: Agent;
+  plan: TestPlan;
+}
+
 export class OrchestratorService {
-  private agentRepo = new AgentRepository();
-  private runRepo = new RunRepository();
-  private plannerAgent = new PlannerAgentService();
-  private environmentAgent = new EnvironmentAgentService();
-  private concurrencyManager: ConcurrencyManager;
+  private static instance: OrchestratorService | null = null;
 
-  constructor(maxConcurrentRuns: number = 5) {
-    this.concurrencyManager = new ConcurrencyManager(maxConcurrentRuns);
-    
-    // Listen to concurrency events
-    this.concurrencyManager.on('started', (runId: string) => {
-      logger.info('Test run started', { runId, running: this.concurrencyManager.getRunningCount() });
-    });
-
-    this.concurrencyManager.on('completed', (runId: string) => {
-      logger.info('Test run completed', { runId, running: this.concurrencyManager.getRunningCount() });
-    });
+  static get(): OrchestratorService {
+    if (!this.instance) this.instance = new OrchestratorService();
+    return this.instance;
   }
 
-  /**
-   * Start a test run with concurrency control
-   */
-  async startRun(input: TestRunCreateInput): Promise<TestRun> {
-    // Create run record
-    const run = await this.runRepo.createRun(input);
+  private agentRepo = new AgentRepository();
+  private runRepo = new RunRepository();
+  private planner = new PlannerAgentService();
+  private maxConcurrent = Math.max(1, parseInt(process.env.MAX_CONCURRENT_RUNS || '2'));
+  private active = new Map<string, { cancel: () => void; done: Promise<void> }>();
+  private queue: QueuedRun[] = [];
 
-    // Fetch agent
+  async previewPlan(agentId: string): Promise<TestPlan> {
+    const agent = await this.agentRepo.findById(agentId);
+    if (!agent) throw new RunValidationError(`Agent not found: ${agentId}`, 404);
+    return this.planner.createTestPlan(agent.config);
+  }
+
+  async startRun(input: TestRunCreateInput & { testIds?: string[] }): Promise<TestRun> {
     const agent = await this.agentRepo.findById(input.agentId);
-    if (!agent) {
-      throw new Error(`Agent not found: ${input.agentId}`);
+    if (!agent) throw new RunValidationError(`Agent not found: ${input.agentId}`, 404);
+    if (agent.status !== 'active') throw new RunValidationError(`Agent "${agent.name}" is ${agent.status}`);
+    if (!agent.config?.base_url) throw new RunValidationError('Agent has no base_url configured');
+
+    const config = input.testIds?.length
+      ? { ...agent.config, test_selection: { testIds: input.testIds } }
+      : agent.config;
+    const plan = await this.planner.createTestPlan(config);
+    if (plan.tests.length === 0) {
+      throw new RunValidationError(
+        "No test cases match this agent's test selection. Add test cases (Documents → Extract, " +
+        'Generate Tests, or Test Cases → New) or widen the agent\'s module/priority filters.',
+      );
     }
 
-    // Determine priority (Critical=4, High=3, Medium=2, Low=1)
-    const priority = this.calculatePriority(agent.config);
-
-    // Setup environment if configured
-    if (agent.config.environment) {
-      try {
-        const envConfig = {
-          name: agent.config.environment,
-          baseUrl: agent.config.base_url,
-        };
-        await this.environmentAgent.setupEnvironment(envConfig as any);
-      } catch (error: any) {
-        logger.warn('Environment setup failed, continuing', { error: error.message });
-      }
-    }
-
-    // Create test plan
-    const plan = await this.plannerAgent.createTestPlan(agent.config);
-
-    // Update run status
-    await this.runRepo.updateRun(run.id, { status: 'running' });
-
-    // Broadcast run started via WebSocket
-    const wsService = getWebSocketService();
-    if (wsService) {
-      wsService.broadcastRunProgress(run.id, {
-        status: 'running',
-        completed: 0,
-        total: plan.tests.length,
-        passed: 0,
-        failed: 0,
-      });
-    }
-
-    // Execute with concurrency control
-    this.concurrencyManager.execute(run.id, priority, async () => {
-      await this.executeRun(run.id, agent, plan);
-    }).catch((error) => {
-      logger.error('Test execution failed', { runId: run.id, error: error.message });
-      this.runRepo.updateRun(run.id, {
-        status: 'failed',
-        finishedAt: new Date(),
-      });
+    const run = await this.runRepo.createRun({
+      agentId: agent.id,
+      metadata: { ...(input.metadata ?? {}), strategy: plan.strategy, environment: agent.config.environment },
     });
+    await this.runRepo.updateRun(run.id, { totalTests: plan.tests.length });
+    run.totalTests = plan.tests.length;
+    run.agentName = agent.name;
 
+    this.queue.push({ runId: run.id, agent, plan });
+    this.pump();
     return run;
   }
 
-  /**
-   * Calculate priority for concurrency management
-   */
-  private calculatePriority(config: any): number {
-    const priorities = config.test_selection?.priority || [];
-    if (priorities.includes('Critical')) return 4;
-    if (priorities.includes('High')) return 3;
-    if (priorities.includes('Medium')) return 2;
-    return 1;
+  async getRunStatus(runId: string): Promise<TestRun | null> {
+    return this.runRepo.findRunById(runId);
   }
 
-  /**
-   * Execute a test run
-   */
-  private async executeRun(
+  async cancelRun(runId: string): Promise<TestRun> {
+    const run = await this.runRepo.findRunById(runId);
+    if (!run) throw new RunValidationError(`Run not found: ${runId}`, 404);
+    if (run.status !== 'running' && run.status !== 'pending') {
+      throw new RunValidationError(`Cannot cancel a run with status "${run.status}"`, 409);
+    }
+
+    const queuedIndex = this.queue.findIndex((q) => q.runId === runId);
+    if (queuedIndex !== -1) this.queue.splice(queuedIndex, 1);
+    this.active.get(runId)?.cancel();
+
+    await this.runRepo.updateRun(runId, { status: 'cancelled', finishedAt: new Date() });
+    emitRunEvent(runId, 'run_completed', { status: 'cancelled', total: run.totalTests, passed: run.passedTests, failed: run.failedTests, skipped: run.skippedTests });
+    return (await this.runRepo.findRunById(runId))!;
+  }
+
+  getConcurrencyStats(): { running: number; queued: number; maxConcurrent: number } {
+    return { running: this.active.size, queued: this.queue.length, maxConcurrent: this.maxConcurrent };
+  }
+
+  /** Cancel everything and wait for in-flight runs to stop (graceful shutdown). */
+  async shutdown(): Promise<void> {
+    this.queue = [];
+    const pending = [...this.active.values()];
+    pending.forEach(({ cancel }) => cancel());
+    await Promise.allSettled(pending.map(({ done }) => done));
+  }
+
+  private pump(): void {
+    while (this.active.size < this.maxConcurrent && this.queue.length > 0) {
+      const next = this.queue.shift()!;
+      this.executeRun(next).catch((error) => {
+        logger.error('Run execution crashed', { runId: next.runId, error: error.message });
+      });
+    }
+  }
+
+  private async executeRun({ runId, agent, plan }: QueuedRun): Promise<void> {
+    const useLegacyPython = (process.env.EXECUTOR || 'node').toLowerCase() === 'python';
+    const executor = useLegacyPython ? null : new RunExecutor(runId, agent, plan.testCases);
+    let pythonCancel: (() => void) | undefined;
+    let markDone: () => void = () => undefined;
+    const done = new Promise<void>((resolve) => { markDone = resolve; });
+    this.active.set(runId, { cancel: () => { executor?.cancel(); pythonCancel?.(); }, done });
+
+    let finalStatus: 'completed' | 'failed' | 'cancelled' = 'failed';
+    let error: string | undefined;
+
+    try {
+      await this.runRepo.updateRun(runId, { status: 'running' });
+      logger.info('Run started', { runId, agent: agent.name, tests: plan.tests.length });
+
+      if (executor) {
+        finalStatus = await executor.execute();
+      } else {
+        finalStatus = await this.executeWithPython(runId, agent, plan, (cancel) => { pythonCancel = cancel; });
+      }
+    } catch (e: any) {
+      error = e.message;
+      finalStatus = 'failed';
+      logger.error('Run failed', { runId, error });
+    } finally {
+      this.active.delete(runId);
+    }
+
+    const current = await this.runRepo.findRunById(runId);
+    if (current && current.status !== 'cancelled') {
+      await this.runRepo.updateRunStats(runId);
+      await this.runRepo.updateRun(runId, {
+        status: finalStatus,
+        finishedAt: new Date(),
+        ...(error ? { metadata: { error } } : {}),
+      });
+      const done = await this.runRepo.findRunById(runId);
+      emitRunEvent(runId, 'run_completed', {
+        status: finalStatus,
+        total: done?.totalTests,
+        passed: done?.passedTests,
+        failed: done?.failedTests,
+        skipped: done?.skippedTests,
+        error,
+      });
+      logger.info('Run finished', { runId, status: finalStatus, passed: done?.passedTests, failed: done?.failedTests });
+    }
+
+    markDone();
+    this.pump();
+  }
+
+  /** Legacy Python executor (requires `pip install -r executor/requirements.txt`). */
+  private executeWithPython(
     runId: string,
     agent: Agent,
-    plan: { tests: string[]; strategy: string }
-  ): Promise<void> {
-    try {
-      logger.info('Starting test execution', { runId, agentId: agent.id, testCount: plan.tests.length });
-
-      // Call Python executor
-      const executorPath = join(process.cwd(), 'executor/src/runner/test_runner.py');
-      
-      const pythonProcess = spawn('python3', [
-        executorPath,
+    plan: TestPlan,
+    registerCancel: (cancel: () => void) => void,
+  ): Promise<'completed' | 'failed'> {
+    return new Promise((resolve, reject) => {
+      const child = spawn(process.env.PYTHON_BIN || 'python3', [
+        '-m', 'src.runner.test_runner',
         '--run-id', runId,
         '--agent-config', JSON.stringify(agent.config),
         '--test-ids', plan.tests.join(','),
-      ], {
-        cwd: process.cwd(),
+      ], { cwd: join(REPO_ROOT, 'executor'), env: process.env });
+
+      registerCancel(() => child.kill('SIGTERM'));
+      child.stdout.on('data', (d) => emitRunEvent(runId, 'run_log', { level: 'info', message: d.toString().trim() }));
+      child.stderr.on('data', (d) => emitRunEvent(runId, 'run_log', { level: 'warn', message: d.toString().trim() }));
+      child.on('error', (e) => reject(new Error(`Could not start Python executor: ${e.message}`)));
+      child.on('close', async (code) => {
+        await this.runRepo.updateRunStats(runId);
+        const run = await this.runRepo.findRunById(runId);
+        if (code !== 0) return reject(new Error(`Python executor exited with code ${code}`));
+        resolve(run && run.failedTests > 0 ? 'failed' : 'completed');
       });
-
-      let stdout = '';
-      let stderr = '';
-
-      pythonProcess.stdout.on('data', (data) => {
-        stdout += data.toString();
-        logger.info('Executor output', { runId, output: data.toString() });
-        
-        // Broadcast progress updates
-        const wsService = getWebSocketService();
-        if (wsService) {
-          // Parse progress if available
-          try {
-            const progressMatch = stdout.match(/(\d+)\/(\d+)/);
-            if (progressMatch) {
-              const completed = parseInt(progressMatch[1]);
-              const total = parseInt(progressMatch[2]);
-              wsService.broadcastRunProgress(runId, {
-                status: 'running',
-                completed,
-                total,
-                passed: 0,
-                failed: 0,
-              });
-            }
-          } catch (e) {
-            // Ignore parsing errors
-          }
-        }
-      });
-
-      pythonProcess.stderr.on('data', (data) => {
-        stderr += data.toString();
-        logger.error('Executor error', { runId, error: data.toString() });
-      });
-
-      pythonProcess.on('close', async (code) => {
-        const updatedRun = await this.runRepo.findRunById(runId);
-        if (updatedRun) {
-          await this.runRepo.updateRunStats(runId);
-        }
-
-        if (code === 0) {
-          await this.runRepo.updateRun(runId, {
-            status: 'completed',
-            finishedAt: new Date(),
-          });
-          
-          const finalRun = await this.runRepo.findRunById(runId);
-          const wsService = getWebSocketService();
-          if (wsService && finalRun) {
-            wsService.broadcastRunCompleted(runId, {
-              status: 'completed',
-              total: finalRun.totalTests,
-              passed: finalRun.passedTests,
-              failed: finalRun.failedTests,
-            });
-          }
-          
-          logger.info('Test execution completed', { runId });
-        } else {
-          await this.runRepo.updateRun(runId, {
-            status: 'failed',
-            finishedAt: new Date(),
-          });
-          
-          const wsService = getWebSocketService();
-          if (wsService) {
-            wsService.broadcastRunCompleted(runId, {
-              status: 'failed',
-              error: 'Test execution failed',
-            });
-          }
-          
-          logger.error('Test execution failed', { runId, exitCode: code });
-        }
-      });
-
-    } catch (error: any) {
-      logger.error('Execution error', { runId, error: error.message });
-      await this.runRepo.updateRun(runId, {
-        status: 'failed',
-        finishedAt: new Date(),
-      });
-      throw error;
-    }
-  }
-
-  /**
-   * Get run status
-   */
-  async getRunStatus(runId: string): Promise<TestRun | null> {
-    return await this.runRepo.findRunById(runId);
-  }
-
-  /**
-   * Cancel a running test
-   */
-  async cancelRun(runId: string): Promise<void> {
-    const run = await this.runRepo.findRunById(runId);
-    if (!run) {
-      throw new Error(`Run not found: ${runId}`);
-    }
-
-    if (run.status !== 'running') {
-      throw new Error(`Cannot cancel run with status: ${run.status}`);
-    }
-
-    await this.runRepo.updateRun(runId, {
-      status: 'cancelled',
-      finishedAt: new Date(),
     });
-  }
-
-  /**
-   * Get concurrency statistics
-   */
-  getConcurrencyStats(): { running: number; queued: number; maxConcurrent: number } {
-    return {
-      running: this.concurrencyManager.getRunningCount(),
-      queued: this.concurrencyManager.getQueueLength(),
-      maxConcurrent: this.concurrencyManager['maxConcurrent'],
-    };
   }
 }

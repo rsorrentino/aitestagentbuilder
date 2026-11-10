@@ -1,13 +1,24 @@
 /**
  * CLI Interface
+ *
+ *   npm run cli -- run -c ../configs/login-agent.yml
+ *   npm run cli -- report -r RUN-123 -f html,junit -o ./reports
+ *
+ * `run` waits for the run to finish, writes reports and exits with code 1
+ * when any test failed — suitable for CI pipelines.
  */
 
 import { Command } from 'commander';
 import { readFileSync } from 'fs';
+import '../infra/config/env.js';
 import { AgentRepository } from '../core/repositories/agent.repository.js';
+import { RunRepository } from '../core/repositories/run.repository.js';
 import { OrchestratorService } from '../modules/orchestration/services/orchestrator.service.js';
-import { ReportingAgentService } from '../modules/reporting/services/reporting-agent.service.js';
-import logger from '../infra/logger/index.js';
+import { ReportFormat, ReportingAgentService } from '../modules/reporting/services/reporting-agent.service.js';
+import { buildAgentConfig } from '../api/controllers/agents.controller.js';
+import { runMigrations } from '../infra/db/migrate.js';
+import getDatabaseClient from '../infra/db/client.js';
+import { CopilotClient } from '../infra/llm/copilot.js';
 
 const program = new Command();
 
@@ -16,54 +27,75 @@ program
   .description('AI Test Agent Builder CLI')
   .version('1.0.0');
 
+async function finish(code: number): Promise<never> {
+  await CopilotClient.shutdown();
+  await getDatabaseClient().close().catch(() => undefined);
+  process.exit(code);
+}
+
 program
   .command('run')
-  .description('Run tests using an agent configuration')
+  .description('Run the tests selected by an agent configuration (YAML) and wait for the result')
   .requiredOption('-c, --config <path>', 'Path to agent configuration YAML file')
-  .option('-e, --environment <env>', 'Environment override', 'staging')
+  .option('-e, --environment <env>', 'Environment override')
+  .option('-o, --output <path>', 'Report output directory', './reports')
+  .option('-f, --formats <formats>', 'Report formats (comma-separated)', 'html,junit,json')
   .action(async (options) => {
     try {
-      const configPath = options.config;
-      const configContent = readFileSync(configPath, 'utf-8');
-      
-      // Parse YAML
+      await runMigrations();
       const yaml = await import('yaml');
-      const config = yaml.parse(configContent);
+      // ${VAR} placeholders are replaced with environment variables
+      const text = readFileSync(options.config, 'utf-8').replace(/\$\{(\w+)\}/g, (_m, name) => process.env[name] ?? '');
+      const raw = yaml.parse(text);
+      const name = raw.agent_name || raw.name;
+      if (!name) throw new Error('The config needs an agent_name');
+      if (options.environment) raw.environment = options.environment;
+
+      const { errors, config } = buildAgentConfig(name, raw);
+      if (errors.length) throw new Error(errors.join('; '));
 
       const agentRepo = new AgentRepository();
-      const orchestrator = new OrchestratorService();
+      let agent = await agentRepo.findByName(name);
+      agent = agent
+        ? (await agentRepo.update(agent.id, { config: config! }))!
+        : await agentRepo.create({ name, config: config! });
 
-      // Create or find agent
-      let agent = await agentRepo.findByName(config.agent_name);
-      if (!agent) {
-        agent = await agentRepo.create({
-          name: config.agent_name,
-          config: config as any,
-        });
-      }
-
-      // Override environment if provided
-      if (options.environment) {
-        agent.config.environment = options.environment;
-      }
-
-      // Start run
-      console.log(`Starting test run with agent: ${agent.name}`);
-      const run = await orchestrator.startRun({
+      console.log(`▶ Agent "${agent.name}" → ${agent.config.base_url}`);
+      const run = await OrchestratorService.get().startRun({
         agentId: agent.id,
-        metadata: {
-          environment: options.environment,
-          triggeredBy: 'cli',
-        },
+        metadata: { environment: agent.config.environment, triggeredBy: 'cli' },
       });
+      console.log(`  Run ${run.id}: ${run.totalTests} test(s)`);
 
-      console.log(`Test run started: ${run.id}`);
-      console.log(`Status: ${run.status}`);
-      console.log(`Monitor progress: GET /api/v1/runs/${run.id}`);
+      const runRepo = new RunRepository();
+      let current = await runRepo.findRunById(run.id);
+      let printed = 0;
+      while (current && (current.status === 'pending' || current.status === 'running')) {
+        await new Promise((r) => setTimeout(r, 1000));
+        current = await runRepo.findRunById(run.id);
+        const done = (current?.results ?? []).filter((r) => r.status !== 'running');
+        for (const r of done.slice(printed)) {
+          const icon = r.status === 'passed' ? '✓' : r.status === 'skipped' ? '○' : '✗';
+          console.log(`  ${icon} ${r.metadata?.title ?? r.testCaseId}${r.error ? ` — ${r.error}` : ''}`);
+        }
+        printed = done.length;
+      }
+
+      if (!current) throw new Error('Run disappeared');
+      console.log(`\n${current.status.toUpperCase()}: ${current.passedTests} passed, ${current.failedTests} failed, ${current.skippedTests} skipped`);
+
+      const reports = await new ReportingAgentService().generateReports(run.id, {
+        formats: String(options.formats).split(',') as ReportFormat[],
+        includeLogs: true,
+        includeScreenshots: true,
+        outputPath: options.output,
+      });
+      reports.forEach((p) => console.log(`  report: ${p}`));
+
+      await finish(current.status === 'completed' ? 0 : 1);
     } catch (error: any) {
-      logger.error('CLI run failed', { error: error.message });
       console.error(`Error: ${error.message}`);
-      process.exit(1);
+      await finish(1);
     }
   });
 
@@ -75,24 +107,19 @@ program
   .option('-o, --output <path>', 'Output directory', './reports')
   .action(async (options) => {
     try {
-      const reportingAgent = new ReportingAgentService();
-      const formats = options.formats.split(',') as ('json' | 'html' | 'junit')[];
-
-      const reportPaths = await reportingAgent.generateReports(options.runId, {
-        formats,
+      const reportPaths = await new ReportingAgentService().generateReports(options.runId, {
+        formats: options.formats.split(',') as ReportFormat[],
         includeScreenshots: true,
         includeLogs: true,
         outputPath: options.output,
       });
-
       console.log(`Generated ${reportPaths.length} report(s):`);
       reportPaths.forEach(path => console.log(`  - ${path}`));
+      await finish(0);
     } catch (error: any) {
-      logger.error('CLI report generation failed', { error: error.message });
       console.error(`Error: ${error.message}`);
-      process.exit(1);
+      await finish(1);
     }
   });
 
 program.parse();
-

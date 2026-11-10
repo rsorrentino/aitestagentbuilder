@@ -4,9 +4,10 @@
   "description": "Frontend UI for AI Test Agent Builder",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -p 4000",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -p 4000",
+    "typecheck": "tsc --noEmit",
     "lint": "next lint"
   },
   "dependencies": {
@@ -26,4 +27,3 @@
     "eslint-config-next": "^14.0.4"
   }
 }
-

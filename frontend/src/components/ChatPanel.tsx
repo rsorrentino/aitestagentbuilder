@@ -6,9 +6,8 @@
  */
 
 import { useState, useRef, useEffect } from 'react';
-import axios from 'axios';
+import { api, errorMessage } from '../lib/api';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000/api/v1';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -28,12 +27,14 @@ export default function ChatPanel({ agentContext, onTestsGenerated }: ChatPanelP
     {
       role: 'assistant',
       content:
-        'Hi! I\'m your AI testing assistant. Describe what you want to test and I\'ll help you build automated test cases. For example: "Create a test that logs into Salesforce and creates a new Lead with company name Acme Corp."',
+        'Hi! I\'m your AI testing assistant. Describe what you want to test and I\'ll write executable test cases you can save. For example: "Create a test that logs in at /login with user demo and checks the dashboard greets the user."',
     },
   ]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
-  const [provider, setProvider] = useState<string>('claude');
+  const [provider, setProvider] = useState<string>('auto');
+  const [pendingTests, setPendingTests] = useState<any[]>([]);
+  const [saveNote, setSaveNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -53,7 +54,7 @@ export default function ChatPanel({ agentContext, onTestsGenerated }: ChatPanelP
     setError(null);
 
     try {
-      const response = await axios.post(`${API_URL}/chat`, {
+      const response = await api.post(`/chat`, {
         messages: updatedMessages
           .filter((m) => m.role !== 'assistant' || updatedMessages.indexOf(m) !== 0)
           .map((m) => ({ role: m.role, content: m.content })),
@@ -69,23 +70,41 @@ export default function ChatPanel({ agentContext, onTestsGenerated }: ChatPanelP
       setMessages((prev) => [...prev, assistantMessage]);
       setProvider(response.data.provider ?? provider);
 
-      // If the response contains a JSON array, extract tests
-      const jsonMatch = response.data.content.match(/\[[\s\S]+\]/);
-      if (jsonMatch && onTestsGenerated) {
+      // If the response contains a JSON array of tests, offer to save them
+      const fenced = response.data.content.match(/```(?:json)?\s*([\s\S]*?)```/);
+      const jsonMatch = fenced ? fenced[1] : response.data.content.match(/\[[\s\S]+\]/)?.[0];
+      if (jsonMatch) {
         try {
-          const tests = JSON.parse(jsonMatch[0]);
-          if (Array.isArray(tests)) {
-            onTestsGenerated(tests);
+          const tests = JSON.parse(jsonMatch);
+          if (Array.isArray(tests) && tests.length && tests.every((t: any) => t && t.title)) {
+            setPendingTests(tests);
+            setSaveNote(null);
+            onTestsGenerated?.(tests);
           }
         } catch {
           // Not valid JSON — that's fine
         }
       }
     } catch (err: any) {
-      setError(err.response?.data?.error ?? err.message);
+      setError(errorMessage(err));
     } finally {
       setLoading(false);
     }
+  };
+
+  const saveTests = async () => {
+    let saved = 0;
+    const failures: string[] = [];
+    for (const t of pendingTests) {
+      try {
+        await api.post('/testcases', { module: 'General', expectedResults: [], ...t, tags: [...(t.tags ?? []), 'ai-chat'] });
+        saved++;
+      } catch (err) {
+        failures.push(`${t.title}: ${errorMessage(err)}`);
+      }
+    }
+    setSaveNote(`Saved ${saved} test case(s) to Test Cases.${failures.length ? ` Failed: ${failures.join('; ')}` : ''}`);
+    setPendingTests([]);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -115,6 +134,13 @@ export default function ChatPanel({ agentContext, onTestsGenerated }: ChatPanelP
           </div>
         )}
         {error && <div className="error-banner">{error}</div>}
+        {pendingTests.length > 0 && (
+          <div className="save-banner">
+            <span>{pendingTests.length} test case(s) found in the reply.</span>
+            <button onClick={saveTests}>Save to Test Cases</button>
+          </div>
+        )}
+        {saveNote && <div className="save-banner">{saveNote}</div>}
         <div ref={bottomRef} />
       </div>
 
@@ -204,6 +230,18 @@ export default function ChatPanel({ agentContext, onTestsGenerated }: ChatPanelP
           background: #fff0f0;
           border: 1px solid #ffcccc;
           color: #c00;
+          padding: 8px 12px;
+          border-radius: 6px;
+          font-size: 13px;
+          margin: 8px 0;
+        }
+        .save-banner {
+          display: flex;
+          gap: 10px;
+          align-items: center;
+          justify-content: space-between;
+          background: #eef2ff;
+          border: 1px solid #c7d2fe;
           padding: 8px 12px;
           border-radius: 6px;
           font-size: 13px;

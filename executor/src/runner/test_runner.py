@@ -1,6 +1,10 @@
 """
-Test Runner
-Main entry point for executing test cases
+Test Runner (legacy Python executor)
+Main entry point for executing test cases.
+
+Run from the executor/ directory as a module so relative imports resolve:
+    python -m src.runner.test_runner --run-id RUN-1 --agent-config '{...}' --test-ids TC-1,TC-2
+The backend does this automatically when EXECUTOR=python.
 """
 
 import asyncio
@@ -26,7 +30,7 @@ class TestRunner:
         self.test_ids = test_ids
         self.execution_agent = ExecutionAgent(agent_config)
         self.validation_agent = ValidationAgent()
-        self.db_url = os.getenv("DB_URL", "postgresql://postgres:password@localhost:5432/aitestagentbuilder")
+        self.db_url = os.getenv("DATABASE_URL") or os.getenv("DB_URL", "postgresql://postgres:postgres@localhost:5432/aitestagentbuilder")
 
     async def run(self):
         """Execute all test cases"""
@@ -92,7 +96,7 @@ class TestRunner:
                         evidence["screenshots"].append(screenshot_result["screenshot"])
 
             # Validate final expected results
-            expected_results = test_case.get("expectedResults", [])
+            expected_results = test_case.get("expected_results") or test_case.get("expectedResults") or []
             final_validation = self.validation_agent.validate_final_results(
                 expected_results,
                 step_results

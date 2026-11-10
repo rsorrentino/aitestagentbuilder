@@ -21,8 +21,8 @@ export class TestCaseRepository {
     const query = `
       INSERT INTO test_cases (
         id, title, module, description, steps, expected_results,
-        preconditions, postconditions, priority, tags, type, data, metadata, created_at, updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+        preconditions, postconditions, priority, tags, type, data, metadata, created_at, updated_at, document_id
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
       RETURNING *
     `;
 
@@ -42,9 +42,47 @@ export class TestCaseRepository {
       input.metadata ? JSON.stringify(input.metadata) : null,
       now,
       now,
+      input.documentId || null,
     ]);
 
     return this.mapRowToTestCase(result.rows[0]);
+  }
+
+  /**
+   * Filtered listing used by the API and the planner.
+   * Each condition uses {} as the placeholder for its single parameter.
+   */
+  async search(filters: {
+    module?: string[];
+    priority?: string[];
+    type?: string[];
+    tags?: string[];
+    ids?: string[];
+    documentId?: string;
+    q?: string;
+    limit?: number;
+    offset?: number;
+  } = {}): Promise<TestCase[]> {
+    const where: string[] = [];
+    const values: any[] = [];
+    const add = (sql: string, value: any) => {
+      values.push(value);
+      where.push(sql.split('{}').join(`$${values.length}`));
+    };
+
+    if (filters.ids?.length) add('id = ANY({})', filters.ids);
+    if (filters.module?.length) add('module = ANY({})', filters.module);
+    if (filters.priority?.length) add('priority = ANY({})', filters.priority);
+    if (filters.type?.length) add('type = ANY({})', filters.type);
+    if (filters.tags?.length) add('tags ?| {}::text[]', filters.tags);
+    if (filters.documentId) add('document_id = {}', filters.documentId);
+    if (filters.q) add('(title ILIKE {} OR description ILIKE {} OR module ILIKE {})', `%${filters.q}%`);
+
+    values.push(filters.limit ?? 500, filters.offset ?? 0);
+    const query = `SELECT * FROM test_cases ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+      ORDER BY created_at DESC LIMIT $${values.length - 1} OFFSET $${values.length}`;
+    const result = await this.db.query(query, values);
+    return result.rows.map(row => this.mapRowToTestCase(row));
   }
 
   async findById(id: string): Promise<TestCase | null> {
@@ -204,6 +242,9 @@ export class TestCaseRepository {
       type: row.type,
       data: row.data ? (typeof row.data === 'string' ? JSON.parse(row.data) : row.data) : undefined,
       metadata: row.metadata ? (typeof row.metadata === 'string' ? JSON.parse(row.metadata) : row.metadata) : undefined,
+      documentId: row.document_id ?? undefined,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
     };
   }
 }

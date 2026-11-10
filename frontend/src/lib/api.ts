@@ -1,0 +1,119 @@
+/**
+ * Shared API client.
+ */
+
+import axios, { AxiosError } from 'axios';
+
+export const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000/api/v1';
+/** Origin of the backend (for Socket.IO, screenshots and reports) */
+export const BACKEND_URL = process.env.NEXT_PUBLIC_WS_URL || API_URL.replace(/\/api\/v\d+\/?$/, '');
+
+const TOKEN_KEY = 'atab_token';
+
+export function getToken(): string | null {
+  try {
+    return typeof window !== 'undefined' ? window.localStorage.getItem(TOKEN_KEY) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function setToken(token: string | null): void {
+  try {
+    if (token) window.localStorage.setItem(TOKEN_KEY, token);
+    else window.localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    // storage unavailable
+  }
+}
+
+export const api = axios.create({ baseURL: API_URL, timeout: 300000 });
+
+api.interceptors.request.use((config) => {
+  const token = getToken();
+  if (token) config.headers.Authorization = `Bearer ${token}`;
+  return config;
+});
+
+api.interceptors.response.use(
+  (res) => res,
+  (error: AxiosError) => {
+    if (error.response?.status === 401 && typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+      setToken(null);
+      window.location.href = `/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`;
+    }
+    return Promise.reject(error);
+  },
+);
+
+/** Human-readable message for any API error. */
+export function errorMessage(err: any): string {
+  if (err?.response?.data?.error) return err.response.data.error;
+  if (err?.code === 'ERR_NETWORK') return `Cannot reach the backend at ${API_URL}. Is it running? (cd backend && npm run dev)`;
+  return err?.message ?? String(err);
+}
+
+export function artifactUrl(path: string): string {
+  return `${BACKEND_URL}/artifacts/${path}`;
+}
+
+export function reportUrl(runId: string, format: 'html' | 'json' | 'junit', download = false): string {
+  return `${API_URL}/runs/${runId}/report?format=${format}${download ? '&download=1' : ''}`;
+}
+
+export function statusBadge(status?: string): string {
+  const map: Record<string, string> = {
+    completed: 'badge badge-success',
+    passed: 'badge badge-success',
+    processed: 'badge badge-success',
+    active: 'badge badge-success',
+    running: 'badge badge-warning',
+    processing: 'badge badge-warning',
+    pending: 'badge badge-info',
+    uploaded: 'badge badge-info',
+    failed: 'badge badge-danger',
+    error: 'badge badge-danger',
+    timeout: 'badge badge-danger',
+    cancelled: 'badge badge-neutral',
+    skipped: 'badge badge-neutral',
+    inactive: 'badge badge-neutral',
+  };
+  return map[status ?? ''] ?? 'badge badge-neutral';
+}
+
+export function priorityBadge(p?: string): string {
+  const m: Record<string, string> = {
+    Critical: 'badge badge-danger',
+    High: 'badge badge-warning',
+    Medium: 'badge badge-info',
+    Low: 'badge badge-neutral',
+  };
+  return m[p ?? ''] ?? 'badge badge-neutral';
+}
+
+export function formatDuration(ms?: number): string {
+  if (ms === undefined || ms === null) return '—';
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${Math.floor(ms / 60000)}m ${Math.round((ms % 60000) / 1000)}s`;
+}
+
+export function shortId(id?: string): string {
+  if (!id) return '—';
+  const parts = id.split('-');
+  return parts.length >= 3 ? `${parts[0]}-…${parts[parts.length - 1]}` : id;
+}
+
+export const PRIORITIES = ['Critical', 'High', 'Medium', 'Low'];
+export const TEST_TYPES = ['Functional', 'Regression', 'Integration', 'Smoke', 'E2E'];
+export const STEP_ACTIONS = [
+  'navigate', 'click', 'fill', 'select', 'check', 'uncheck', 'press', 'hover', 'wait',
+  'assert_visible', 'assert_text', 'assert_url', 'assert_title', 'screenshot',
+];
+export const AI_PROVIDERS = [
+  { value: '', label: 'Automatic (best available)' },
+  { value: 'anthropic', label: 'Anthropic Claude' },
+  { value: 'copilot', label: 'GitHub Copilot' },
+  { value: 'openai', label: 'OpenAI' },
+  { value: 'azure', label: 'Azure OpenAI' },
+];

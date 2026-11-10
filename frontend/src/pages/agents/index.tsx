@@ -3,11 +3,10 @@
  */
 
 import { useState, useEffect } from 'react';
-import axios from 'axios';
+import { api, errorMessage } from '../../lib/api';
 import Link from 'next/link';
 import Layout from '../../components/Layout';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000/api/v1';
 
 function statusBadge(status: string) {
   if (status === 'active')   return 'badge badge-success';
@@ -28,10 +27,10 @@ export default function AgentsPage() {
     setLoading(true);
     setError(null);
     try {
-      const res = await axios.get(`${API_URL}/agents?limit=100`);
+      const res = await api.get(`/agents?limit=100`);
       setAgents(Array.isArray(res.data) ? res.data : []);
     } catch (err: any) {
-      setError(err.response?.data?.error ?? err.message);
+      setError(errorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -41,10 +40,10 @@ export default function AgentsPage() {
     if (!confirm('Are you sure you want to delete this agent?')) return;
     setDeletingId(id);
     try {
-      await axios.delete(`${API_URL}/agents/${id}`);
+      await api.delete(`/agents/${id}`);
       setAgents((prev) => prev.filter((a) => a.id !== id));
     } catch (err: any) {
-      alert(err.response?.data?.error ?? err.message);
+      alert(errorMessage(err));
     } finally {
       setDeletingId(null);
     }
@@ -106,7 +105,7 @@ export default function AgentsPage() {
                           <Link href={`/agents/${agent.id}`} style={{ fontWeight: 600, color: 'var(--gray-900)' }}>
                             {agent.name}
                           </Link>
-                          <div className="text-sm text-muted code">{agent.id.slice(0, 10)}…</div>
+                          <div className="text-sm text-muted">{agent.config?.base_url}</div>
                         </div>
                       </div>
                     </td>
@@ -116,7 +115,7 @@ export default function AgentsPage() {
                         <span className="badge badge-info" style={{ marginLeft: 4 }}>salesforce</span>
                       )}
                     </td>
-                    <td className="text-sm">{agent.config?.ai?.provider ?? '—'}</td>
+                    <td className="text-sm">{agent.config?.ai?.provider || 'automatic'}</td>
                     <td><span className={statusBadge(agent.status)}>{agent.status}</span></td>
                     <td className="text-sm text-muted">{new Date(agent.createdAt).toLocaleDateString()}</td>
                     <td>

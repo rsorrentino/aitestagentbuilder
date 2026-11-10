@@ -1,3 +1,4 @@
+import v8 from 'v8';
 /**
  * Health Check Service
  */
@@ -87,10 +88,10 @@ export class HealthCheckService {
    * Check memory usage
    */
   private checkMemory(): HealthCheckResult {
-    const usage = process.memoryUsage();
-    const heapUsedMB = usage.heapUsed / 1024 / 1024;
-    const heapTotalMB = usage.heapTotal / 1024 / 1024;
-    const heapUsagePercent = (heapUsedMB / heapTotalMB) * 100;
+    // Compare against the V8 heap limit: heapUsed/heapTotal is routinely >90%
+    // because V8 grows heapTotal lazily, so it says nothing about pressure.
+    const { used_heap_size, heap_size_limit } = v8.getHeapStatistics();
+    const heapUsagePercent = (used_heap_size / heap_size_limit) * 100;
 
     // Warning if heap usage > 80%
     if (heapUsagePercent > 90) {
@@ -118,7 +119,7 @@ export class HealthCheckService {
    */
   async getReadiness(): Promise<boolean> {
     const health = await this.checkHealth();
-    return health.status !== 'unhealthy';
+    return health.checks.database.status !== 'error';
   }
 
   /**

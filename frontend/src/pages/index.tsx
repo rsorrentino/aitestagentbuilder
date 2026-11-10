@@ -3,12 +3,12 @@
  */
 
 import { useState, useEffect } from 'react';
-import axios from 'axios';
+import { api, errorMessage } from '../lib/api';
 import Link from 'next/link';
+import { useRouter } from 'next/router';
 import Layout from '../components/Layout';
 import ChatPanel from '../components/ChatPanel';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000/api/v1';
 
 function statusBadge(status: string) {
   const map: Record<string, string> = {
@@ -29,17 +29,34 @@ export default function Dashboard() {
   const [agents, setAgents] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [showChat, setShowChat] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [seeding, setSeeding] = useState(false);
+  const router = useRouter();
+
+  const tryDemo = async () => {
+    setSeeding(true);
+    try {
+      const res = await api.post('/demo/seed');
+      router.push(`/agents/${res.data.agentId}`);
+    } catch (err) {
+      setError(errorMessage(err));
+      setSeeding(false);
+    }
+  };
 
   useEffect(() => { fetchData(); }, []);
 
   const fetchData = async () => {
+    setError(null);
     try {
       const [runsRes, agentsRes] = await Promise.all([
-        axios.get(`${API_URL}/runs?limit=10`).catch(() => ({ data: [] })),
-        axios.get(`${API_URL}/agents?limit=100`).catch(() => ({ data: [] })),
+        api.get(`/runs?limit=10`).catch(() => ({ data: [] })),
+        api.get(`/agents?limit=100`).catch(() => ({ data: [] })),
       ]);
       setRuns(Array.isArray(runsRes.data) ? runsRes.data : []);
       setAgents(Array.isArray(agentsRes.data) ? agentsRes.data : []);
+    } catch (err) {
+      setError(errorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -61,7 +78,8 @@ export default function Dashboard() {
       >
         {showChat ? '✕ Close Chat' : '💬 AI Assistant'}
       </button>
-      <Link href="/wizard/salesforce" className="btn btn-secondary btn-sm">⚡ SF Wizard</Link>
+      <button className="btn btn-secondary btn-sm" onClick={tryDemo} disabled={seeding}>{seeding ? '…' : '🎮 Try the demo'}</button>
+      <Link href="/agents/new" className="btn btn-primary btn-sm">＋ New Agent</Link>
     </>
   );
 
@@ -75,12 +93,12 @@ export default function Dashboard() {
 
   return (
     <Layout title="Dashboard" actions={headerActions}>
+      {error && <div className="alert alert-error">⚠️ {error}</div>}
       {/* AI Chat Panel */}
       {showChat && (
         <div style={{ marginBottom: 24 }}>
           <ChatPanel
             agentContext={{ agents: agents.slice(0, 3), recentRuns: runs.slice(0, 3) }}
-            onTestsGenerated={(tests) => console.log('Generated:', tests)}
           />
         </div>
       )}
@@ -117,21 +135,24 @@ export default function Dashboard() {
         <div className="card">
           <div className="card-header">
             <h3>Recent Test Runs</h3>
-            <Link href="/agents" className="btn btn-primary btn-sm">＋ New Run</Link>
+            <Link href="/runs" className="btn btn-ghost btn-sm">All runs →</Link>
           </div>
           <div className="table-wrapper">
             {runs.length === 0 ? (
               <div className="empty-state">
                 <div className="empty-icon">🚀</div>
                 <h3>No test runs yet</h3>
-                <p>Create an agent and trigger your first automated test run.</p>
-                <Link href="/agents" className="btn btn-primary btn-sm">Create Agent</Link>
+                <p>Create an agent and trigger your first automated test run — or load the built-in demo app with ready-made tests.</p>
+                <div className="flex gap-3">
+                  <button className="btn btn-primary btn-sm" onClick={tryDemo} disabled={seeding}>{seeding ? 'Loading…' : '🎮 Try the demo'}</button>
+                  <Link href="/agents/new" className="btn btn-secondary btn-sm">Create Agent</Link>
+                </div>
               </div>
             ) : (
               <table className="data-table">
                 <thead>
                   <tr>
-                    <th>Run ID</th>
+                    <th>Agent</th>
                     <th>Status</th>
                     <th>Passed</th>
                     <th>Failed</th>
@@ -143,14 +164,14 @@ export default function Dashboard() {
                   {runs.map((run) => (
                     <tr key={run.id}>
                       <td>
-                        <Link href={`/runs/${run.id}`} className="code">{run.id.slice(0, 8)}…</Link>
+                        <Link href={`/runs/${run.id}`}>{run.agentName ?? 'Run'}</Link>
                       </td>
                       <td><span className={statusBadge(run.status)}>{run.status}</span></td>
                       <td className="text-success fw-600">{run.passedTests ?? 0}</td>
                       <td className="text-danger fw-600">{run.failedTests ?? 0}</td>
                       <td className="text-sm text-muted">{new Date(run.startedAt).toLocaleString()}</td>
                       <td>
-                        <Link href={`/live?runId=${run.id}`} className="btn btn-ghost btn-sm">▶ Live</Link>
+                        <Link href={run.status === 'running' || run.status === 'pending' ? `/live?runId=${run.id}` : `/runs/${run.id}`} className="btn btn-ghost btn-sm">{run.status === 'running' || run.status === 'pending' ? '▶ Live' : 'Details'}</Link>
                       </td>
                     </tr>
                   ))}
@@ -200,13 +221,15 @@ export default function Dashboard() {
             ) : (
               <div className="card-body" style={{ padding: 0 }}>
                 {agents.slice(0, 5).map((agent, i) => (
-                  <div
+                  <Link
+                    href={`/agents/${agent.id}`}
                     key={agent.id}
                     style={{
                       display: 'flex',
                       alignItems: 'center',
                       gap: 10,
                       padding: '10px 18px',
+                      color: 'inherit',
                       borderBottom: i < Math.min(agents.length, 5) - 1 ? '1px solid var(--gray-100)' : 'none',
                     }}
                   >
@@ -214,10 +237,10 @@ export default function Dashboard() {
                       <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {agent.name}
                       </div>
-                      <div className="text-sm text-muted">{agent.config?.application_type ?? 'web'}</div>
+                      <div className="text-sm text-muted">{agent.config?.base_url}</div>
                     </div>
                     <span className={statusBadge(agent.status)}>{agent.status}</span>
-                  </div>
+                  </Link>
                 ))}
               </div>
             )}

@@ -1,18 +1,22 @@
 /**
  * LLM Router
  *
- * Routes LLM calls to the optimal provider based on task type and falls back
- * to the next available provider on error.
+ * Routes LLM calls to the best configured provider for a task type and falls
+ * back to the next configured provider on error.
  *
  * Task routing defaults:
- *   - "extraction"  → Claude (best for structured document understanding)
- *   - "codegen"     → Copilot (best for generating code/test scripts)
+ *   - "extraction"  → Claude (structured document understanding)
+ *   - "codegen"     → Copilot
  *   - "embedding"   → OpenAI (only provider with an embeddings endpoint)
- *   - "chat"        → configured default provider
- *   - "healing"     → Claude (best multi-step reasoning)
+ *   - "chat"        → Claude
+ *   - "healing"     → Claude
+ *
+ * LLM_PROVIDER (openai | anthropic/claude | copilot | azure) overrides the
+ * primary provider for every task.
  */
 
-import { LLMClient, LLMMessage, LLMResponse, LLMProvider } from './client.js';
+import { LLMClient, LLMMessage, LLMResponse, LLMProvider, normalizeProvider } from './client.js';
+import { isCopilotConfigured } from './copilot.js';
 import logger from '../logger/index.js';
 
 export type TaskType = 'extraction' | 'codegen' | 'chat' | 'embedding' | 'healing';
@@ -21,7 +25,7 @@ export interface ProviderStatus {
   provider: LLMProvider;
   model: string;
   configured: boolean;
-  healthy: boolean;
+  healthy: boolean | null;
   lastChecked?: Date;
   error?: string;
 }
@@ -31,55 +35,78 @@ interface RouteConfig {
   fallback: LLMProvider[];
 }
 
+const ALL_PROVIDERS: LLMProvider[] = ['anthropic', 'openai', 'copilot', 'azure'];
+
 const TASK_ROUTES: Record<TaskType, RouteConfig> = {
-  extraction: { primary: 'anthropic', fallback: ['openai', 'copilot'] },
-  codegen:    { primary: 'copilot',   fallback: ['openai', 'anthropic'] },
-  embedding:  { primary: 'openai',    fallback: ['openai'] },
-  chat:       { primary: 'anthropic', fallback: ['copilot', 'openai'] },
-  healing:    { primary: 'anthropic', fallback: ['copilot', 'openai'] },
+  extraction: { primary: 'anthropic', fallback: ['openai', 'azure', 'copilot'] },
+  codegen:    { primary: 'copilot',   fallback: ['openai', 'anthropic', 'azure'] },
+  embedding:  { primary: 'openai',    fallback: [] },
+  chat:       { primary: 'anthropic', fallback: ['openai', 'azure', 'copilot'] },
+  healing:    { primary: 'anthropic', fallback: ['openai', 'azure', 'copilot'] },
 };
 
+export class NoLLMProviderError extends Error {
+  constructor() {
+    super(
+      'No AI provider is configured. Set at least one of ANTHROPIC_API_KEY, OPENAI_API_KEY, ' +
+      'GITHUB_TOKEN / COPILOT_MODE=cli|sdk (GitHub Copilot) or AZURE_OPENAI_API_KEY + AZURE_OPENAI_ENDPOINT in your .env and restart the backend.'
+    );
+    this.name = 'NoLLMProviderError';
+  }
+}
+
+export function isProviderConfigured(provider: LLMProvider): boolean {
+  switch (provider) {
+    case 'openai':    return !!process.env.OPENAI_API_KEY;
+    case 'azure':     return !!(process.env.AZURE_OPENAI_API_KEY && process.env.AZURE_OPENAI_ENDPOINT);
+    case 'anthropic': return !!process.env.ANTHROPIC_API_KEY;
+    case 'copilot':   return isCopilotConfigured();
+    default:          return false;
+  }
+}
+
 export class LLMRouter {
-  /** Cache of LLMClient instances keyed by provider */
   private clients: Map<LLMProvider, LLMClient> = new Map();
-  /** Override primary provider at router level */
   private defaultProvider?: LLMProvider;
 
   constructor(defaultProvider?: LLMProvider) {
     this.defaultProvider = defaultProvider;
   }
 
-  // ------------------------------------------------------------------
-  // Public API
-  // ------------------------------------------------------------------
-
-  /**
-   * Route a chat completion to the best available provider for the given task.
-   */
-  async chat(messages: LLMMessage[], task: TaskType = 'chat'): Promise<LLMResponse & { provider: LLMProvider }> {
-    const route = this.resolveRoute(task);
-    const providers = [route.primary, ...route.fallback];
-
-    for (const provider of providers) {
-      const client = this.getClient(provider);
-      if (!client) continue;
-
-      try {
-        const response = await client.chat(messages);
-        return { ...response, provider };
-      } catch (err: any) {
-        logger.warn(`LLM provider ${provider} failed for task ${task}, trying fallback`, {
-          error: err.message,
-        });
-      }
-    }
-
-    throw new Error(`All LLM providers exhausted for task: ${task}`);
+  /** True when at least one provider has credentials. */
+  hasAnyProvider(): boolean {
+    return ALL_PROVIDERS.some(isProviderConfigured);
   }
 
   /**
-   * Generate embeddings — always uses OpenAI.
+   * Route a chat completion to the best available provider for the given task.
+   * `preferred` (e.g. from an agent's config) is tried first when configured.
    */
+  async chat(
+    messages: LLMMessage[],
+    task: TaskType = 'chat',
+    options?: { preferred?: string; maxTokens?: number },
+  ): Promise<LLMResponse & { provider: LLMProvider }> {
+    const providers = this.providerOrder(task, normalizeProvider(options?.preferred));
+    if (providers.length === 0) {
+      throw new NoLLMProviderError();
+    }
+
+    const errors: string[] = [];
+    for (const provider of providers) {
+      const client = this.getClient(provider)!;
+      try {
+        const response = await client.chat(messages, { maxTokens: options?.maxTokens });
+        return { ...response, provider };
+      } catch (err: any) {
+        errors.push(`${provider}: ${err.message}`);
+        logger.warn(`LLM provider ${provider} failed for task ${task}`, { error: err.message });
+      }
+    }
+
+    throw new Error(`All configured AI providers failed — ${errors.join(' | ')}`);
+  }
+
   async generateEmbedding(text: string): Promise<number[]> {
     const client = this.getClient('openai');
     if (!client) throw new Error('OpenAI not configured — required for embeddings');
@@ -87,68 +114,45 @@ export class LLMRouter {
   }
 
   /**
-   * Return health/configuration status for every known provider.
+   * Configuration status for every provider. With `check=true` a tiny live
+   * request is sent to each configured provider to verify the credentials.
    */
-  async getProviderStatuses(): Promise<ProviderStatus[]> {
-    const providers: LLMProvider[] = ['openai', 'azure', 'anthropic', 'copilot'];
-    const statuses: ProviderStatus[] = [];
+  async getProviderStatuses(check = false): Promise<ProviderStatus[]> {
+    return Promise.all(ALL_PROVIDERS.map(async (provider): Promise<ProviderStatus> => {
+      const configured = isProviderConfigured(provider);
+      const client = configured ? this.getClient(provider) : undefined;
+      const status: ProviderStatus = {
+        provider,
+        model: client?.getModel() ?? '',
+        configured,
+        healthy: configured ? null : false,
+      };
 
-    for (const provider of providers) {
-      const configured = this.isConfigured(provider);
-      let healthy = false;
-      let error: string | undefined;
-      let model = '';
-
-      if (configured) {
-        const client = this.getClient(provider);
-        model = client?.getModel() ?? '';
+      if (configured && check) {
+        status.lastChecked = new Date();
         try {
-          await client!.chat([{ role: 'user', content: 'ping' }]);
-          healthy = true;
+          await withTimeout(client!.chat([{ role: 'user', content: 'Reply with the single word: pong' }], { maxTokens: 16 }), 30000);
+          status.healthy = true;
         } catch (err: any) {
-          error = err.message;
+          status.healthy = false;
+          status.error = err.message;
         }
       }
-
-      statuses.push({
-        provider,
-        model,
-        configured,
-        healthy,
-        lastChecked: new Date(),
-        error,
-      });
-    }
-
-    return statuses;
+      return status;
+    }));
   }
 
-  // ------------------------------------------------------------------
-  // Private helpers
-  // ------------------------------------------------------------------
-
-  private resolveRoute(task: TaskType): RouteConfig {
+  /** Providers to try, in order, that actually have credentials. */
+  providerOrder(task: TaskType, preferred?: LLMProvider): LLMProvider[] {
     const base = TASK_ROUTES[task] ?? TASK_ROUTES.chat;
-    if (this.defaultProvider) {
-      // Honour router-level override as primary, keep original primary as fallback
-      const fallback = [base.primary, ...base.fallback].filter(p => p !== this.defaultProvider);
-      return { primary: this.defaultProvider, fallback };
-    }
-    return base;
-  }
-
-  private isConfigured(provider: LLMProvider): boolean {
-    switch (provider) {
-      case 'openai':   return !!process.env.OPENAI_API_KEY;
-      case 'azure':    return !!(process.env.AZURE_OPENAI_API_KEY && process.env.AZURE_OPENAI_ENDPOINT);
-      case 'anthropic': return !!process.env.ANTHROPIC_API_KEY;
-      case 'copilot':  return !!process.env.GITHUB_TOKEN;
-      default:         return false;
-    }
+    const ordered = [preferred, this.defaultProvider, base.primary, ...base.fallback]
+      .filter((p): p is LLMProvider => !!p);
+    if (task !== 'embedding') ordered.push(...ALL_PROVIDERS);
+    return [...new Set(ordered)].filter(isProviderConfigured);
   }
 
   private getClient(provider: LLMProvider): LLMClient | undefined {
-    if (!this.isConfigured(provider)) return undefined;
+    if (!isProviderConfigured(provider)) return undefined;
     if (!this.clients.has(provider)) {
       this.clients.set(provider, new LLMClient({ provider }));
     }
@@ -156,13 +160,21 @@ export class LLMRouter {
   }
 }
 
-// Singleton router instance
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`timed out after ${ms / 1000}s`)), ms);
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); },
+    );
+  });
+}
+
 let routerInstance: LLMRouter | null = null;
 
 export function getLLMRouter(): LLMRouter {
   if (!routerInstance) {
-    const defaultProvider = (process.env.LLM_PROVIDER as LLMProvider) || undefined;
-    routerInstance = new LLMRouter(defaultProvider);
+    routerInstance = new LLMRouter(normalizeProvider(process.env.LLM_PROVIDER));
   }
   return routerInstance;
 }

@@ -13,9 +13,10 @@ export interface RateLimitConfig {
   blockDuration?: number; // Block duration in seconds
 }
 
-const redisClient = process.env.REDIS_URL 
-  ? new Redis(process.env.REDIS_URL)
+const redisClient = process.env.REDIS_URL
+  ? new Redis(process.env.REDIS_URL, { lazyConnect: false, maxRetriesPerRequest: 1, enableOfflineQueue: false })
   : null;
+redisClient?.on('error', (err) => logger.debug('Redis rate-limit store unavailable', { error: err.message }));
 
 /**
  * Create rate limiter instance
@@ -29,6 +30,8 @@ function createRateLimiter(config: RateLimitConfig) {
       points: config.points,
       duration: config.duration,
       blockDuration: config.blockDuration || 0,
+      // Falls back to memory when Redis is unreachable
+      insuranceLimiter: new RateLimiterMemory({ points: config.points, duration: config.duration }),
     });
   } else {
     // Use in-memory rate limiting (single instance)
@@ -41,10 +44,10 @@ function createRateLimiter(config: RateLimitConfig) {
 }
 
 /**
- * Default rate limiter: 100 requests per 15 minutes
+ * Default rate limiter: 1000 requests per 15 minutes per client
  */
 const defaultLimiter = createRateLimiter({
-  points: parseInt(process.env.RATE_LIMIT_POINTS || '100'),
+  points: parseInt(process.env.RATE_LIMIT_POINTS || '1000'),
   duration: parseInt(process.env.RATE_LIMIT_DURATION || '900'), // 15 minutes
 });
 
@@ -52,16 +55,16 @@ const defaultLimiter = createRateLimiter({
  * Strict rate limiter: 10 requests per minute
  */
 const strictLimiter = createRateLimiter({
-  points: 10,
+  points: 20,
   duration: 60,
   blockDuration: 60,
 });
 
 /**
- * Upload rate limiter: 5 requests per hour
+ * Upload rate limiter: 60 uploads per hour
  */
 const uploadLimiter = createRateLimiter({
-  points: 5,
+  points: parseInt(process.env.RATE_LIMIT_UPLOADS || '60'),
   duration: 3600,
 });
 
@@ -81,6 +84,11 @@ export function rateLimit(limiter = defaultLimiter) {
       
       next();
     } catch (error: any) {
+      if (error instanceof Error) {
+        // Store failure, not a rate-limit rejection: fail open.
+        logger.warn('Rate limiter error, allowing request', { error: error.message });
+        return next();
+      }
       const secs = Math.round(error.msBeforeNext / 1000) || 1;
       
       res.setHeader('Retry-After', String(secs));

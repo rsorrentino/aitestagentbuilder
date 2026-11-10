@@ -1,126 +1,115 @@
-# Agent Development Guide
+# Agents guide
 
-## Agent Configuration
+An **agent** describes an application under test and which test cases to run against it. Test cases live in a shared library. Each agent selects from it with filters.
 
-Agents are configured via YAML files:
+## Configuration
 
 ```yaml
-agent_name: "MyAgent"
-application_type: "web"  # web, api, mobile, hybrid
-base_url: "https://staging.myapp.com"
-test_selection:
-  module: ["Authentication"]
-  priority: ["High", "Critical"]
-  tags: ["login"]
-tools:
-  browser: "playwright"
-  http: "axios"
-reporting:
-  formats: ["json", "html"]
+agent_name: "Checkout tester"          # unique name
+application_type: "web"                # web (executed by the built-in Playwright executor)
+base_url: "https://staging.myapp.com"  # relative step targets resolve against this
 environment: "staging"
-max_parallel_tests: 5
-```
-
-## Creating Custom Agents
-
-### 1. Define Configuration
-
-Create a YAML file in `configs/`:
-
-```yaml
-agent_name: "CustomAgent"
-application_type: "web"
-base_url: "https://example.com"
-test_selection:
+test_selection:                        # empty / omitted lists = no filter; filters are combined (AND)
   module: ["Checkout"]
-tools:
-  browser: "playwright"
+  priority: ["High", "Critical"]
+  tags: ["smoke"]
+  type: ["Functional"]
+  testIds: []                          # restrict to these test case IDs (combined with the filters)
+ai:
+  provider: "copilot"                  # anthropic | openai | azure | copilot | (empty = automatic)
+  self_healing: true                   # ask the AI for a new selector when one breaks
+retries: 1                             # re-run failed tests (0–3)
+salesforce:                            # only for Salesforce agents (salesforce_login step)
+  username: "${SF_USERNAME}"
+  password: "${SF_PASSWORD}"
 ```
 
-### 2. Register Agent
+The UI form, the API (`POST /api/v1/agents` with `{ name, config }`) and the CLI all accept this shape. `${VAR}` placeholders in YAML files are replaced with environment variables by the CLI.
 
-```bash
-# Via API
-curl -X POST http://localhost:3000/api/v1/agents \
-  -H "Content-Type: application/json" \
-  -d @configs/custom-agent.yml
+The agent page shows **Tests in the next run**: exactly what the planner will execute (`GET /api/v1/agents/:id/plan`). Tests run in priority order: Critical, High, Medium, Low, then module, then title.
 
-# Via CLI
-npm run cli -- run --config configs/custom-agent.yml
-```
+## Getting test cases
 
-## Test Case Structure
+| Source | How | Notes |
+|---|---|---|
+| Manual | Test Cases → New Test Case, or `POST /testcases` | Step editor with action suggestions |
+| Document | Documents → upload → Extract Tests | AI turns prose, tables or spreadsheets into executable steps |
+| AI generation | Agent → 🤖 Generate Tests | AI opens `base_url`, lists the real interactive elements and selectors, writes tests tagged `agent:<id>` and `ai-generated` |
+| Chat | Dashboard → 💬 AI Assistant | Ask for tests, then "Save to Test Cases" |
 
-Test cases follow this structure:
+## Test case structure
 
 ```json
 {
-  "id": "TC-001",
-  "title": "User Login",
+  "title": "User login",
   "module": "Authentication",
+  "priority": "High",
+  "type": "Functional",
+  "tags": ["login"],
   "steps": [
-    {
-      "stepId": 1,
-      "action": "Navigate to login page",
-      "target": "/login"
-    },
-    {
-      "stepId": 2,
-      "action": "Enter username",
-      "target": "#username",
-      "data": {"value": "testuser"}
-    }
+    { "action": "navigate", "target": "/login" },
+    { "action": "fill", "target": "#username", "data": { "value": "demo" } },
+    { "action": "fill", "target": "Password", "data": { "value": "demo123" } },
+    { "action": "click", "target": "Sign in button" },
+    { "action": "assert_text", "target": "#welcome", "data": { "value": "Welcome" } }
   ],
-  "expectedResults": [
-    "User is redirected to dashboard",
-    "Welcome message is displayed"
-  ],
-  "priority": "High"
+  "expectedResults": ["User reaches the dashboard"]
 }
 ```
 
-## Action Mapping
+## Step actions
 
-### Web Actions (Playwright)
-- `navigate` / `go to` → Navigate to URL
-- `click` → Click element
-- `fill` / `enter` / `type` → Fill input field
-- `select` → Select dropdown option
-- `get text` / `read` → Get element text
-- `wait` → Wait for element
-- `screenshot` → Capture screenshot
+| Action | Target | Value (`data.value`) |
+|---|---|---|
+| `navigate` | URL, or a path relative to `base_url` | |
+| `click`, `hover` | selector | |
+| `fill` | selector | text |
+| `select` | `<select>` selector | option label or value |
+| `check`, `uncheck` | checkbox selector | |
+| `press` | optional selector | key (`Enter`, `Tab`, …) |
+| `wait` | selector to become visible | or `data.ms` milliseconds |
+| `assert_visible` | selector | |
+| `assert_text` | optional element (page body if empty) | expected text |
+| `assert_url` | | substring of the URL |
+| `assert_title` | | substring of the title |
+| `screenshot` | | |
+| `salesforce_login` | optional login URL | uses `config.salesforce` |
+| `wait_for_lightning` | | waits for Salesforce Lightning spinners |
 
-### API Actions (HTTP)
-- `get` → GET request
-- `post` → POST request
-- `put` → PUT request
-- `delete` → DELETE request
+**Natural language works too.** "Navigate to the login page", "Enter username", "Click the Sign in button", "Verify the URL contains /dashboard" and "Check that the welcome message is displayed" map to the actions above. Steps with no recognisable action are marked **skipped** (not failed). A test with only skipped steps is reported as skipped.
 
-### Mobile Actions (Appium)
-- `click` / `tap` → Tap element
-- `fill` / `enter` / `type` → Enter text
-- `get text` / `read` → Read element text
-- `swipe` → Swipe gesture
-- `screenshot` → Capture screenshot
+**Targets** can be:
 
-## Validation
+- CSS: `#id`, `.class`, `input[name="email"]`, `[data-testid="save"]`
+- Playwright selectors: `text=Sign in`, `role=button[name="Save"]`, `xpath=//button`
+- Plain labels: `Sign in button`, `Email`, `Search`. These resolve in priority order: form label, placeholder, button, link, then visible text.
 
-Validation happens at two levels:
+## Running
 
-1. **Step-level**: Each step can have an `expectedResult`
-2. **Test-level**: Final `expectedResults` array validates overall outcome
+- UI: agent page → **▶ Start Run**, then follow it in the live view.
+- API: `POST /api/v1/runs { "agentId": "...", "testIds": ["optional subset"] }`.
+- CLI / CI:
 
-Validation strategies:
-- Status code matching
-- Text content checking
-- URL validation
-- Element visibility
+  ```bash
+  cd backend
+  npm run cli -- run -c ../configs/my-agent.yml -o ./reports -f html,junit
+  ```
 
-## Best Practices
+  It exits with code 1 when any test fails, so it works as a CI gate. Publish `reports/report-<run>.xml` as JUnit.
 
-1. **Clear Actions**: Use descriptive action names
-2. **Stable Selectors**: Prefer IDs or data-testid attributes
-3. **Data Separation**: Keep test data in `data` field
-4. **Preconditions**: Document required setup steps
-5. **Priority**: Set appropriate priority levels
+## Self-healing
 
+When a step fails on a selector (timeout, element not found), self-healing is enabled for the agent, and an AI provider is configured, the executor:
+
+1. captures an outline of the current page (interactive elements with suggested selectors),
+2. asks the AI for a replacement selector (`healing` task),
+3. retries the step once with it.
+
+A healed step passes with the note `(self-healed from "<old selector>")`. The run details show `old → new` in the target column. Update the test case with the new selector to make the fix permanent.
+
+## Best practices
+
+- Prefer stable selectors: `id`, `name`, `data-testid`, or form labels.
+- End every test with at least one `assert_*` step. A test without assertions only proves the page did not crash.
+- Keep tests independent: each one gets a fresh browser context, with no cookies or storage carried over.
+- Use modules and tags to build focused agents (smoke vs regression).

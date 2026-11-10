@@ -1,38 +1,43 @@
 /**
- * Database Migration Script
- * 
- * Run this to initialize the database schema
+ * Database migrations (idempotent).
+ *
+ * `runMigrations()` is called on every server start; `npm run db:migrate`
+ * runs it standalone.
  */
 
-import { readFileSync } from 'fs';
-import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { DatabaseClient } from './client.js';
 import getDatabaseClient from './client.js';
+import { CORE_SCHEMA, VECTOR_SCHEMA } from './schema.js';
+import logger from '../logger/index.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+export async function runMigrations(db: DatabaseClient = getDatabaseClient()): Promise<{ vector: boolean }> {
+  await db.query(CORE_SCHEMA);
 
-async function migrate() {
-  const db = getDatabaseClient();
-  
-  try {
-    console.log('Starting database migration...');
-    
-    // Read schema file
-    const schemaPath = join(__dirname, 'schema.sql');
-    const schema = readFileSync(schemaPath, 'utf-8');
-    
-    // Execute schema
-    await db.query(schema);
-    
-    console.log('✅ Database migration completed successfully');
-  } catch (error) {
-    console.error('❌ Migration failed:', error);
-    process.exit(1);
-  } finally {
-    await db.close();
+  // pgvector is optional; probe first so a missing extension is not logged as an error.
+  let vector = false;
+  const available = await db.query(`SELECT 1 FROM pg_available_extensions WHERE name = 'vector'`);
+  if (available.rows.length > 0) {
+    try {
+      await db.query(VECTOR_SCHEMA);
+      vector = true;
+    } catch (error: any) {
+      logger.warn('pgvector could not be enabled — semantic search disabled', { reason: error.message });
+    }
   }
+  return { vector };
 }
 
-migrate();
-
+const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+if (isMain) {
+  const db = getDatabaseClient();
+  runMigrations(db)
+    .then(({ vector }) => {
+      console.log(`✅ Database migration completed${vector ? ' (pgvector enabled)' : ' (pgvector not installed — optional)'}`);
+    })
+    .catch((error) => {
+      console.error('❌ Migration failed:', error.message);
+      process.exitCode = 1;
+    })
+    .finally(() => db.close());
+}

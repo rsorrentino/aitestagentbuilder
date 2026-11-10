@@ -377,10 +377,8 @@ class TestAgentMCPServer {
         const agentResponse = await axios.get(`${this.apiUrl}/agents/${agentId}`);
         const agent = agentResponse.data;
 
-        // Create a temporary run to get the plan
-        const runResponse = await axios.post(`${this.apiUrl}/runs`, {
-          agentId,
-        });
+        // Preview the plan without starting a run
+        const planResponse = await axios.get(`${this.apiUrl}/agents/${agentId}/plan`);
 
         return {
           content: [
@@ -389,10 +387,11 @@ class TestAgentMCPServer {
               text: JSON.stringify(
                 {
                   success: true,
-                  runId: runResponse.data.id,
                   plan: {
-                    strategy: `Using agent: ${agent.name}`,
-                    tests: runResponse.data.totalTests || 0,
+                    agent: agent.name,
+                    strategy: planResponse.data.strategy,
+                    tests: planResponse.data.count,
+                    testCases: planResponse.data.testCases,
                   },
                 },
                 null,

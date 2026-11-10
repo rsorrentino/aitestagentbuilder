@@ -35,7 +35,7 @@ export class RunRepository {
   }
 
   async findRunById(id: string): Promise<TestRun | null> {
-    const runQuery = 'SELECT * FROM runs WHERE id = $1';
+    const runQuery = 'SELECT r.*, a.name AS agent_name FROM runs r LEFT JOIN agents a ON a.id = r.agent_id WHERE r.id = $1';
     const runResult = await this.db.query(runQuery, [id]);
     
     if (runResult.rows.length === 0) return null;
@@ -58,8 +58,13 @@ export class RunRepository {
       values.push(input.finishedAt);
     }
     if (input.metadata !== undefined) {
-      updates.push(`metadata = $${paramCount++}`);
+      // merge with existing metadata
+      updates.push(`metadata = COALESCE(metadata, '{}'::jsonb) || $${paramCount++}::jsonb`);
       values.push(JSON.stringify(input.metadata));
+    }
+    if (input.totalTests !== undefined) {
+      updates.push(`total_tests = $${paramCount++}`);
+      values.push(input.totalTests);
     }
 
     if (updates.length > 0) {
@@ -80,31 +85,37 @@ export class RunRepository {
     return this.findRunById(id);
   }
 
+  /**
+   * Recompute pass/fail counters from the latest attempt of each test case.
+   * total_tests keeps the planned count when it is larger.
+   */
   async updateRunStats(id: string): Promise<void> {
     const statsQuery = `
-      SELECT 
+      WITH latest AS (
+        SELECT DISTINCT ON (test_case_id) status
+        FROM results
+        WHERE run_id = $1
+        ORDER BY test_case_id, started_at DESC
+      )
+      SELECT
         COUNT(*) as total_tests,
         COUNT(*) FILTER (WHERE status = 'passed') as passed_tests,
-        COUNT(*) FILTER (WHERE status = 'failed' OR status = 'error') as failed_tests,
+        COUNT(*) FILTER (WHERE status IN ('failed', 'error', 'timeout')) as failed_tests,
         COUNT(*) FILTER (WHERE status = 'skipped') as skipped_tests
-      FROM results
-      WHERE run_id = $1
+      FROM latest
     `;
     const stats = await this.db.query(statsQuery, [id]);
-    
-    if (stats.rows.length > 0) {
-      const row = stats.rows[0];
-      await this.db.query(
-        `UPDATE runs SET total_tests = $1, passed_tests = $2, failed_tests = $3, skipped_tests = $4 WHERE id = $5`,
-        [
-          parseInt(row.total_tests),
-          parseInt(row.passed_tests),
-          parseInt(row.failed_tests),
-          parseInt(row.skipped_tests),
-          id,
-        ]
-      );
-    }
+    const row = stats.rows[0];
+    await this.db.query(
+      `UPDATE runs SET total_tests = GREATEST(total_tests, $1), passed_tests = $2, failed_tests = $3, skipped_tests = $4 WHERE id = $5`,
+      [
+        parseInt(row.total_tests),
+        parseInt(row.passed_tests),
+        parseInt(row.failed_tests),
+        parseInt(row.skipped_tests),
+        id,
+      ]
+    );
   }
 
   async createResult(input: TestResultCreateInput): Promise<TestResult> {
@@ -112,8 +123,8 @@ export class RunRepository {
 
     const query = `
       INSERT INTO results (
-        id, run_id, test_case_id, status, started_at, logs, error
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+        id, run_id, test_case_id, status, started_at, logs, error, metadata
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
       RETURNING *
     `;
 
@@ -125,6 +136,7 @@ export class RunRepository {
       input.startedAt,
       input.logs ? JSON.stringify(input.logs) : null,
       input.error || null,
+      input.metadata ? JSON.stringify(input.metadata) : null,
     ]);
 
     return this.mapRowToResult(result.rows[0]);
@@ -163,6 +175,10 @@ export class RunRepository {
       updates.push(`validation_results = $${paramCount++}`);
       values.push(JSON.stringify(input.validationResults));
     }
+    if (input.metadata !== undefined) {
+      updates.push(`metadata = $${paramCount++}`);
+      values.push(JSON.stringify(input.metadata));
+    }
 
     if (updates.length === 0) {
       return this.findResultById(id);
@@ -195,38 +211,46 @@ export class RunRepository {
     return result.rows.map(row => this.mapRowToResult(row));
   }
 
+  /** Run summaries (without per-test results), newest first. */
   async findByAgentId(agentId: string, limit: number = 50): Promise<TestRun[]> {
-    const query = 'SELECT * FROM runs WHERE agent_id = $1 ORDER BY started_at DESC LIMIT $2';
-    const result = await this.db.query(query, [agentId, limit]);
-    
-    const runs: TestRun[] = [];
-    for (const row of result.rows) {
-      const results = await this.findResultsByRunId(row.id);
-      runs.push(this.mapRowToRun(row, results));
-    }
-    return runs;
+    const result = await this.db.query(
+      `SELECT r.*, a.name AS agent_name FROM runs r LEFT JOIN agents a ON a.id = r.agent_id
+        WHERE r.agent_id = $1 ORDER BY r.started_at DESC LIMIT $2`,
+      [agentId, limit],
+    );
+    return result.rows.map(row => this.mapRowToRun(row, []));
   }
 
+  /** Run summaries (without per-test results), newest first. */
   async findAll(limit: number = 50): Promise<TestRun[]> {
-    const query = 'SELECT * FROM runs ORDER BY started_at DESC LIMIT $1';
-    const result = await this.db.query(query, [limit]);
+    const result = await this.db.query(
+      `SELECT r.*, a.name AS agent_name FROM runs r LEFT JOIN agents a ON a.id = r.agent_id
+        ORDER BY r.started_at DESC LIMIT $1`,
+      [limit],
+    );
+    return result.rows.map(row => this.mapRowToRun(row, []));
+  }
 
-    const runs: TestRun[] = [];
-    for (const row of result.rows) {
-      const results = await this.findResultsByRunId(row.id);
-      runs.push(this.mapRowToRun(row, results));
-    }
-    return runs;
+  /** Runs left in pending/running state by a previous process are marked failed. */
+  async failInterruptedRuns(): Promise<number> {
+    const result = await this.db.query(
+      `UPDATE runs SET status = 'failed', finished_at = NOW(),
+              metadata = COALESCE(metadata, '{}'::jsonb) || '{"error": "Interrupted: the server restarted while the run was in progress"}'::jsonb
+        WHERE status IN ('pending', 'running')`,
+    );
+    await this.db.query(`UPDATE results SET status = 'error', error = 'Interrupted by server restart', finished_at = NOW() WHERE status = 'running'`);
+    return result.rowCount ?? 0;
   }
 
   private mapRowToRun(row: any, results: TestResult[]): TestRun {
     const finishedAt = row.finished_at ? new Date(row.finished_at) : undefined;
     const startedAt = new Date(row.started_at);
-    const duration = finishedAt ? finishedAt.getTime() - startedAt.getTime() : undefined;
+    const duration = finishedAt ? finishedAt.getTime() - startedAt.getTime() : Date.now() - startedAt.getTime();
 
     return {
       id: row.id,
       agentId: row.agent_id,
+      agentName: row.agent_name ?? undefined,
       status: row.status,
       startedAt,
       finishedAt,
@@ -243,7 +267,7 @@ export class RunRepository {
   private mapRowToResult(row: any): TestResult {
     const finishedAt = row.finished_at ? new Date(row.finished_at) : undefined;
     const startedAt = new Date(row.started_at);
-    const duration = row.duration || (finishedAt ? finishedAt.getTime() - startedAt.getTime() : undefined);
+    const duration = (row.duration !== null && row.duration !== undefined ? Number(row.duration) : undefined) ?? (finishedAt ? finishedAt.getTime() - startedAt.getTime() : undefined);
 
     return {
       id: row.id,

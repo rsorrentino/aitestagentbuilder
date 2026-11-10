@@ -26,14 +26,13 @@ export class JWTService {
   private refreshTokenExpiry: string;
 
   constructor() {
-    this.accessTokenSecret = process.env.JWT_ACCESS_SECRET || this.generateSecret();
-    this.refreshTokenSecret = process.env.JWT_REFRESH_SECRET || this.generateSecret();
-    this.accessTokenExpiry = process.env.JWT_ACCESS_EXPIRY || '15m';
+    // All instances must share the same secrets, otherwise a token issued by
+    // one instance (login) cannot be verified by another (middleware).
+    const base = process.env.JWT_SECRET || getProcessSecret();
+    this.accessTokenSecret = process.env.JWT_ACCESS_SECRET || `${base}:access`;
+    this.refreshTokenSecret = process.env.JWT_REFRESH_SECRET || `${base}:refresh`;
+    this.accessTokenExpiry = process.env.JWT_ACCESS_EXPIRY || process.env.JWT_EXPIRES_IN || '12h';
     this.refreshTokenExpiry = process.env.JWT_REFRESH_EXPIRY || '7d';
-
-    if (!process.env.JWT_ACCESS_SECRET || !process.env.JWT_REFRESH_SECRET) {
-      logger.warn('JWT secrets not configured, using generated secrets. Set JWT_ACCESS_SECRET and JWT_REFRESH_SECRET in production!');
-    }
   }
 
   /**
@@ -103,8 +102,32 @@ export class JWTService {
     return crypto.timingSafeEqual(Buffer.from(hash), Buffer.from(hashedKey));
   }
 
-  private generateSecret(): string {
-    return crypto.randomBytes(64).toString('hex');
+}
+
+let processSecret: string | null = null;
+function getProcessSecret(): string {
+  if (!processSecret) {
+    processSecret = crypto.randomBytes(64).toString('hex');
+    logger.warn('JWT_SECRET not set — using a random per-process secret (tokens reset on restart).');
   }
+  return processSecret;
+}
+
+/** Password hashing with scrypt (salted). Format: scrypt$<salt>$<hash> */
+export function hashPassword(password: string): string {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
+  return `scrypt$${salt}$${hash}`;
+}
+
+export function verifyPassword(password: string, stored: string): boolean {
+  if (stored.startsWith('scrypt$')) {
+    const [, salt, hash] = stored.split('$');
+    const candidate = crypto.scryptSync(password, salt, 64);
+    const expected = Buffer.from(hash, 'hex');
+    return expected.length === candidate.length && crypto.timingSafeEqual(candidate, expected);
+  }
+  // Legacy unsalted sha256 hashes
+  return crypto.createHash('sha256').update(password).digest('hex') === stored;
 }
 
