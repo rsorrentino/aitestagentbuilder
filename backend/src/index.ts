@@ -1,97 +1,74 @@
 /**
- * Main Application Entry Point
+ * Server entry point.
  */
 
-import express from 'express';
-import cors from 'cors';
-import helmet from 'helmet';
-import dotenv from 'dotenv';
 import { createServer } from 'http';
-import routes from './api/routes/index.js';
-import healthRoutes from './api/routes/health.js';
-import { errorHandler, notFoundHandler } from './api/middlewares/error-handler.js';
-import { metricsMiddleware } from './api/middlewares/metrics.middleware.js';
-import { rateLimiters } from './infra/rate-limit/rate-limiter.js';
+import './infra/config/env.js';
+import { createApp, API_PREFIX } from './app.js';
 import logger from './infra/logger/index.js';
 import getDatabaseClient from './infra/db/client.js';
+import { runMigrations } from './infra/db/migrate.js';
 import { initializeWebSocket } from './infra/websocket/server.js';
+import { seedAdminUser } from './api/controllers/auth.controller.js';
+import { RunRepository } from './core/repositories/run.repository.js';
+import { OrchestratorService } from './modules/orchestration/services/orchestrator.service.js';
+import { getLLMRouter } from './infra/llm/router.js';
+import { CopilotClient } from './infra/llm/copilot.js';
+import { isAuthEnabled } from './infra/config/env.js';
 
-dotenv.config();
+const PORT = parseInt(process.env.PORT || '3000');
 
-const app = express();
-const server = createServer(app);
-const PORT = process.env.PORT || 3000;
-const API_PREFIX = process.env.API_PREFIX || '/api/v1';
-
-// Initialize WebSocket server
-initializeWebSocket(server);
-
-// Security middleware
-app.use(helmet({
-  contentSecurityPolicy: {
-    directives: {
-      defaultSrc: ["'self'"],
-      styleSrc: ["'self'", "'unsafe-inline'"],
-      scriptSrc: ["'self'"],
-      imgSrc: ["'self'", "data:", "https:"],
-    },
-  },
-  crossOriginEmbedderPolicy: false,
-}));
-
-// CORS configuration
-app.use(cors({
-  origin: process.env.CORS_ORIGIN?.split(',') || '*',
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-}));
-
-// Body parsing with limits
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-
-// Metrics middleware (before routes)
-app.use(metricsMiddleware);
-
-// Health and metrics routes (no auth required)
-app.use('/health', healthRoutes);
-
-// Rate limiting
-app.use(`${API_PREFIX}`, rateLimiters.default);
-
-// API routes
-app.use(`${API_PREFIX}`, routes);
-
-// Error handling
-app.use(notFoundHandler);
-app.use(errorHandler);
-
-// Start server
-async function start() {
-  try {
-    // Verify database connection
-    const db = getDatabaseClient();
-    const dbHealthy = await db.healthCheck();
-    
-    if (!dbHealthy) {
-      logger.warn('Database connection failed. Some features may not work.');
-    }
-
-    server.listen(PORT, () => {
-      logger.info(`Server started on port ${PORT}`, {
-        port: PORT,
-        apiPrefix: API_PREFIX,
-        environment: process.env.NODE_ENV || 'development',
-      });
-    });
-  } catch (error: any) {
-    logger.error('Failed to start server', { error: error.message });
+async function start(): Promise<void> {
+  const db = getDatabaseClient();
+  if (!(await db.healthCheck())) {
+    logger.error(
+      'Cannot connect to PostgreSQL. Check DATABASE_URL (or DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD) and that the database is running. ' +
+      'Quick start: docker compose up -d postgres',
+    );
     process.exit(1);
   }
+
+  const { vector } = await runMigrations(db);
+  logger.info(`Database ready${vector ? ' (pgvector enabled)' : ''}`);
+
+  await seedAdminUser();
+  const interrupted = await new RunRepository().failInterruptedRuns();
+  if (interrupted > 0) logger.warn(`Marked ${interrupted} interrupted run(s) as failed`);
+
+  const app = createApp();
+  const server = createServer(app);
+  initializeWebSocket(server);
+
+  server.on('error', (error: any) => {
+    if (error.code === 'EADDRINUSE') {
+      logger.error(`Port ${PORT} is already in use. Set PORT in .env to a free port.`);
+    } else {
+      logger.error('Server error', { error: error.message });
+    }
+    process.exit(1);
+  });
+
+  server.listen(PORT, () => {
+    logger.info(`API listening on http://localhost:${PORT}${API_PREFIX}`);
+    logger.info(`Auth ${isAuthEnabled() ? 'ENABLED' : 'disabled (local mode)'}`);
+    const order = getLLMRouter().providerOrder('chat');
+    if (order.length) logger.info(`AI providers: ${order.join(' → ')}`);
+    else logger.warn('No AI provider configured — test runs work, but AI extraction/generation/chat are disabled. See .env.example.');
+  });
+
+  const shutdown = async (signal: string) => {
+    logger.info(`${signal} received, shutting down`);
+    await OrchestratorService.get().shutdown();
+    await CopilotClient.shutdown();
+    server.close();
+    await db.close().catch(() => undefined);
+    process.exit(0);
+  };
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
 }
 
-start();
-
-export default app;
-
+start().catch((error) => {
+  logger.error('Failed to start server', { error: error.message });
+  process.exit(1);
+});

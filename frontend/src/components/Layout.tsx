@@ -4,7 +4,8 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/router';
-import { ReactNode } from 'react';
+import { ReactNode, useEffect, useState } from 'react';
+import { getToken, setToken } from '../lib/api';
 
 interface NavItem {
   href: string;
@@ -16,6 +17,7 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { href: '/',          icon: '🏠', label: 'Dashboard',   exact: true },
   { href: '/agents',    icon: '🤖', label: 'Agents' },
+  { href: '/runs',      icon: '▶️', label: 'Runs' },
   { href: '/testcases', icon: '🧪', label: 'Test Cases' },
   { href: '/documents', icon: '📄', label: 'Documents' },
 ];
@@ -33,9 +35,17 @@ interface LayoutProps {
 
 export default function Layout({ children, title, actions }: LayoutProps) {
   const router = useRouter();
+  const [signedIn, setSignedIn] = useState(false);
+  useEffect(() => setSignedIn(!!getToken()), []);
+
+  const signOut = () => {
+    setToken(null);
+    router.push('/login');
+  };
 
   const isActive = (item: NavItem) => {
     if (item.exact) return router.pathname === item.href;
+    if (item.href === '/runs') return router.pathname.startsWith('/runs') || router.pathname === '/live';
     return router.pathname.startsWith(item.href);
   };
 
@@ -78,7 +88,10 @@ export default function Layout({ children, title, actions }: LayoutProps) {
         </nav>
 
         <div className="sidebar-footer">
-          v1.0 MVP &bull; MIT License
+          {signedIn && (
+            <button className="btn btn-ghost btn-sm" onClick={signOut} style={{ marginBottom: 6 }}>Sign out</button>
+          )}
+          <div>v1.0 MVP &bull; MIT License</div>
         </div>
       </aside>
 

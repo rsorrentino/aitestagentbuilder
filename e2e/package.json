@@ -4,13 +4,13 @@
   "description": "End-to-end Playwright tests for the AI Test Agent Builder platform UI",
   "private": true,
   "scripts": {
-    "test": "playwright test",
+    "test": "playwright test --trace off",
     "test:headed": "playwright test --headed",
     "test:ui": "playwright test --ui",
     "test:report": "playwright show-report"
   },
   "devDependencies": {
-    "@playwright/test": "^1.44.0",
+    "@playwright/test": "1.63.0",
     "@types/node": "^20.10.5"
   }
 }

@@ -2,263 +2,149 @@
 
 # 🧠 AI Test Agent Builder
 
-**The AI-powered platform that turns test specs into running automated tests — in minutes.**
+**Turn test specs into automated browser tests that actually run, with AI doing the tedious parts.**
 
-[![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?logo=node.js)](https://nodejs.org)
+[![Node.js](https://img.shields.io/badge/Node.js-20.19%2B-339933?logo=node.js)](https://nodejs.org)
 [![Next.js](https://img.shields.io/badge/Next.js-14-black?logo=next.js)](https://nextjs.org)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript)](https://typescriptlang.org)
+[![Playwright](https://img.shields.io/badge/Playwright-1.63-2EAD33?logo=playwright)](https://playwright.dev)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
 
-[**Live Demo**](#running-locally) · [**Quick Start**](#-quick-start) · [**API Docs**](docs/api.md) · [**Architecture**](docs/architecture.md)
-
----
+[Quick start](#-quick-start) · [Running guide](RUNNING.md) · [API](docs/api.md) · [GitHub Copilot](docs/copilot.md) · [Architecture](docs/architecture.md)
 
 </div>
 
-## ✨ Why AI Test Agent Builder?
-
-Stop writing brittle test scripts by hand. AI Test Agent Builder reads your documentation, extracts test cases with an LLM, and executes them against real applications — automatically.
-
-| ✅ Without this tool | 🚀 With AI Test Agent Builder |
-|---|---|
-| Weeks of manual test scripting | Test suite running in hours |
-| Tests break after every UI change | AI self-heals broken selectors |
-| One AI provider or bust | Multi-LLM routing with automatic fallback |
-| Hard to see what's happening | Live browser-viewport streaming |
-| Spec docs gathering dust | Upload → extract → run in 3 steps |
-
 ---
 
-## 🎯 Key Features
+## What it does
 
-### 🤖 AI-Powered Test Generation
-Upload a PDF, Word doc, or spreadsheet. The LLM reads it and generates structured, executable test cases — no copy-pasting, no manual translation.
+1. **Describe your app as an agent**: a base URL plus which tests to run (modules, priorities, tags).
+2. **Get test cases** in any of three ways:
+   - upload a test book (PDF, Word, Excel, CSV, Markdown, HTML, TXT) and let the AI extract executable tests,
+   - let the AI open your app, read its interactive elements and generate tests,
+   - write them yourself in the step editor.
+3. **Run them in a real browser** (Playwright/Chromium) and watch live: screenshots and step logs stream to the UI.
+4. **Inspect results**: per-step status, timings, failure screenshots, plus HTML, JUnit and JSON reports.
 
-### ⚡ Salesforce CRM Quick-Start Wizard
-Get a full Salesforce test suite running in under 5 minutes. Pick your modules (Leads, Contacts, Opportunities…), choose your AI provider, and go.
+**No AI key? Runs still work.** AI is only needed for extraction, generation, chat and self-healing.
 
-### 🛡️ Self-Healing Selectors
-When a UI update breaks a selector, the AI automatically finds the new element and patches the test — zero downtime for your QA pipeline.
+## ✨ MVP 1 features
 
-### �� Multi-LLM Routing
-Works with **Anthropic Claude**, **OpenAI GPT-4o**, **GitHub Copilot**, and **Azure OpenAI**. Each task type routes to the best model, with automatic fallback.
-
-### 📡 Real-Time Live View
-Watch automated tests execute live in a split-screen — browser viewport on one side, execution log on the other.
-
-### 📄 Document Ingestion
-Drop in PDFs, Word files, Excel sheets, Markdown or plain text. The parser agent turns prose into structured test cases.
-
-### 📊 Rich Reports
-JSON, HTML, JUnit, and Allure-compatible reports with screenshots, logs, and pass/fail breakdowns.
-
----
-
-## 🚀 Quick Start
-
-### Prerequisites
-
-| Requirement | Version |
+| Area | What works |
 |---|---|
-| Node.js | 18+ |
-| PostgreSQL | 14+ with [pgvector](https://github.com/pgvector/pgvector) |
-| Python *(optional, for executor)* | 3.10+ |
-| Docker *(optional)* | 24+ |
+| **Agents** | Create/list/delete, test selection by module, priority, tags or explicit IDs, plan preview ("tests in the next run"), active/inactive |
+| **Test cases** | Create/edit/delete with a step editor, search and filter, validation, natural-language or canonical actions |
+| **Documents** | Upload (50 MB max), text preview, AI extraction into test cases, per-document status and counts |
+| **Execution** | Built-in Playwright executor, isolated browser context per test, retries, cancellation, concurrency limit, run-interruption recovery |
+| **Self-healing** | When a selector breaks, the AI proposes a replacement from the live page and the step is retried |
+| **Live view** | Socket.IO stream of screenshots, step logs and progress, with a polling fallback |
+| **Reports** | HTML (with screenshots), JUnit XML, JSON, downloadable from the UI or API |
+| **AI providers** | Anthropic Claude, OpenAI (and compatible), Azure OpenAI, **GitHub Copilot via API, SDK or CLI**, with task routing and automatic fallback |
+| **Chat assistant** | Write tests conversationally and save the JSON it returns as test cases |
+| **Auth** | Off by default for local use; with `AUTH_ENABLED=true`: login page, JWT, API keys, roles |
+| **CLI / CI** | `npm run cli -- run -c agent.yml` waits for the run, writes reports and exits non-zero on failure |
+| **Demo** | Built-in demo shop at `/demo` with ready-made tests: one click on the dashboard |
 
-### 1. Clone & Configure
+## 🚀 Quick start
+
+**Prerequisites:** Node.js 20.19+ and PostgreSQL 14+ (or Docker).
 
 ```bash
 git clone https://github.com/rsorrentino/aitestagentbuilder.git
 cd aitestagentbuilder
-cp .env.example .env
+./scripts/setup.sh        # installs deps + Chromium, creates .env, starts Postgres via Docker if available
 ```
 
-Edit `.env` and set at least one AI provider key:
+Then start the two servers in two terminals:
+
+```bash
+cd backend && npm run dev     # API on http://localhost:3000 (creates/migrates the DB schema on start)
+```
+
+```bash
+cd frontend && npm run dev    # UI on http://localhost:4000
+```
+
+Open **http://localhost:4000** and click **🎮 Try the demo** → **▶ Start Run**. Three tests run against the built-in demo shop and you can watch them live.
+
+To enable the AI features, add one provider to `.env` and restart the backend:
 
 ```env
-# Pick ONE or MORE providers:
-OPENAI_API_KEY=sk-...
-ANTHROPIC_API_KEY=sk-ant-...
-GITHUB_TOKEN=ghp_...          # For GitHub Copilot
-DATABASE_URL=postgresql://user:pass@localhost:5432/aitestagentbuilder
-JWT_SECRET=change-me-to-something-long-and-random
-AUTH_ENABLED=false            # Set to true to enable token auth
+ANTHROPIC_API_KEY=sk-ant-...          # or
+OPENAI_API_KEY=sk-...                 # or GitHub Copilot:
+COPILOT_MODE=api                      # api | sdk | cli
+COPILOT_GITHUB_TOKEN=...              # e.g. the output of `gh auth token`
 ```
 
-### 2. Database Setup
+Step-by-step instructions, manual setup without Docker, and troubleshooting are in **[RUNNING.md](RUNNING.md)**.
 
-```bash
-# Create the database
-createdb aitestagentbuilder
+## 🐙 GitHub Copilot
 
-# Run migrations
-cd backend && npm install && npm run db:migrate
-```
+Copilot works as a full AI provider through three transports. Pick one with `COPILOT_MODE`:
 
-### 3. Start the Backend
-
-```bash
-cd backend
-npm run dev
-# API running at http://localhost:3000
-```
-
-### 4. Start the Frontend
-
-```bash
-cd frontend
-npm install
-npm run dev
-# UI running at http://localhost:4000
-```
-
-Open [http://localhost:4000](http://localhost:4000) — you should see the dashboard.
-
----
-
-## 🖥️ Application Tour
-
-| Page | URL | What you can do |
+| Mode | How it talks to Copilot | Auth |
 |---|---|---|
-| **Dashboard** | `/` | Overview of agents, recent runs, KPIs |
-| **Agents** | `/agents` | List, create, manage test agents |
-| **Create Agent** | `/agents/new` | Generic wizard for any app type |
-| **SF Wizard** | `/wizard/salesforce` | 3-step Salesforce quick-start |
-| **Documents** | `/documents` | Upload test books, trigger AI extraction |
-| **Test Cases** | `/testcases` | Browse, filter, manage extracted tests |
-| **Run Detail** | `/runs/:id` | Pass/fail breakdown per test case |
-| **Live View** | `/live?runId=…` | Real-time browser viewport + log stream |
-| **AI Providers** | `/settings/ai-providers` | Provider health & routing config |
+| `api` (default) | Copilot chat completions API (GitHub token exchanged for a Copilot token); `COPILOT_BASE_URL` can point at GitHub Models | `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN` |
+| `sdk` | Official [`@github/copilot-sdk`](https://www.npmjs.com/package/@github/copilot-sdk) (installed with the backend) | token, or an existing `copilot` / `gh` login |
+| `cli` | [GitHub Copilot CLI](https://www.npmjs.com/package/@github/copilot) in non-interactive mode (`copilot -p … -s`) | token, or an existing `copilot` / `gh` login |
 
----
+Copilot is always used as a plain text model with **no tools enabled**, so it never runs commands on your server. Details: [docs/copilot.md](docs/copilot.md).
 
-## 🔄 End-to-End Workflow
+## 🧪 Writing tests
 
-```
-1. Upload test book (PDF / Word / Excel)
-         ↓
-2. AI extracts structured test cases
-         ↓
-3. Create agent (target URL, AI provider, modules)
-         ↓
-4. Trigger a test run
-         ↓
-5. Watch it live — browser viewport + real-time log
-         ↓
-6. Get HTML / JUnit / JSON reports
-```
+A test case is a list of steps. Each step has an **action**, an optional **target** and an optional **value**:
 
----
+| Action | Target | Value |
+|---|---|---|
+| `navigate` | URL or path relative to the agent's base URL (`/login`) | |
+| `click`, `hover`, `check`, `uncheck` | selector | |
+| `fill`, `select` | selector | text / option |
+| `press` | selector (optional) | key, e.g. `Enter` |
+| `wait` | selector to wait for | or `data.ms` |
+| `assert_visible` | selector | |
+| `assert_text` | element (optional; whole page if empty) | expected text |
+| `assert_url`, `assert_title` | | expected substring |
+| `screenshot` | | |
 
-## 🏗️ Architecture
+Targets can be CSS selectors (`#id`, `.class`, `input[name=q]`), Playwright selectors (`text=Sign in`), or **plain labels** like `Sign in button` or `Username`. Plain labels resolve in priority order: label, placeholder, button, link, then text. Natural phrasing from extracted documents ("Enter username", "Verify the welcome message is displayed") is understood too. Steps that cannot be automated are reported as skipped rather than failing.
+
+## 🏗️ Project layout
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                   Next.js Frontend                  │
-│   Dashboard · Agents · Documents · Live View        │
-└─────────────────┬───────────────────────────────────┘
-                  │ REST + WebSocket
-┌─────────────────▼───────────────────────────────────┐
-│              Express Backend (TypeScript)            │
-│                                                     │
-│  ┌──────────┐  ┌──────────┐  ┌──────────────────┐  │
-│  │Ingestion │  │Agents    │  │Orchestrator      │  │
-│  │  Layer   │  │  CRUD    │  │(run lifecycle)   │  │
-│  └──────────┘  └──────────┘  └──────────────────┘  │
-│                                                     │
-│  ┌───────────────────────────────────────────────┐  │
-│  │              LLM Router                       │  │
-│  │  Claude → OpenAI → Copilot → Azure            │  │
-│  └───────────────────────────────────────────────┘  │
-└─────────────────┬───────────────────────────────────┘
-                  │
-┌─────────────────▼───────────────────────────────────┐
-│          PostgreSQL + pgvector                      │
-│   agents · runs · test_cases · documents · results  │
-└─────────────────────────────────────────────────────┘
+backend/    Express + TypeScript API, Playwright executor, LLM router, Socket.IO, CLI
+frontend/   Next.js UI (dashboard, agents, runs, live view, test cases, documents, settings)
+e2e/        Playwright end-to-end tests of the UI (full stack)
+mcp-server/ Model Context Protocol server exposing the platform to AI assistants
+executor/   Legacy Python executor (optional, EXECUTOR=python)
+configs/    Example agent YAML files for the CLI
+docs/       Documentation
 ```
 
-**Agent Types:**
-
-| Agent | Responsibility |
-|---|---|
-| **Parser Agent** | Reads documents, extracts test cases via LLM |
-| **Planner Agent** | Prioritises and sequences test execution |
-| **Environment Agent** | Sets up browser / API / mobile context |
-| **Execution Agent** | Runs Playwright / Axios / Appium steps |
-| **Reporting Agent** | Produces HTML, JSON, JUnit reports |
-| **Orchestrator** | Coordinates all agents, manages run lifecycle |
-
----
-
-## 🔧 Configuration Reference
-
-Agent configs live in `configs/` as YAML:
-
-```yaml
-agent_name: "CheckoutFlowTester"
-application_type: web          # web | api | mobile | hybrid
-base_url: "https://staging.example.com"
-environment: staging
-test_selection:
-  module: ["Cart", "Checkout", "Payment"]
-  priority: ["Critical", "High"]
-  tags: ["smoke", "regression"]
-tools:
-  browser: playwright
-  http: axios
-ai:
-  provider: claude              # claude | openai | copilot | azure
-  model: claude-3-5-sonnet-latest
-  self_healing: true
-  fallback: openai
-reporting:
-  formats: [json, html, junit]
-  includeScreenshots: true
-  includeLogs: true
-max_parallel_tests: 3
-timeout: 60000
-retries: 2
-```
-
----
-
-## 🧪 Running Tests
+## ✅ Tests
 
 ```bash
-# Backend unit + integration tests
-cd backend && npm test
-
-# Python executor tests (requires Python 3.10+)
-cd executor && pip install -r requirements.txt && pytest
+cd backend && npm test                  # unit tests
+cd backend && npm run test:integration  # API + real Postgres + real browser (needs TEST_DATABASE_URL or a local DB)
+cd e2e && npm test                      # UI end-to-end; start backend + frontend first
 ```
 
----
+The integration suite also exercises the Copilot **CLI** and **API** transports against local fakes, so it needs no credentials.
 
-## �� Docker (optional)
+## 📚 Documentation
 
-```bash
-docker compose up -d        # starts backend + postgres + redis
-```
-
----
+- [RUNNING.md](RUNNING.md): install, configure, run, troubleshoot
+- [docs/api.md](docs/api.md): REST API and WebSocket events
+- [docs/copilot.md](docs/copilot.md): GitHub Copilot API / SDK / CLI setup
+- [docs/architecture.md](docs/architecture.md): how the pieces fit together
+- [docs/agents.md](docs/agents.md): agent configuration, CLI and CI usage
+- [docs/mvp-demo.md](docs/mvp-demo.md): 10-minute guided demo
+- [docs/salesforce-guide.md](docs/salesforce-guide.md): testing Salesforce orgs
+- [docs/mcp-server.md](docs/mcp-server.md): MCP server
+- [docs/production-readiness.md](docs/production-readiness.md): deployment notes
 
 ## 🤝 Contributing
 
-1. Fork → Branch → PR
-2. Read [CONTRIBUTING.md](CONTRIBUTING.md)
-3. All PRs must include tests
-
----
+See [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## 📄 License
 
-MIT — see [LICENSE](LICENSE)
-
----
-
-<div align="center">
-
-Built with ❤️ using **Next.js**, **Express**, **Playwright**, and the power of **Multi-LLM AI**
-
-</div>
+MIT. See [LICENSE](LICENSE).

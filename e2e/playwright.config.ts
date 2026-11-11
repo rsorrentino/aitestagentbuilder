@@ -1,36 +1,31 @@
 import { defineConfig, devices } from '@playwright/test';
 
 /**
- * Playwright configuration for the AI Test Agent Builder E2E test suite.
- * Tests the platform's own UI (Next.js frontend + Express backend).
+ * End-to-end tests of the AI Test Agent Builder UI.
  *
- * @see https://playwright.dev/docs/test-configuration
+ * Start the stack first (backend on :3000, frontend on :4000), then:
+ *   cd e2e && npm install && npx playwright install chromium && npm test
+ *
+ * BASE_URL (default http://localhost:4000) and API_URL (default
+ * http://localhost:3000/api/v1) can be overridden.
  */
 export default defineConfig({
   testDir: './tests',
   fullyParallel: false,
+  workers: 1,
+  timeout: 120_000,
+  expect: { timeout: 15_000 },
   forbidOnly: !!process.env.CI,
-  retries: process.env.CI ? 2 : 0,
-  workers: process.env.CI ? 1 : undefined,
+  retries: process.env.CI ? 1 : 0,
   reporter: [
-    ['html', { outputFolder: 'playwright-report' }],
+    ['list'],
+    ['html', { outputFolder: 'playwright-report', open: 'never' }],
     ['junit', { outputFile: 'test-results/e2e-results.xml' }],
-    ['line'],
   ],
   use: {
-    baseURL: process.env.BASE_URL || 'http://localhost:3001',
-    trace: 'on-first-retry',
+    baseURL: process.env.BASE_URL || 'http://localhost:4000',
     screenshot: 'only-on-failure',
-    video: 'retain-on-failure',
+    trace: 'off',
   },
-  projects: [
-    {
-      name: 'chromium',
-      use: { ...devices['Desktop Chrome'] },
-    },
-    {
-      name: 'firefox',
-      use: { ...devices['Desktop Firefox'] },
-    },
-  ],
+  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
 });

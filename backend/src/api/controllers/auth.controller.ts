@@ -3,16 +3,48 @@
  */
 
 import { Request, Response } from 'express';
-import { JWTService } from '../../infra/auth/jwt.service.js';
+import { JWTService, hashPassword, verifyPassword } from '../../infra/auth/jwt.service.js';
 import getDatabaseClient from '../../infra/db/client.js';
 import { AuthenticatedRequest } from '../../infra/auth/auth.middleware.js';
+import { isAuthEnabled } from '../../infra/config/env.js';
 import logger from '../../infra/logger/index.js';
-import crypto from 'crypto';
 
 const jwtService = new JWTService();
 const db = getDatabaseClient();
 
+/**
+ * Create the bootstrap admin from ADMIN_EMAIL / ADMIN_PASSWORD if it does not exist.
+ */
+export async function seedAdminUser(): Promise<void> {
+  const email = process.env.ADMIN_EMAIL;
+  const password = process.env.ADMIN_PASSWORD;
+  if (!email || !password) {
+    if (isAuthEnabled()) {
+      logger.warn('AUTH_ENABLED=true but ADMIN_EMAIL/ADMIN_PASSWORD are not set — nobody can log in to the UI.');
+    }
+    return;
+  }
+  const existing = await db.query('SELECT id FROM users WHERE email = $1', [email]);
+  if (existing.rows.length > 0) return;
+  await db.query(
+    'INSERT INTO users (id, email, password_hash, role) VALUES ($1, $2, $3, $4)',
+    [`USER-${Date.now()}`, email, hashPassword(password), 'admin'],
+  );
+  logger.info('Bootstrap admin user created', { email });
+}
+
 export class AuthController {
+  /**
+   * Public: tells the UI whether it must show a login screen.
+   */
+  async config(_req: Request, res: Response): Promise<void> {
+    res.json({ authEnabled: isAuthEnabled() });
+  }
+
+  async me(req: AuthenticatedRequest, res: Response): Promise<void> {
+    res.json({ user: req.user ?? null, authEnabled: isAuthEnabled() });
+  }
+
   /**
    * Login with email/password
    */
@@ -43,9 +75,7 @@ export class AuthController {
         return;
       }
 
-      // Verify password (in production, use bcrypt)
-      const passwordHash = crypto.createHash('sha256').update(password).digest('hex');
-      if (passwordHash !== user.password_hash) {
+      if (!verifyPassword(password, user.password_hash)) {
         res.status(401).json({ error: 'Invalid credentials' });
         return;
       }
@@ -154,7 +184,7 @@ export class AuthController {
           userId,
           keyHash,
           name || 'API Key',
-          JSON.stringify(permissions || []),
+          JSON.stringify(permissions && permissions.length ? permissions : ['*']),
           expiresAt,
         ]
       );

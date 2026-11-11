@@ -1,167 +1,122 @@
 /**
  * Parser Agent Service
- * Uses LLM to extract structured test cases from parsed document text
+ * Uses an LLM to extract structured, executable test cases from document text.
  */
 
-import getLLMClient from '../../../infra/llm/client.js';
-import { TestCase } from '../../../core/domain/test-case.js';
+import { getLLMRouter } from '../../../infra/llm/router.js';
+import { extractJsonArray } from '../../../infra/llm/json.js';
+import { TestCaseCreateInput } from '../../../core/domain/test-case.js';
+import { normalizeTestCaseInput } from '../../../core/domain/normalize.js';
 import logger from '../../../infra/logger/index.js';
 
 export interface ExtractionResult {
-  testCases: TestCase[];
+  testCases: TestCaseCreateInput[];
   metadata: {
     extractedAt: Date;
     extractionMethod: 'llm';
-    confidence: number;
+    provider: string;
     totalExtracted: number;
+    truncated: boolean;
   };
 }
 
-export class ParserAgentService {
-  private llm = getLLMClient();
+/** Characters of document text sent to the model in one request. */
+const MAX_DOCUMENT_CHARS = parseInt(process.env.EXTRACTION_MAX_CHARS || '60000');
 
-  /**
-   * Extract test cases from parsed document text using LLM
-   */
+export class ParserAgentService {
+  private router = getLLMRouter();
+
   async extractTestCases(
     text: string,
     documentId: string,
-    options?: { module?: string; priority?: string }
+    options?: { module?: string; priority?: string; baseUrl?: string },
   ): Promise<ExtractionResult> {
-    const prompt = this.buildExtractionPrompt(text, options);
-    
-    try {
-      const response = await this.llm.chat([
-        {
-          role: 'system',
-          content: this.getSystemPrompt(),
-        },
-        {
-          role: 'user',
-          content: prompt,
-        },
-      ]);
-
-      const extracted = this.parseLLMResponse(response.content);
-      
-      // Add metadata to each test case and ensure required fields
-      const testCases: TestCase[] = extracted.map((tc, index) => ({
-        id: tc.id || `TC-${documentId}-${Date.now()}-${index}`,
-        title: tc.title || `Test Case ${index + 1}`,
-        module: tc.module || 'Unknown',
-        steps: tc.steps || [],
-        expectedResults: tc.expectedResults || [],
-        priority: tc.priority || 'Medium',
-        ...tc,
-        metadata: {
-          ...tc.metadata,
-          sourceDocument: documentId,
-          extractedAt: new Date(),
-        },
-      }));
-
-      return {
-        testCases,
-        metadata: {
-          extractedAt: new Date(),
-          extractionMethod: 'llm',
-          confidence: 0.85, // Could be calculated based on LLM response
-          totalExtracted: testCases.length,
-        },
-      };
-    } catch (error: any) {
-      logger.error('Test case extraction failed', { error: error.message });
-      throw new Error(`Failed to extract test cases: ${error.message}`);
-    }
-  }
-
-  private getSystemPrompt(): string {
-    return `You are a test case extraction assistant. Your goal is to extract structured test cases from raw text.
-
-Each test case must include:
-- id: A unique identifier (e.g., TC-001)
-- title: A clear, descriptive title
-- module: The functional module/area (e.g., "Authentication", "Checkout")
-- description: Optional detailed description
-- steps: Array of test steps, each with:
-  - stepId: Sequential number starting from 1
-  - action: The action to perform (e.g., "Click on login button", "Enter username")
-  - target: Optional selector or element identifier
-  - data: Optional data to use (e.g., {"username": "testuser"})
-  - expectedResult: Optional expected result for this step
-- expectedResults: Array of final expected outcomes
-- preconditions: Optional array of prerequisites
-- postconditions: Optional array of cleanup steps
-- priority: One of "Low", "Medium", "High", "Critical"
-- tags: Optional array of tags
-- type: Optional type: "Functional", "Regression", "Integration", "Smoke", "E2E"
-
-Respond with a valid JSON array of test cases. Example format:
-[
-  {
-    "id": "TC-001",
-    "title": "User Login",
-    "module": "Authentication",
-    "steps": [
-      {"stepId": 1, "action": "Navigate to login page", "target": "/login"},
-      {"stepId": 2, "action": "Enter username", "target": "#username", "data": {"value": "testuser"}},
-      {"stepId": 3, "action": "Enter password", "target": "#password", "data": {"value": "password123"}},
-      {"stepId": 4, "action": "Click login button", "target": "#login-btn"}
-    ],
-    "expectedResults": [
-      "User is redirected to dashboard",
-      "Welcome message is displayed"
-    ],
-    "priority": "High",
-    "tags": ["login", "authentication"],
-    "type": "Functional"
-  }
-]
-
-Only return valid JSON, no additional text.`;
-  }
-
-  private buildExtractionPrompt(text: string, options?: { module?: string; priority?: string }): string {
-    let prompt = `Extract all test cases from the following text:\n\n${text}\n\n`;
-
-    if (options?.module) {
-      prompt += `Focus on test cases related to module: ${options.module}\n`;
-    }
-    if (options?.priority) {
-      prompt += `Filter by priority: ${options.priority}\n`;
+    const cleaned = text.trim();
+    if (!cleaned) {
+      throw new Error('The document contains no readable text.');
     }
 
-    prompt += '\nReturn a JSON array of extracted test cases.';
+    const truncated = cleaned.length > MAX_DOCUMENT_CHARS;
+    const body = truncated ? cleaned.slice(0, MAX_DOCUMENT_CHARS) : cleaned;
+    if (truncated) {
+      logger.warn('Document text truncated for extraction', { documentId, length: cleaned.length, limit: MAX_DOCUMENT_CHARS });
+    }
 
+    const response = await this.router.chat(
+      [
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'user', content: this.buildPrompt(body, options) },
+      ],
+      'extraction',
+    );
+
+    const raw = extractJsonArray(response.content);
+    const testCases = raw
+      .map((item) => normalizeTestCaseInput(item, {
+        module: options?.module,
+        documentId,
+        author: `ai-extraction (${response.provider})`,
+      }))
+      .filter((tc): tc is TestCaseCreateInput => tc !== null);
+
+    if (testCases.length === 0) {
+      throw new Error('The AI did not find any test cases in this document.');
+    }
+
+    return {
+      testCases,
+      metadata: {
+        extractedAt: new Date(),
+        extractionMethod: 'llm',
+        provider: response.provider,
+        totalExtracted: testCases.length,
+        truncated,
+      },
+    };
+  }
+
+  private buildPrompt(text: string, options?: { module?: string; priority?: string; baseUrl?: string }): string {
+    let prompt = `Extract all test cases from the following document.\n\n<document>\n${text}\n</document>\n\n`;
+    if (options?.module) prompt += `Use "${options.module}" as the module when the document does not name one.\n`;
+    if (options?.priority) prompt += `Only include test cases with priority ${options.priority}.\n`;
+    if (options?.baseUrl) prompt += `The application under test is at ${options.baseUrl}; use relative paths for navigation targets.\n`;
+    prompt += '\nReturn only the JSON array.';
     return prompt;
-  }
-
-  private parseLLMResponse(content: string): Partial<TestCase>[] {
-    try {
-      // Try to extract JSON from response (might have markdown code blocks)
-      let jsonStr = content.trim();
-      
-      // Remove markdown code blocks if present
-      if (jsonStr.startsWith('```')) {
-        const lines = jsonStr.split('\n');
-        lines.shift(); // Remove first line (```json or ```)
-        if (lines[lines.length - 1].trim() === '```') {
-          lines.pop(); // Remove last line
-        }
-        jsonStr = lines.join('\n');
-      }
-
-      const parsed = JSON.parse(jsonStr);
-      
-      if (!Array.isArray(parsed)) {
-        return [parsed];
-      }
-      
-      return parsed;
-    } catch (error: any) {
-      logger.error('Failed to parse LLM response', { error: error.message, content });
-      throw new Error(`Invalid JSON response from LLM: ${error.message}`);
-    }
   }
 }
 
+export const STEP_ACTIONS_DOC = `Allowed step actions (use exactly these words):
+- "navigate"      target: URL or path (e.g. "/login")
+- "click"         target: CSS selector or visible text, e.g. "#submit" or "text=Sign in"
+- "fill"          target: input selector; data.value: text to type
+- "select"        target: <select> selector; data.value: option value or label
+- "check" / "uncheck"  target: checkbox selector
+- "press"         data.value: key name, e.g. "Enter" (target optional)
+- "hover"         target: selector
+- "wait"          target: selector to wait for, or data.ms: milliseconds
+- "assert_visible"  target: selector or "text=..." that must be visible
+- "assert_text"   data.value: text that must appear (target optional: element to look in)
+- "assert_url"    data.value: substring the current URL must contain
+- "assert_title"  data.value: substring the page title must contain
+- "screenshot"    take a screenshot
+Prefer robust selectors: ids, name attributes, data-testid, roles, or "text=Visible label".`;
+
+const SYSTEM_PROMPT = `You are a senior QA automation engineer. You turn test documentation into structured, executable browser test cases.
+
+Each test case is a JSON object:
+{
+  "title": "string",
+  "module": "functional area, e.g. Authentication",
+  "description": "string",
+  "priority": "Low" | "Medium" | "High" | "Critical",
+  "type": "Functional" | "Regression" | "Integration" | "Smoke" | "E2E",
+  "tags": ["string"],
+  "preconditions": ["string"],
+  "steps": [{ "action": "...", "target": "...", "data": { "value": "..." }, "expectedResult": "..." }],
+  "expectedResults": ["string"]
+}
+
+${STEP_ACTIONS_DOC}
+
+Every test must end with at least one assert_* step that checks the expected result.
+Respond with a JSON array of test cases and nothing else.`;

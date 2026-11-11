@@ -3,7 +3,7 @@
  */
 
 export type RunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
-export type TestResultStatus = 'passed' | 'failed' | 'skipped' | 'error' | 'timeout';
+export type TestResultStatus = 'running' | 'passed' | 'failed' | 'skipped' | 'error' | 'timeout';
 
 export interface TestResult {
   id: string;
@@ -36,6 +36,7 @@ export interface ValidationResult {
 export interface TestRun {
   id: string;
   agentId: string;
+  agentName?: string;
   status: RunStatus;
   startedAt: Date;
   finishedAt?: Date;
@@ -50,6 +51,9 @@ export interface TestRun {
     branch?: string;
     commit?: string;
     triggeredBy?: string;
+    strategy?: string;
+    error?: string;
+    [key: string]: any;
   };
 }
 
@@ -61,6 +65,7 @@ export interface TestRunCreateInput {
 export interface TestRunUpdateInput {
   status?: RunStatus;
   finishedAt?: Date;
+  totalTests?: number;
   metadata?: Partial<TestRun['metadata']>;
 }
 
@@ -71,6 +76,7 @@ export interface TestResultCreateInput {
   startedAt: Date;
   logs?: string[];
   error?: string;
+  metadata?: Record<string, any>;
 }
 
 export interface TestResultUpdateInput {
@@ -81,5 +87,6 @@ export interface TestResultUpdateInput {
   error?: string;
   evidence?: TestResult['evidence'];
   validationResults?: ValidationResult[];
+  metadata?: Record<string, any>;
 }
 

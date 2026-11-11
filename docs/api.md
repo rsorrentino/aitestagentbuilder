@@ -1,198 +1,163 @@
-# API Documentation
+# API Reference
 
-## Base URL
-
-```
-http://localhost:3000/api/v1
-```
+Base URL: `http://localhost:3000/api/v1`. All bodies are JSON unless noted. Errors return `{ "error": "message" }` with a 4xx/5xx status.
 
 ## Authentication
 
-Currently, authentication is optional. In production, use API keys or JWT tokens.
+With `AUTH_ENABLED=false` (default) no credentials are needed. With `AUTH_ENABLED=true`, send one of:
 
-## Endpoints
-
-### Ingestion
-
-#### Upload Document
-```http
-POST /ingestion/upload
-Content-Type: multipart/form-data
-
-file: <file>
+```
+Authorization: Bearer <accessToken>     # from POST /auth/login
+Authorization: ApiKey <apiKey>          # from POST /auth/api-keys
 ```
 
-**Response**:
+| Method | Path | Description |
+|---|---|---|
+| GET | `/auth/config` | `{ authEnabled }` (public) |
+| POST | `/auth/login` | `{ email, password }` → `{ accessToken, refreshToken, user }` |
+| POST | `/auth/refresh` | `{ refreshToken }` → new token pair |
+| GET | `/auth/me` | Current user |
+| POST | `/auth/api-keys` | `{ name?, permissions?, expiresInDays? }` → `{ id, apiKey }` (shown once) |
+| GET | `/auth/api-keys` | List keys |
+| DELETE | `/auth/api-keys/:id` | Revoke |
+
+## Agents
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/agents` | Create. `400` invalid config, `409` duplicate name |
+| GET | `/agents` | List (`?limit&offset`) |
+| GET | `/agents/:id` | Get |
+| PUT | `/agents/:id` | Update `{ name?, config?, status? }` (config is merged and re-validated) |
+| DELETE | `/agents/:id` | Delete (also deletes its runs) |
+| GET | `/agents/:id/plan` | Tests the next run would execute: `{ strategy, count, testCases[] }` |
+| POST | `/agents/:id/generate-tests` | `{ description?, count?, modules?, save? = true }`: AI reads the live page and writes tests (tagged `agent:<id>`, `ai-generated`). `503` without an AI provider |
+
 ```json
-{
-  "id": "DOC-123",
-  "name": "test-book.pdf",
-  "sourceType": "pdf",
-  "uploadedAt": "2024-01-01T00:00:00Z"
-}
-```
-
-#### Extract Test Cases
-```http
-POST /ingestion/documents/:documentId/extract
-```
-
-**Query Parameters**:
-- `module` (optional): Filter by module
-- `priority` (optional): Filter by priority
-
-**Response**:
-```json
-{
-  "documentId": "DOC-123",
-  "extracted": 10,
-  "testCases": [...],
-  "metadata": {...}
-}
-```
-
-### Agents
-
-#### Create Agent
-```http
 POST /agents
-Content-Type: application/json
-
 {
-  "name": "LoginTester",
+  "name": "Checkout tester",
   "config": {
-    "agent_name": "LoginTester",
-    "application_type": "web",
-    "base_url": "https://staging.myapp.com",
-    "test_selection": {...},
-    "tools": {...},
-    "reporting": {...}
-  }
-}
-```
-
-#### List Agents
-```http
-GET /agents?limit=100&offset=0
-```
-
-#### Get Agent
-```http
-GET /agents/:id
-```
-
-#### Update Agent
-```http
-PUT /agents/:id
-Content-Type: application/json
-
-{
-  "name": "UpdatedName",
-  "config": {...}
-}
-```
-
-#### Delete Agent
-```http
-DELETE /agents/:id
-```
-
-### Test Cases
-
-#### Create Test Case
-```http
-POST /testcases
-Content-Type: application/json
-
-{
-  "title": "User Login",
-  "module": "Authentication",
-  "steps": [...],
-  "expectedResults": [...],
-  "priority": "High"
-}
-```
-
-#### List Test Cases
-```http
-GET /testcases?module=Auth&priority=High&limit=100&offset=0
-```
-
-#### Get Test Case
-```http
-GET /testcases/:id
-```
-
-#### Update Test Case
-```http
-PUT /testcases/:id
-```
-
-#### Delete Test Case
-```http
-DELETE /testcases/:id
-```
-
-### Test Runs
-
-#### Start Run
-```http
-POST /runs
-Content-Type: application/json
-
-{
-  "agentId": "AGENT-123",
-  "metadata": {
+    "base_url": "https://staging.example.com",
     "environment": "staging",
-    "branch": "main"
+    "test_selection": { "module": ["Checkout"], "priority": ["High", "Critical"], "tags": [], "testIds": [] },
+    "ai": { "provider": "copilot", "self_healing": true },
+    "retries": 1
   }
 }
 ```
 
-#### Get Run Status
-```http
-GET /runs/:id
-```
+Empty selection lists mean "no filter". `ai.provider` is one of `anthropic`, `openai`, `azure`, `copilot` (aliases `claude`, `github`), or empty for automatic.
 
-#### List Runs
-```http
-GET /runs?agentId=AGENT-123&limit=50
-```
+## Test cases
 
-#### Cancel Run
-```http
-POST /runs/:id/cancel
-```
-
-### Reports
-
-#### Generate Report
-```http
-POST /reports/runs/:runId/generate
-Content-Type: application/json
-
-{
-  "formats": ["json", "html", "junit"],
-  "includeScreenshots": true,
-  "includeLogs": true,
-  "outputPath": "./reports"
-}
-```
-
-## Error Responses
-
-All errors follow this format:
+| Method | Path | Description |
+|---|---|---|
+| POST | `/testcases` | Create (`title`, `module` required) |
+| GET | `/testcases` | List with filters: `q`, `module`, `priority`, `type`, `tags` (comma separated), `documentId`, `limit`, `offset` |
+| GET | `/testcases/modules` | `[ { module, count } ]` |
+| GET | `/testcases/:id` | Get |
+| PUT | `/testcases/:id` | Partial update |
+| DELETE | `/testcases/:id` | Delete |
 
 ```json
+POST /testcases
 {
-  "error": "Error message"
+  "title": "Valid login opens the dashboard",
+  "module": "Authentication",
+  "priority": "Critical",
+  "type": "Smoke",
+  "tags": ["smoke"],
+  "steps": [
+    { "action": "navigate", "target": "/login" },
+    { "action": "fill", "target": "#username", "data": { "value": "demo" } },
+    { "action": "fill", "target": "Password", "data": { "value": "demo123" } },
+    { "action": "click", "target": "Sign in button" },
+    { "action": "assert_url", "data": { "value": "/dashboard" } },
+    { "action": "assert_text", "target": "#welcome", "data": { "value": "Welcome" } }
+  ],
+  "expectedResults": ["The dashboard greets the user"]
 }
 ```
 
-**Status Codes**:
-- `200` - Success
-- `201` - Created
-- `400` - Bad Request
-- `404` - Not Found
-- `500` - Internal Server Error
+The step actions are listed in the [README](../README.md#-writing-tests).
 
+## Documents
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/ingestion/upload` | `multipart/form-data`, field `file` (≤ 50 MB). PDF, DOCX, XLSX/XLS, CSV, MD, HTML, TXT |
+| GET | `/ingestion/documents` | List (without content), with `status` and `testCaseCount` |
+| GET | `/ingestion/documents/:id/preview` | Parsed plain text (first 20,000 characters) |
+| POST | `/ingestion/documents/:id/extract` | `{ module?, priority?, baseUrl? }`: AI extraction, saves the test cases. `503` without an AI provider |
+| DELETE | `/ingestion/documents/:id` | Delete (extracted tests are kept) |
+
+## Runs
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/runs` | `{ agentId, testIds?, metadata? }` → run (`201`). `400` if no test matches the selection |
+| GET | `/runs` | Run summaries (`?agentId&limit`), newest first, with `agentName` |
+| GET | `/runs/:id` | Run with `results[]` (each has `metadata.title`, `metadata.steps[]`, `evidence.screenshots[]`) |
+| POST | `/runs/:id/cancel` | Cancel a pending/running run (`409` otherwise) |
+| GET | `/runs/:id/report?format=html\|json\|junit[&download=1]` | Rendered report |
+| GET | `/runs/stats` | `{ running, queued, maxConcurrent }` |
+| POST | `/reports/runs/:runId/generate` | Write report files to `REPORT_STORAGE_PATH` |
+
+Run status: `pending` → `running` → `completed` (all passed or skipped), `failed` (at least one failure or an executor error) or `cancelled`. Test result status: `running`, `passed`, `failed`, `error`, `skipped`.
+
+Screenshots are served at `GET /artifacts/<path from evidence.screenshots>`.
+
+## AI
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/chat` | `{ messages: [{role, content}], task?, context?, provider? }` → `{ content, provider, usage }` |
+| GET | `/llm/providers` | Provider status (`?check=true` sends a live test request), Copilot `mode`, routing order, `anyConfigured` |
+
+## Demo
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/demo/seed` | Creates/updates the *Demo Shop* agent and its 3 tests → `{ agentId, created }` |
+| GET | `/demo/` (outside `/api/v1`) | The demo web app itself (login `demo` / `demo123`) |
+
+## Test data
+
+`POST/GET /testdata`, `GET/PUT/DELETE /testdata/:id`: named JSON data sets `{ name, data, description?, tags?, environment? }`.
+
+## Health & metrics (outside `/api/v1`)
+
+| Path | Description |
+|---|---|
+| `GET /health/ready` | `{ ready }`: database reachable |
+| `GET /health/live` | Liveness |
+| `GET /health/health` | Detailed health |
+| `GET /health/metrics` | Prometheus metrics |
+
+## WebSocket events
+
+Socket.IO on the API origin, path `/socket.io`. Subscribe to a run's room:
+
+```js
+const socket = io('http://localhost:3000');
+socket.emit('subscribe_run', { runId });
+socket.on('run_log', (e) => console.log(e.message));
+```
+
+Every payload includes `runId` and `timestamp`.
+
+| Event | Payload |
+|---|---|
+| `run_started` | `{ total, agentId, agentName }` |
+| `test_started` | `{ testId, title, index, total }` |
+| `run_log` | `{ level, message, testId?, stepId? }` |
+| `run_screenshot` | `{ testId, image }` (base64 JPEG after each step) |
+| `test_result` | `{ testId, resultId, title, status, error?, duration }` |
+| `run_progress` | `{ status, completed, total, passed, failed, skipped }` |
+| `run_completed` | `{ status, total, passed, failed, skipped, error? }` |
+| `runs_changed` | Broadcast to all clients when any run starts, finishes or records a result |
+
+## Rate limits
+
+1000 requests / 15 min per client by default (`RATE_LIMIT_POINTS`), 60 uploads / hour (`RATE_LIMIT_UPLOADS`), 20 login attempts / minute. Responses over the limit are `429` with `Retry-After`.

@@ -1,13 +1,12 @@
 /**
  * LLM Client Wrapper
- * Supports OpenAI, Azure OpenAI, Anthropic Claude, and GitHub Copilot
+ * Supports OpenAI (and OpenAI-compatible endpoints), Azure OpenAI, Anthropic Claude, and GitHub Copilot.
  */
 
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
-import dotenv from 'dotenv';
-
-dotenv.config();
+import '../config/env.js';
+import { CopilotClient, getCopilotGitHubToken, getCopilotModel } from './copilot.js';
 
 export type LLMProvider = 'openai' | 'azure' | 'anthropic' | 'copilot';
 
@@ -34,94 +33,110 @@ export interface LLMResponse {
   };
 }
 
+/** Accepts the aliases used in the UI/agent configs ("claude", "github") */
+export function normalizeProvider(value?: string | null): LLMProvider | undefined {
+  if (!value) return undefined;
+  const v = value.toLowerCase().trim();
+  if (v === 'claude' || v === 'anthropic') return 'anthropic';
+  if (v === 'openai' || v === 'gpt') return 'openai';
+  if (v === 'azure' || v === 'azure-openai') return 'azure';
+  if (v === 'copilot' || v === 'github' || v === 'github-copilot') return 'copilot';
+  return undefined;
+}
+
+export function getApiKeyFor(provider: LLMProvider): string {
+  switch (provider) {
+    case 'openai':
+      return process.env.OPENAI_API_KEY || '';
+    case 'azure':
+      return process.env.AZURE_OPENAI_API_KEY || '';
+    case 'anthropic':
+      return process.env.ANTHROPIC_API_KEY || '';
+    case 'copilot':
+      return getCopilotGitHubToken();
+    default:
+      return '';
+  }
+}
+
+export function getDefaultModel(provider: LLMProvider): string {
+  switch (provider) {
+    case 'openai':
+      return process.env.OPENAI_MODEL || 'gpt-4o';
+    case 'azure':
+      return process.env.AZURE_OPENAI_DEPLOYMENT || 'gpt-4o';
+    case 'anthropic':
+      return process.env.ANTHROPIC_MODEL || 'claude-opus-5-5';
+    case 'copilot':
+      return getCopilotModel();
+    default:
+      return 'gpt-4o';
+  }
+}
+
 export class LLMClient {
   private config: LLMConfig;
   private openaiClient?: OpenAI;
   private anthropicClient?: Anthropic;
+  private copilotClient?: CopilotClient;
 
   constructor(config?: Partial<LLMConfig>) {
-    const provider = (config?.provider || process.env.LLM_PROVIDER || 'openai') as LLMProvider;
+    const provider = (config?.provider || normalizeProvider(process.env.LLM_PROVIDER) || 'openai') as LLMProvider;
 
     this.config = {
       provider,
-      apiKey: config?.apiKey || this.getApiKey(provider),
-      model: config?.model || this.getDefaultModel(provider),
+      apiKey: config?.apiKey || getApiKeyFor(provider),
+      model: config?.model || getDefaultModel(provider),
       endpoint: config?.endpoint || process.env.AZURE_OPENAI_ENDPOINT,
-      temperature: config?.temperature ?? 0.7,
-      maxTokens: config?.maxTokens ?? 2000,
+      temperature: config?.temperature ?? 0.2,
+      maxTokens: config?.maxTokens ?? parseInt(process.env.LLM_MAX_TOKENS || '16000'),
     };
 
-    if (this.config.provider === 'openai' || this.config.provider === 'azure') {
+    const timeout = parseInt(process.env.LLM_TIMEOUT_MS || '180000');
+
+    if (provider === 'openai') {
       this.openaiClient = new OpenAI({
         apiKey: this.config.apiKey,
-        ...(this.config.provider === 'azure' && this.config.endpoint ? {
-          baseURL: `${this.config.endpoint}/openai/deployments/${this.config.model}`,
-          defaultQuery: { 'api-version': '2023-05-15' },
-          defaultHeaders: { 'api-key': this.config.apiKey },
-        } : {}),
+        timeout,
+        ...(process.env.OPENAI_BASE_URL ? { baseURL: process.env.OPENAI_BASE_URL } : {}),
       });
     }
 
-    if (this.config.provider === 'copilot') {
-      // GitHub Copilot exposes an OpenAI-compatible chat completions endpoint
+    if (provider === 'azure') {
       this.openaiClient = new OpenAI({
         apiKey: this.config.apiKey,
-        baseURL: 'https://api.githubcopilot.com',
+        timeout,
+        baseURL: `${(this.config.endpoint || '').replace(/\/$/, '')}/openai/deployments/${this.config.model}`,
+        defaultQuery: { 'api-version': process.env.AZURE_OPENAI_API_VERSION || '2024-06-01' },
+        defaultHeaders: { 'api-key': this.config.apiKey },
       });
     }
 
-    if (this.config.provider === 'anthropic') {
-      this.anthropicClient = new Anthropic({ apiKey: this.config.apiKey });
+    if (provider === 'copilot') {
+      // GitHub Copilot via API, SDK or CLI (COPILOT_MODE) — see copilot.ts
+      this.copilotClient = new CopilotClient();
+    }
+
+    if (provider === 'anthropic') {
+      this.anthropicClient = new Anthropic({ apiKey: this.config.apiKey, timeout });
     }
   }
 
-  private getApiKey(provider: LLMProvider): string {
-    switch (provider) {
-      case 'openai':
-        return process.env.OPENAI_API_KEY || '';
-      case 'azure':
-        return process.env.AZURE_OPENAI_API_KEY || '';
-      case 'anthropic':
-        return process.env.ANTHROPIC_API_KEY || '';
-      case 'copilot':
-        return process.env.GITHUB_TOKEN || '';
-      default:
-        return '';
-    }
-  }
-
-  private getDefaultModel(provider: LLMProvider): string {
-    switch (provider) {
-      case 'openai':
-        return 'gpt-4o';
-      case 'azure':
-        return 'gpt-4';
-      case 'anthropic':
-        return process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-latest';
-      case 'copilot':
-        return 'gpt-4o';
-      default:
-        return 'gpt-4o';
-    }
-  }
-
-  /**
-   * Generate a completion from messages
-   */
-  async chat(messages: LLMMessage[]): Promise<LLMResponse> {
+  async chat(messages: LLMMessage[], options?: { maxTokens?: number }): Promise<LLMResponse> {
     switch (this.config.provider) {
       case 'openai':
       case 'azure':
+        return this.chatOpenAI(messages, options);
       case 'copilot':
-        return this.chatOpenAI(messages);
+        return this.copilotClient!.chat(messages, options);
       case 'anthropic':
-        return this.chatAnthropic(messages);
+        return this.chatAnthropic(messages, options);
       default:
         throw new Error(`Unsupported provider: ${this.config.provider}`);
     }
   }
 
-  private async chatOpenAI(messages: LLMMessage[]): Promise<LLMResponse> {
+  private async chatOpenAI(messages: LLMMessage[], options?: { maxTokens?: number }): Promise<LLMResponse> {
     if (!this.openaiClient) {
       throw new Error('OpenAI client not initialized');
     }
@@ -129,12 +144,9 @@ export class LLMClient {
     try {
       const response = await this.openaiClient.chat.completions.create({
         model: this.config.model!,
-        messages: messages.map(msg => ({
-          role: msg.role,
-          content: msg.content,
-        })),
+        messages: messages.map(msg => ({ role: msg.role, content: msg.content })),
         temperature: this.config.temperature,
-        max_tokens: this.config.maxTokens,
+        max_tokens: Math.min(options?.maxTokens ?? this.config.maxTokens!, 16000),
       });
 
       const content = response.choices[0]?.message?.content || '';
@@ -150,31 +162,39 @@ export class LLMClient {
     }
   }
 
-  private async chatAnthropic(messages: LLMMessage[]): Promise<LLMResponse> {
+  private async chatAnthropic(messages: LLMMessage[], options?: { maxTokens?: number }): Promise<LLMResponse> {
     if (!this.anthropicClient) {
       throw new Error('Anthropic client not initialized');
     }
 
+    // System prompts go in the top-level `system` field; the conversation must
+    // start with a user turn and must not end with an assistant turn (no prefill).
+    const systemPrompt = messages.filter(m => m.role === 'system').map(m => m.content).join('\n\n');
+    const conversation = messages.filter(m => m.role !== 'system');
+    while (conversation.length > 0 && conversation[0].role !== 'user') conversation.shift();
+    if (conversation.length === 0) {
+      throw new Error('Anthropic request needs at least one user message');
+    }
+
     try {
-      // Separate system message from conversation messages
-      const systemMessages = messages.filter(m => m.role === 'system');
-      const conversationMessages = messages.filter(m => m.role !== 'system');
-
-      const systemPrompt = systemMessages.map(m => m.content).join('\n');
-
       const response = await this.anthropicClient.messages.create({
         model: this.config.model!,
-        max_tokens: this.config.maxTokens!,
+        max_tokens: options?.maxTokens ?? this.config.maxTokens!,
         ...(systemPrompt ? { system: systemPrompt } : {}),
-        messages: conversationMessages.map(m => ({
+        messages: conversation.map(m => ({
           role: m.role as 'user' | 'assistant',
           content: m.content,
         })),
       });
 
+      if (response.stop_reason === 'refusal') {
+        // Let the router fall back to another provider.
+        throw new Error('the model declined this request (stop_reason: refusal)');
+      }
+
       const content = response.content
-        .filter(block => block.type === 'text')
-        .map(block => (block as Anthropic.TextBlock).text)
+        .filter((block): block is Anthropic.TextBlock => block.type === 'text')
+        .map(block => block.text)
         .join('');
 
       const usage = response.usage ? {
@@ -193,35 +213,31 @@ export class LLMClient {
    * Generate embeddings for text (OpenAI only — Anthropic does not expose an embeddings API)
    */
   async generateEmbedding(text: string): Promise<number[]> {
-    // Always use OpenAI for embeddings regardless of the active chat provider
-    const embeddingClient = this.openaiClient ?? new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY || '',
-    });
+    const embeddingClient = this.config.provider === 'openai' && this.openaiClient
+      ? this.openaiClient
+      : new OpenAI({ apiKey: process.env.OPENAI_API_KEY || '' });
 
     try {
       const response = await embeddingClient.embeddings.create({
         model: 'text-embedding-3-small',
         input: text,
       });
-
       return response.data[0].embedding;
     } catch (error: any) {
       throw new Error(`Embedding generation error: ${error.message}`);
     }
   }
 
-  /** Return the active provider name */
   getProvider(): LLMProvider {
     return this.config.provider;
   }
 
-  /** Return the active model name */
   getModel(): string {
+    if (this.copilotClient) return `${this.copilotClient.getModel()} (${this.copilotClient.getMode()})`;
     return this.config.model || '';
   }
 }
 
-// Singleton instance
 let llmClient: LLMClient | null = null;
 
 export function getLLMClient(): LLMClient {
@@ -232,4 +248,3 @@ export function getLLMClient(): LLMClient {
 }
 
 export default getLLMClient;
-

@@ -4,6 +4,7 @@
 
 import { Request, Response, NextFunction } from 'express';
 import { JWTService } from './jwt.service.js';
+import { isAuthEnabled } from '../config/env.js';
 import logger from '../logger/index.js';
 
 export interface AuthenticatedRequest extends Request {
@@ -72,6 +73,25 @@ export async function authenticate(
     logger.error('Authentication failed', { error: error.message });
     res.status(401).json({ error: 'Authentication failed' });
   }
+}
+
+/** Identity used for every request when AUTH_ENABLED is not "true". */
+export const LOCAL_USER = { userId: 'local', email: 'local@localhost', role: 'admin' };
+
+/**
+ * Route guard used by the API: real authentication when AUTH_ENABLED=true,
+ * otherwise every request runs as the local admin user.
+ */
+export async function requireAuth(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  if (isAuthEnabled()) {
+    return authenticate(req, res, next);
+  }
+  req.user = { ...LOCAL_USER };
+  next();
 }
 
 /**

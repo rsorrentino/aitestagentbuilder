@@ -1,122 +1,71 @@
 /**
- * WebSocket Server for Real-time Updates
- * Uses Socket.IO for better browser compatibility
+ * WebSocket server (Socket.IO) for real-time run updates.
+ *
+ * Clients join a run's room with `socket.emit('subscribe_run', { runId })`.
+ * Run events are sent to that room; a lightweight `runs_changed` event is
+ * broadcast to everyone so list pages can refresh.
+ *
+ * Every event payload is flat and always includes `runId`:
+ *   run_started    { runId, total }
+ *   run_log        { runId, level, message, testId?, stepId? }
+ *   run_screenshot { runId, testId, image }      (base64 JPEG)
+ *   test_started   { runId, testId, title, index, total }
+ *   test_result    { runId, testId, title, status, error?, duration }
+ *   run_progress   { runId, status, completed, total, passed, failed, skipped }
+ *   run_completed  { runId, status, total, passed, failed, skipped, error? }
  */
 
 import { Server as HTTPServer } from 'http';
 import { Server as SocketIOServer } from 'socket.io';
 import logger from '../logger/index.js';
 
-export interface WebSocketMessage {
-  type: 'run_started' | 'run_progress' | 'run_completed' | 'test_result' | 'error';
-  data: any;
-  timestamp: string;
-}
-
 export class WebSocketService {
   private io: SocketIOServer;
-  private clients: Map<string, any> = new Map();
 
   constructor(server: HTTPServer) {
     this.io = new SocketIOServer(server, {
       path: '/socket.io',
       cors: {
-        origin: '*',
+        origin: process.env.CORS_ORIGIN?.split(',') || '*',
         methods: ['GET', 'POST'],
       },
     });
 
     this.io.on('connection', (socket) => {
-      const clientId = socket.id;
-      this.clients.set(clientId, socket);
+      logger.debug('WebSocket client connected', { clientId: socket.id });
 
-      logger.info('WebSocket client connected', { clientId });
+      socket.on('subscribe_run', (payload: { runId?: string } | string) => {
+        const runId = typeof payload === 'string' ? payload : payload?.runId;
+        if (runId) socket.join(`run:${runId}`);
+      });
+
+      socket.on('unsubscribe_run', (payload: { runId?: string } | string) => {
+        const runId = typeof payload === 'string' ? payload : payload?.runId;
+        if (runId) socket.leave(`run:${runId}`);
+      });
 
       socket.on('disconnect', () => {
-        this.clients.delete(clientId);
-        logger.info('WebSocket client disconnected', { clientId });
-      });
-
-      socket.on('error', (error) => {
-        logger.error('WebSocket error', { clientId, error: error.message });
-      });
-
-      // Send welcome message
-      socket.emit('run_started', {
-        type: 'run_started',
-        data: { message: 'Connected to AI Test Agent Builder' },
-        timestamp: new Date().toISOString(),
+        logger.debug('WebSocket client disconnected', { clientId: socket.id });
       });
     });
   }
 
-  /**
-   * Broadcast message to all connected clients
-   */
-  broadcast(message: WebSocketMessage): void {
-    this.io.emit(message.type, message);
-  }
-
-  /**
-   * Send message to specific client
-   */
-  sendToClient(clientId: string, message: WebSocketMessage): void {
-    const client = this.clients.get(clientId);
-    if (client) {
-      try {
-        client.emit(message.type, message);
-      } catch (error: any) {
-        logger.error('Failed to send message to client', { clientId, error: error.message });
-      }
+  emitRun(runId: string, event: string, data: Record<string, any>): void {
+    this.io.to(`run:${runId}`).emit(event, { runId, ...data, timestamp: new Date().toISOString() });
+    if (event === 'run_started' || event === 'run_completed' || event === 'test_result') {
+      this.io.emit('runs_changed', { runId, event });
     }
   }
 
-  /**
-   * Broadcast run progress update
-   */
-  broadcastRunProgress(runId: string, progress: {
-    status: string;
-    completed: number;
-    total: number;
-    passed: number;
-    failed: number;
-  }): void {
-    this.broadcast({
-      type: 'run_progress',
-      data: { runId, ...progress },
-      timestamp: new Date().toISOString(),
-    });
-  }
-
-  /**
-   * Broadcast test result
-   */
-  broadcastTestResult(runId: string, result: any): void {
-    this.broadcast({
-      type: 'test_result',
-      data: { runId, result },
-      timestamp: new Date().toISOString(),
-    });
-  }
-
-  /**
-   * Broadcast run completion
-   */
-  broadcastRunCompleted(runId: string, summary: any): void {
-    this.broadcast({
-      type: 'run_completed',
-      data: { runId, summary },
-      timestamp: new Date().toISOString(),
-    });
-  }
-
-
   getClientCount(): number {
-    return this.clients.size;
+    return this.io.engine.clientsCount;
+  }
+
+  close(): Promise<void> {
+    return new Promise((resolve) => this.io.close(() => resolve()));
   }
 }
 
-// Singleton instance
 let wsService: WebSocketService | null = null;
 
 export function initializeWebSocket(server: HTTPServer): WebSocketService {
@@ -130,3 +79,7 @@ export function getWebSocketService(): WebSocketService | null {
   return wsService;
 }
 
+/** Emit a run event if the WebSocket server is running (no-op in CLI/tests). */
+export function emitRunEvent(runId: string, event: string, data: Record<string, any>): void {
+  wsService?.emitRun(runId, event, data);
+}
