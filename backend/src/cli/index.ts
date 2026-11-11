@@ -40,6 +40,7 @@ program
   .option('-e, --environment <env>', 'Environment override')
   .option('-o, --output <path>', 'Report output directory', './reports')
   .option('-f, --formats <formats>', 'Report formats (comma-separated)', 'html,junit,json')
+  .option('-p, --project <id>', 'Project ID', process.env.PROJECT_ID || 'default')
   .action(async (options) => {
     try {
       await runMigrations();
@@ -55,14 +56,16 @@ program
       if (errors.length) throw new Error(errors.join('; '));
 
       const agentRepo = new AgentRepository();
-      let agent = await agentRepo.findByName(name);
+      const projectId = String(options.project);
+      let agent = await agentRepo.findByName(name, projectId);
       agent = agent
-        ? (await agentRepo.update(agent.id, { config: config! }))!
-        : await agentRepo.create({ name, config: config! });
+        ? (await agentRepo.update(agent.id, { config: config! }, projectId))!
+        : await agentRepo.create({ name, config: config!, projectId });
 
       console.log(`▶ Agent "${agent.name}" → ${agent.config.base_url}`);
       const run = await OrchestratorService.get().startRun({
         agentId: agent.id,
+        projectId,
         metadata: { environment: agent.config.environment, triggeredBy: 'cli' },
       });
       console.log(`  Run ${run.id}: ${run.totalTests} test(s)`);

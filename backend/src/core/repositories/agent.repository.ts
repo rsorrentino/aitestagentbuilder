@@ -1,112 +1,83 @@
 /**
- * Agent Repository
+ * Agent Repository (project-scoped; secrets are encrypted before storage).
  */
 
 import getDatabaseClient from '../../infra/db/client.js';
 import { Agent, AgentCreateInput, AgentUpdateInput } from '../domain/agent.js';
+import { sealAgentConfig } from '../domain/agent-secrets.js';
 
 export class AgentRepository {
   private db = getDatabaseClient();
 
-  async create(input: AgentCreateInput): Promise<Agent> {
-    const id = `AGENT-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  async create(input: AgentCreateInput & { projectId: string }): Promise<Agent> {
+    const id = `AGENT-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
     const now = new Date();
-
-    const query = `
-      INSERT INTO agents (id, name, config, status, created_at, updated_at, created_by)
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
-      RETURNING *
-    `;
-
-    const result = await this.db.query<Agent>(query, [
-      id,
-      input.name,
-      JSON.stringify(input.config),
-      'active',
-      now,
-      now,
-      input.createdBy || null,
-    ]);
-
+    const result = await this.db.query(
+      `INSERT INTO agents (id, name, config, status, created_at, updated_at, created_by, project_id)
+       VALUES ($1, $2, $3, 'active', $4, $4, $5, $6) RETURNING *`,
+      [id, input.name, JSON.stringify(sealAgentConfig(input.config)), now, input.createdBy || null, input.projectId],
+    );
     return this.mapRowToAgent(result.rows[0]);
   }
 
-  async findById(id: string): Promise<Agent | null> {
-    const query = 'SELECT * FROM agents WHERE id = $1';
-    const result = await this.db.query<Agent>(query, [id]);
-    
-    if (result.rows.length === 0) return null;
-    return this.mapRowToAgent(result.rows[0]);
+  /** With `projectId`, only finds the agent inside that project. */
+  async findById(id: string, projectId?: string): Promise<Agent | null> {
+    const result = projectId
+      ? await this.db.query('SELECT * FROM agents WHERE id = $1 AND project_id = $2', [id, projectId])
+      : await this.db.query('SELECT * FROM agents WHERE id = $1', [id]);
+    return result.rows.length ? this.mapRowToAgent(result.rows[0]) : null;
   }
 
-  async findByName(name: string): Promise<Agent | null> {
-    const query = 'SELECT * FROM agents WHERE name = $1';
-    const result = await this.db.query<Agent>(query, [name]);
-    
-    if (result.rows.length === 0) return null;
-    return this.mapRowToAgent(result.rows[0]);
+  async findByName(name: string, projectId: string): Promise<Agent | null> {
+    const result = await this.db.query('SELECT * FROM agents WHERE name = $1 AND project_id = $2', [name, projectId]);
+    return result.rows.length ? this.mapRowToAgent(result.rows[0]) : null;
   }
 
-  async findAll(limit: number = 100, offset: number = 0): Promise<Agent[]> {
-    const query = 'SELECT * FROM agents ORDER BY created_at DESC LIMIT $1 OFFSET $2';
-    const result = await this.db.query<Agent>(query, [limit, offset]);
-    return result.rows.map(row => this.mapRowToAgent(row));
+  async findAll(projectId: string, limit: number = 100, offset: number = 0): Promise<Agent[]> {
+    const result = await this.db.query(
+      'SELECT * FROM agents WHERE project_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3',
+      [projectId, limit, offset],
+    );
+    return result.rows.map((row) => this.mapRowToAgent(row));
   }
 
-  async findByStatus(status: string): Promise<Agent[]> {
-    const query = 'SELECT * FROM agents WHERE status = $1 ORDER BY created_at DESC';
-    const result = await this.db.query<Agent>(query, [status]);
-    return result.rows.map(row => this.mapRowToAgent(row));
-  }
+  async update(id: string, input: AgentUpdateInput, projectId?: string): Promise<Agent | null> {
+    const existing = await this.findById(id, projectId);
+    if (!existing) return null;
 
-  async update(id: string, input: AgentUpdateInput): Promise<Agent | null> {
     const updates: string[] = [];
     const values: any[] = [];
-    let paramCount = 1;
+    const set = (column: string, value: any) => { values.push(value); updates.push(`${column} = $${values.length}`); };
 
-    if (input.name !== undefined) {
-      updates.push(`name = $${paramCount++}`);
-      values.push(input.name);
-    }
-    if (input.config !== undefined) {
-      updates.push(`config = $${paramCount++}`);
-      values.push(JSON.stringify(input.config));
-    }
-    if (input.status !== undefined) {
-      updates.push(`status = $${paramCount++}`);
-      values.push(input.status);
-    }
+    if (input.name !== undefined) set('name', input.name);
+    if (input.config !== undefined) set('config', JSON.stringify(sealAgentConfig(input.config, existing.config)));
+    if (input.status !== undefined) set('status', input.status);
+    if (updates.length === 0) return existing;
 
-    if (updates.length === 0) {
-      return this.findById(id);
-    }
-
-    updates.push(`updated_at = $${paramCount++}`);
-    values.push(new Date());
+    set('updated_at', new Date());
     values.push(id);
-
-    const query = `
-      UPDATE agents 
-      SET ${updates.join(', ')}
-      WHERE id = $${paramCount}
-      RETURNING *
-    `;
-
-    const result = await this.db.query<Agent>(query, values);
-    if (result.rows.length === 0) return null;
-    return this.mapRowToAgent(result.rows[0]);
+    const result = await this.db.query(`UPDATE agents SET ${updates.join(', ')} WHERE id = $${values.length} RETURNING *`, values);
+    return result.rows.length ? this.mapRowToAgent(result.rows[0]) : null;
   }
 
-  async delete(id: string): Promise<boolean> {
-    const query = 'DELETE FROM agents WHERE id = $1';
-    const result = await this.db.query(query, [id]);
-    return result.rowCount !== null && result.rowCount > 0;
+  async delete(id: string, projectId?: string): Promise<boolean> {
+    const result = projectId
+      ? await this.db.query('DELETE FROM agents WHERE id = $1 AND project_id = $2', [id, projectId])
+      : await this.db.query('DELETE FROM agents WHERE id = $1', [id]);
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  /** All agents (any project) — used by the startup secret re-encryption. */
+  async findAllUnscoped(): Promise<Agent[]> {
+    const result = await this.db.query('SELECT * FROM agents');
+    return result.rows.map((row) => this.mapRowToAgent(row));
   }
 
   private mapRowToAgent(row: any): Agent {
     return {
       id: row.id,
       name: row.name,
+      projectId: row.project_id,
       config: typeof row.config === 'string' ? JSON.parse(row.config) : row.config,
       status: row.status,
       createdAt: row.created_at,
@@ -115,4 +86,3 @@ export class AgentRepository {
     };
   }
 }
-

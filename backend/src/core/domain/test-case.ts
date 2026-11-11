@@ -45,6 +45,7 @@ export interface TestCase {
   version?: string; // Current version
   versions?: TestCaseVersion[]; // Version history
   documentId?: string;
+  projectId?: string;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -63,6 +64,7 @@ export interface TestCaseCreateInput {
   data?: Record<string, any>;
   metadata?: TestCase['metadata'];
   documentId?: string;
+  projectId?: string;
 }
 
 export interface TestCaseUpdateInput {

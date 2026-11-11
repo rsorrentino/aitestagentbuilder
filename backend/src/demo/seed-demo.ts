@@ -69,9 +69,8 @@ export const DEMO_TESTS: TestCaseCreateInput[] = [
   },
 ];
 
-export async function seedDemo(baseUrl?: string): Promise<{ agentId: string; created: number }> {
+export async function seedDemo(baseUrl?: string, projectId = 'default'): Promise<{ agentId: string; created: number }> {
   const url = baseUrl || process.env.DEMO_BASE_URL || `http://localhost:${process.env.PORT || 3000}/demo/`;
-  await runMigrations();
 
   const agents = new AgentRepository();
   const testCases = new TestCaseRepository();
@@ -82,16 +81,16 @@ export async function seedDemo(baseUrl?: string): Promise<{ agentId: string; cre
     ai: { self_healing: true },
   });
 
-  const existing = await agents.findByName(DEMO_AGENT_NAME);
+  const existing = await agents.findByName(DEMO_AGENT_NAME, projectId);
   const agent = existing
-    ? (await agents.update(existing.id, { config: config! }))!
-    : await agents.create({ name: DEMO_AGENT_NAME, config: config! });
+    ? (await agents.update(existing.id, { config: config! }, projectId))!
+    : await agents.create({ name: DEMO_AGENT_NAME, config: config!, projectId });
 
-  const present = new Set((await testCases.search({ tags: ['demo'], limit: 100 })).map((t) => t.title));
+  const present = new Set((await testCases.search({ projectId, tags: ['demo'], limit: 100 })).map((t) => t.title));
   let created = 0;
   for (const tc of DEMO_TESTS) {
     if (present.has(tc.title)) continue;
-    await testCases.create({ ...tc, metadata: { author: 'demo-seed' } });
+    await testCases.create({ ...tc, projectId, metadata: { author: 'demo-seed' } });
     created++;
   }
   return { agentId: agent.id, created };
@@ -99,7 +98,8 @@ export async function seedDemo(baseUrl?: string): Promise<{ agentId: string; cre
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
 if (isMain) {
-  seedDemo()
+  runMigrations()
+    .then(() => seedDemo(undefined, process.env.PROJECT_ID || 'default'))
     .then(({ agentId, created }) => {
       console.log(`✅ Demo agent ready (${agentId}); ${created} new test case(s). Open the agent and click "Start Run".`);
     })
@@ -107,5 +107,8 @@ if (isMain) {
       console.error('❌ Demo seed failed:', e.message);
       process.exitCode = 1;
     })
-    .finally(() => getDatabaseClient().close());
+    .finally(async () => {
+      await getDatabaseClient().close().catch(() => undefined);
+      process.exit(process.exitCode ?? 0);
+    });
 }

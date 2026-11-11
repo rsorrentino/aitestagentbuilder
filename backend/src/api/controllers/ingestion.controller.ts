@@ -3,7 +3,8 @@
  * Handles document upload and AI test case extraction.
  */
 
-import { Request, Response } from 'express';
+import { Response } from 'express';
+import { AuthenticatedRequest } from '../../infra/auth/auth.middleware.js';
 import {
   DocumentParserService,
   detectSourceType,
@@ -21,17 +22,17 @@ export class IngestionController {
   private documentRepo = new DocumentRepository();
   private testCaseRepo = new TestCaseRepository();
 
-  async listDocuments(req: Request, res: Response): Promise<void> {
+  async listDocuments(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
       const limit = parseInt(req.query.limit as string) || 100;
-      res.json(await this.documentRepo.findAll(limit));
+      res.json(await this.documentRepo.findAll(req.project!.id, limit));
     } catch (error: any) {
       logger.error('Failed to list documents', { error: error.message });
       res.status(500).json({ error: error.message });
     }
   }
 
-  async uploadDocument(req: Request, res: Response): Promise<void> {
+  async uploadDocument(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
       if (!req.file) {
         res.status(400).json({ error: 'No file uploaded (multipart field name must be "file")' });
@@ -50,7 +51,10 @@ export class IngestionController {
         content,
         fileSize: file.size,
         mimeType: file.mimetype,
+        uploadedBy: req.user?.email,
+        projectId: req.project!.id,
       });
+      res.locals.audit = { entityId: document.id, details: { name: document.name, size: document.fileSize } };
 
       res.status(201).json({
         id: document.id,
@@ -67,9 +71,9 @@ export class IngestionController {
   }
 
   /** Returns the parsed plain text of a document (useful to check parsing). */
-  async previewDocument(req: Request, res: Response): Promise<void> {
+  async previewDocument(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
-      const document = await this.documentRepo.findById(req.params.documentId);
+      const document = await this.documentRepo.findById(req.params.documentId, req.project!.id);
       if (!document) {
         res.status(404).json({ error: 'Document not found' });
         return;
@@ -81,9 +85,9 @@ export class IngestionController {
     }
   }
 
-  async deleteDocument(req: Request, res: Response): Promise<void> {
+  async deleteDocument(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
-      const deleted = await this.documentRepo.delete(req.params.documentId);
+      const deleted = await this.documentRepo.delete(req.params.documentId, req.project!.id);
       if (!deleted) {
         res.status(404).json({ error: 'Document not found' });
         return;
@@ -94,14 +98,14 @@ export class IngestionController {
     }
   }
 
-  async extractTestCases(req: Request, res: Response): Promise<void> {
+  async extractTestCases(req: AuthenticatedRequest, res: Response): Promise<void> {
     const { documentId } = req.params;
     const module = (req.body?.module ?? req.query.module) as string | undefined;
     const priority = (req.body?.priority ?? req.query.priority) as string | undefined;
     const baseUrl = (req.body?.baseUrl ?? req.query.baseUrl) as string | undefined;
 
     try {
-      const document = await this.documentRepo.findById(documentId);
+      const document = await this.documentRepo.findById(documentId, req.project!.id);
       if (!document) {
         res.status(404).json({ error: 'Document not found' });
         return;
@@ -114,10 +118,11 @@ export class IngestionController {
 
       const saved = [];
       for (const tc of extraction.testCases) {
-        saved.push(await this.testCaseRepo.create(tc));
+        saved.push(await this.testCaseRepo.create({ ...tc, projectId: req.project!.id }));
       }
 
       await this.documentRepo.updateStatus(documentId, 'processed');
+      res.locals.audit = { details: { extracted: saved.length, provider: extraction.metadata.provider } };
 
       res.json({
         documentId,

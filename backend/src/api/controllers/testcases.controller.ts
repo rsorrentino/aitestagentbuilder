@@ -2,7 +2,8 @@
  * Test Cases Controller
  */
 
-import { Request, Response } from 'express';
+import { Response } from 'express';
+import { AuthenticatedRequest } from '../../infra/auth/auth.middleware.js';
 import { TestCaseRepository } from '../../core/repositories/test-case.repository.js';
 import { normalizeStep, normalizeTestCaseInput, validateTestCaseInput } from '../../core/domain/normalize.js';
 import logger from '../../infra/logger/index.js';
@@ -17,15 +18,16 @@ function listParam(value: unknown): string[] | undefined {
 export class TestCasesController {
   private testCaseRepo = new TestCaseRepository();
 
-  async createTestCase(req: Request, res: Response): Promise<void> {
+  async createTestCase(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
       const errors = validateTestCaseInput(req.body);
       if (errors.length) {
         res.status(400).json({ error: errors.join('; ') });
         return;
       }
-      const input = normalizeTestCaseInput(req.body, { author: 'manual' })!;
-      const testCase = await this.testCaseRepo.create(input);
+      const input = normalizeTestCaseInput(req.body, { author: req.user?.email ?? 'manual' })!;
+      const testCase = await this.testCaseRepo.create({ ...input, projectId: req.project!.id });
+      res.locals.audit = { entityId: testCase.id, details: { title: testCase.title } };
       res.status(201).json(testCase);
     } catch (error: any) {
       logger.error('Test case creation failed', { error: error.message });
@@ -33,9 +35,9 @@ export class TestCasesController {
     }
   }
 
-  async getTestCase(req: Request, res: Response): Promise<void> {
+  async getTestCase(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
-      const testCase = await this.testCaseRepo.findById(req.params.id);
+      const testCase = await this.testCaseRepo.findById(req.params.id, req.project!.id);
       if (!testCase) {
         res.status(404).json({ error: 'Test case not found' });
         return;
@@ -47,9 +49,10 @@ export class TestCasesController {
     }
   }
 
-  async listTestCases(req: Request, res: Response): Promise<void> {
+  async listTestCases(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
       const testCases = await this.testCaseRepo.search({
+        projectId: req.project!.id,
         module: listParam(req.query.module),
         priority: listParam(req.query.priority),
         type: listParam(req.query.type),
@@ -66,9 +69,9 @@ export class TestCasesController {
     }
   }
 
-  async listModules(_req: Request, res: Response): Promise<void> {
+  async listModules(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
-      const all = await this.testCaseRepo.search({ limit: 5000 });
+      const all = await this.testCaseRepo.search({ projectId: req.project!.id, limit: 5000 });
       const counts = new Map<string, number>();
       all.forEach((tc) => counts.set(tc.module, (counts.get(tc.module) ?? 0) + 1));
       res.json([...counts.entries()].map(([module, count]) => ({ module, count })).sort((a, b) => a.module.localeCompare(b.module)));
@@ -77,7 +80,7 @@ export class TestCasesController {
     }
   }
 
-  async updateTestCase(req: Request, res: Response): Promise<void> {
+  async updateTestCase(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
       const errors = validateTestCaseInput(req.body, true);
       if (errors.length) {
@@ -88,7 +91,8 @@ export class TestCasesController {
       if (Array.isArray(body.steps)) {
         body.steps = body.steps.map(normalizeStep).filter(Boolean);
       }
-      const testCase = await this.testCaseRepo.update(req.params.id, body);
+      const testCase = await this.testCaseRepo.update(req.params.id, body, req.project!.id);
+      res.locals.audit = { details: { fields: Object.keys(body) } };
       if (!testCase) {
         res.status(404).json({ error: 'Test case not found' });
         return;
@@ -100,9 +104,9 @@ export class TestCasesController {
     }
   }
 
-  async deleteTestCase(req: Request, res: Response): Promise<void> {
+  async deleteTestCase(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
-      const deleted = await this.testCaseRepo.delete(req.params.id);
+      const deleted = await this.testCaseRepo.delete(req.params.id, req.project!.id);
       if (!deleted) {
         res.status(404).json({ error: 'Test case not found' });
         return;

@@ -15,10 +15,30 @@ import { OrchestratorService } from './modules/orchestration/services/orchestrat
 import { getLLMRouter } from './infra/llm/router.js';
 import { CopilotClient } from './infra/llm/copilot.js';
 import { isAuthEnabled } from './infra/config/env.js';
+import { assertSecretsKey, isEncrypted } from './infra/security/secrets.js';
+import { AgentRepository } from './core/repositories/agent.repository.js';
+import { startBackgroundJobs, stopBackgroundJobs } from './modules/automation/background-jobs.js';
+
+/** Encrypt secrets stored in plaintext by versions before encryption existed. */
+async function encryptLegacySecrets(): Promise<number> {
+  const repo = new AgentRepository();
+  let count = 0;
+  for (const agent of await repo.findAllUnscoped()) {
+    const cfg: any = agent.config ?? {};
+    const plain = Object.values(cfg.secrets ?? {}).some((v) => !isEncrypted(v))
+      || ['password', 'security_token'].some((f) => cfg.salesforce?.[f] && !isEncrypted(cfg.salesforce[f]));
+    if (plain) {
+      await repo.update(agent.id, { config: cfg });
+      count++;
+    }
+  }
+  return count;
+}
 
 const PORT = parseInt(process.env.PORT || '3000');
 
 async function start(): Promise<void> {
+  assertSecretsKey();
   const db = getDatabaseClient();
   if (!(await db.healthCheck())) {
     logger.error(
@@ -28,10 +48,12 @@ async function start(): Promise<void> {
     process.exit(1);
   }
 
-  const { vector } = await runMigrations(db);
-  logger.info(`Database ready${vector ? ' (pgvector enabled)' : ''}`);
+  const { vector, current, applied } = await runMigrations(db);
+  logger.info(`Database ready at schema v${current}${applied.length ? ` (applied ${applied.join(', ')})` : ''}${vector ? ', pgvector enabled' : ''}`);
 
   await seedAdminUser();
+  const encrypted = await encryptLegacySecrets();
+  if (encrypted > 0) logger.info(`Encrypted plaintext secrets of ${encrypted} agent(s)`);
   const interrupted = await new RunRepository().failInterruptedRuns();
   if (interrupted > 0) logger.warn(`Marked ${interrupted} interrupted run(s) as failed`);
 
@@ -54,10 +76,12 @@ async function start(): Promise<void> {
     const order = getLLMRouter().providerOrder('chat');
     if (order.length) logger.info(`AI providers: ${order.join(' → ')}`);
     else logger.warn('No AI provider configured — test runs work, but AI extraction/generation/chat are disabled. See .env.example.');
+    startBackgroundJobs();
   });
 
   const shutdown = async (signal: string) => {
     logger.info(`${signal} received, shutting down`);
+    stopBackgroundJobs();
     await OrchestratorService.get().shutdown();
     await CopilotClient.shutdown();
     server.close();

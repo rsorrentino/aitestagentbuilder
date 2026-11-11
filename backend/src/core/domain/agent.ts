@@ -37,6 +37,10 @@ export interface AgentConfig {
   tools: AgentTools;
   reporting: ReportingConfig;
   environment: string;
+  /** Named secrets usable in steps as {{secrets.NAME}} (encrypted at rest) */
+  secrets?: Record<string, string>;
+  salesforce?: { username?: string; password?: string; security_token?: string; sandbox?: boolean };
+  ai?: { provider?: string; self_healing?: boolean; model?: string };
   max_parallel_tests?: number;
   timeout?: number;
   retries?: number;
@@ -46,6 +50,7 @@ export interface AgentConfig {
 export interface Agent {
   id: string;
   name: string;
+  projectId: string;
   config: AgentConfig;
   createdAt: Date;
   updatedAt: Date;

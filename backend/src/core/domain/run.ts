@@ -37,6 +37,7 @@ export interface TestRun {
   id: string;
   agentId: string;
   agentName?: string;
+  projectId?: string;
   status: RunStatus;
   startedAt: Date;
   finishedAt?: Date;
@@ -59,6 +60,7 @@ export interface TestRun {
 
 export interface TestRunCreateInput {
   agentId: string;
+  projectId?: string;
   metadata?: TestRun['metadata'];
 }
 

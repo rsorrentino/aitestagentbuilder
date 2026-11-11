@@ -70,3 +70,4 @@ artifacts/
 reports/
 *.tsbuildinfo
 next-env.d.ts.bak
+.data/

@@ -21,8 +21,8 @@ export class TestCaseRepository {
     const query = `
       INSERT INTO test_cases (
         id, title, module, description, steps, expected_results,
-        preconditions, postconditions, priority, tags, type, data, metadata, created_at, updated_at, document_id
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+        preconditions, postconditions, priority, tags, type, data, metadata, created_at, updated_at, document_id, project_id
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
       RETURNING *
     `;
 
@@ -43,6 +43,7 @@ export class TestCaseRepository {
       now,
       now,
       input.documentId || null,
+      input.projectId || 'default',
     ]);
 
     return this.mapRowToTestCase(result.rows[0]);
@@ -53,6 +54,7 @@ export class TestCaseRepository {
    * Each condition uses {} as the placeholder for its single parameter.
    */
   async search(filters: {
+    projectId?: string;
     module?: string[];
     priority?: string[];
     type?: string[];
@@ -70,6 +72,7 @@ export class TestCaseRepository {
       where.push(sql.split('{}').join(`$${values.length}`));
     };
 
+    if (filters.projectId) add('project_id = {}', filters.projectId);
     if (filters.ids?.length) add('id = ANY({})', filters.ids);
     if (filters.module?.length) add('module = ANY({})', filters.module);
     if (filters.priority?.length) add('priority = ANY({})', filters.priority);
@@ -85,9 +88,10 @@ export class TestCaseRepository {
     return result.rows.map(row => this.mapRowToTestCase(row));
   }
 
-  async findById(id: string): Promise<TestCase | null> {
-    const query = 'SELECT * FROM test_cases WHERE id = $1';
-    const result = await this.db.query<TestCase>(query, [id]);
+  async findById(id: string, projectId?: string): Promise<TestCase | null> {
+    const result = projectId
+      ? await this.db.query('SELECT * FROM test_cases WHERE id = $1 AND project_id = $2', [id, projectId])
+      : await this.db.query('SELECT * FROM test_cases WHERE id = $1', [id]);
     
     if (result.rows.length === 0) return null;
     return this.mapRowToTestCase(result.rows[0]);
@@ -121,7 +125,8 @@ export class TestCaseRepository {
     return result.rows.map(row => this.mapRowToTestCase(row));
   }
 
-  async update(id: string, input: TestCaseUpdateInput): Promise<TestCase | null> {
+  async update(id: string, input: TestCaseUpdateInput, projectId?: string): Promise<TestCase | null> {
+    if (projectId && !(await this.findById(id, projectId))) return null;
     const updates: string[] = [];
     const values: any[] = [];
     let paramCount = 1;
@@ -195,9 +200,10 @@ export class TestCaseRepository {
     return this.mapRowToTestCase(result.rows[0]);
   }
 
-  async delete(id: string): Promise<boolean> {
-    const query = 'DELETE FROM test_cases WHERE id = $1';
-    const result = await this.db.query(query, [id]);
+  async delete(id: string, projectId?: string): Promise<boolean> {
+    const result = projectId
+      ? await this.db.query('DELETE FROM test_cases WHERE id = $1 AND project_id = $2', [id, projectId])
+      : await this.db.query('DELETE FROM test_cases WHERE id = $1', [id]);
     return result.rowCount !== null && result.rowCount > 0;
   }
 
@@ -243,6 +249,7 @@ export class TestCaseRepository {
       data: row.data ? (typeof row.data === 'string' ? JSON.parse(row.data) : row.data) : undefined,
       metadata: row.metadata ? (typeof row.metadata === 'string' ? JSON.parse(row.metadata) : row.metadata) : undefined,
       documentId: row.document_id ?? undefined,
+      projectId: row.project_id,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };

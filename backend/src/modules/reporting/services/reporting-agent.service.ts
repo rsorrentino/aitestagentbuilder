@@ -46,8 +46,8 @@ export class ReportingAgentService {
   private runRepo = new RunRepository();
   private db = getDatabaseClient();
 
-  async loadRun(runId: string): Promise<TestRun> {
-    const run = await this.runRepo.findRunById(runId);
+  async loadRun(runId: string, projectId?: string): Promise<TestRun> {
+    const run = await this.runRepo.findRunById(runId, projectId);
     if (!run) throw new Error(`Run not found: ${runId}`);
     return run;
   }

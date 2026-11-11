@@ -14,6 +14,8 @@ import { getLLMRouter } from '../../infra/llm/router.js';
 import { extractJsonArray } from '../../infra/llm/json.js';
 import { BACKEND_ROOT } from '../../infra/config/env.js';
 import logger from '../../infra/logger/index.js';
+import { decryptAgentConfig, resolvePlaceholders, secretValues } from '../../core/domain/agent-secrets.js';
+import { maskSecrets } from '../../infra/security/secrets.js';
 import { launchBrowser, outlinePage } from './browser.js';
 import { classifyAction, executeStep, isSelectorFailure, StepContext } from './step-runner.js';
 
@@ -40,7 +42,31 @@ export class RunExecutor {
   private cancelled = false;
   private browser?: Browser;
 
-  constructor(private runId: string, private agent: Agent, private testCases: TestCase[]) {}
+  /** Agent config with decrypted secrets — kept in memory only for this run. */
+  private config: any;
+  private secrets: Record<string, string>;
+  private secretList: string[];
+
+  constructor(private runId: string, private agent: Agent, private testCases: TestCase[]) {
+    this.config = decryptAgentConfig(agent.config);
+    this.secrets = this.config.secrets ?? {};
+    this.secretList = secretValues(this.config);
+  }
+
+  private mask(text: string): string {
+    return maskSecrets(text, this.secretList);
+  }
+
+  /** Resolve {{secrets.NAME}} / {{env.NAME}} in a step's target and data values. */
+  private resolveStep(step: TestStep): TestStep {
+    const resolve = (v: any): any => {
+      if (typeof v === 'string') return resolvePlaceholders(v, this.secrets);
+      if (Array.isArray(v)) return v.map(resolve);
+      if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, resolve(x)]));
+      return v;
+    };
+    return { ...step, target: step.target ? resolve(step.target) : step.target, data: step.data ? resolve(step.data) : step.data };
+  }
 
   cancel(): void {
     this.cancelled = true;
@@ -48,14 +74,14 @@ export class RunExecutor {
   }
 
   private log(message: string, extra: Record<string, any> = {}, level: 'info' | 'warn' | 'error' = 'info'): void {
-    emitRunEvent(this.runId, 'run_log', { level, message, ...extra });
+    emitRunEvent(this.runId, 'run_log', { level, message: this.mask(message), ...extra });
   }
 
   /** Runs every test; resolves with the final run status. */
   async execute(): Promise<'completed' | 'failed' | 'cancelled'> {
     const total = this.testCases.length;
     const counts = { passed: 0, failed: 0, skipped: 0 };
-    const config = this.agent.config as any;
+    const config = this.config;
     const retries = Math.min(Math.max(Number(config.retries ?? 0), 0), 3);
 
     emitRunEvent(this.runId, 'run_started', { total, agentId: this.agent.id, agentName: this.agent.name });
@@ -100,7 +126,7 @@ export class RunExecutor {
   }
 
   private async runTestCase(testCase: TestCase, attempt: number): Promise<string> {
-    const config = this.agent.config as any;
+    const config = this.config;
     const startedAt = new Date();
     const result = await this.runRepo.createResult({
       runId: this.runId,
@@ -155,7 +181,7 @@ export class RunExecutor {
         error = 'Run cancelled';
       } else {
         status = 'error';
-        error = e.message;
+        error = this.mask(e.message);
       }
     }
 
@@ -191,10 +217,10 @@ export class RunExecutor {
     this.log(`  Step ${step.stepId}: ${step.action}${step.target ? ` → ${step.target}` : ''}`, { testId: testCase.id, stepId: step.stepId });
 
     try {
-      const outcome = await executeStep(step, ctx);
-      return { ...base, ...outcome, durationMs: Date.now() - started };
+      const outcome = await executeStep(this.resolveStep(step), ctx);
+      return { ...base, ...outcome, message: this.mask(outcome.message), durationMs: Date.now() - started };
     } catch (e: any) {
-      let message = String(e.message || e).split('\n')[0];
+      let message = this.mask(String(e.message || e).split('\n')[0]);
       if (step.target && /Timeout \d+ms exceeded/.test(message)) {
         message = `Element "${step.target}" was not found or not actionable (${message})`;
       }
@@ -206,7 +232,7 @@ export class RunExecutor {
 
   /** Ask the LLM for a replacement selector when a step fails on a selector. */
   private async trySelfHeal(step: TestStep, ctx: StepContext, kind: ReturnType<typeof classifyAction>, error: string, testCase: TestCase) {
-    const config = this.agent.config as any;
+    const config = this.config;
     const router = getLLMRouter();
     if (!config.ai?.self_healing || !step.target || !isSelectorFailure(kind, error) || !router.hasAnyProvider()) return null;
 
@@ -228,7 +254,7 @@ export class RunExecutor {
       const selector = extractJsonArray(response.content)[0]?.selector;
       if (!selector || selector === step.target) return null;
 
-      const outcome = await executeStep(step, ctx, selector);
+      const outcome = await executeStep(this.resolveStep(step), ctx, selector);
       this.log(`  🩹 Healed: "${step.target}" → "${selector}"`, { testId: testCase.id, stepId: step.stepId });
       return { ...outcome, message: `${outcome.message} (self-healed from "${step.target}")`, healedSelector: selector };
     } catch (e: any) {

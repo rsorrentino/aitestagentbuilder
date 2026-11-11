@@ -20,9 +20,9 @@ const PRIORITY_ORDER: Record<string, number> = { Critical: 4, High: 3, Medium: 2
 export class PlannerAgentService {
   private testCaseRepo = new TestCaseRepository();
 
-  async createTestPlan(agentConfig: AgentConfig): Promise<TestPlan> {
+  async createTestPlan(agentConfig: AgentConfig, projectId: string): Promise<TestPlan> {
     const selection: TestSelection = agentConfig.test_selection ?? {};
-    const testCases = this.orderTests(await this.selectTestCases(selection));
+    const testCases = this.orderTests(await this.selectTestCases(selection, projectId));
 
     return {
       tests: testCases.map(tc => tc.id),
@@ -33,9 +33,10 @@ export class PlannerAgentService {
     };
   }
 
-  private async selectTestCases(selection: TestSelection): Promise<TestCase[]> {
+  private async selectTestCases(selection: TestSelection, projectId: string): Promise<TestCase[]> {
     const nonEmpty = (v?: string[]) => (v && v.length > 0 ? v : undefined);
     return this.testCaseRepo.search({
+      projectId,
       ids: nonEmpty(selection.testIds),
       module: nonEmpty(selection.module),
       priority: nonEmpty(selection.priority),
