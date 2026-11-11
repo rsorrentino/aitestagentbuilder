@@ -200,9 +200,11 @@ export class ReportingAgentService {
 
   private generateJUnitReport(run: TestRun): string {
     const results = latestAttempts(run.results);
-    const failures = results.filter(r => r.status === 'failed').length;
-    const errors = results.filter(r => r.status === 'error' || r.status === 'timeout').length;
-    const skipped = results.filter(r => r.status === 'skipped').length;
+    // A failed quarantined test is reported as skipped, so CI does not fail on a known-flaky test
+    const isQuarantinedFailure = (r: any) => r.metadata?.quarantined === true && ['failed', 'error', 'timeout'].includes(r.status);
+    const failures = results.filter(r => r.status === 'failed' && !isQuarantinedFailure(r)).length;
+    const errors = results.filter(r => (r.status === 'error' || r.status === 'timeout') && !isQuarantinedFailure(r)).length;
+    const skipped = results.filter(r => r.status === 'skipped' || isQuarantinedFailure(r)).length;
     const time = run.duration ? (run.duration / 1000).toFixed(3) : '0';
 
     return `<?xml version="1.0" encoding="UTF-8"?>
@@ -210,11 +212,13 @@ export class ReportingAgentService {
   <testsuite name="${escapeXml(run.agentName ?? run.agentId)}" id="${escapeXml(run.id)}" tests="${results.length}" failures="${failures}" errors="${errors}" skipped="${skipped}" time="${time}" timestamp="${new Date(run.startedAt).toISOString()}">
 ${results.map(r => {
   const t = r.duration ? (r.duration / 1000).toFixed(3) : '0';
-  const body = r.status === 'failed'
-    ? `<failure message="${escapeXml(r.error ?? 'failed')}">${escapeXml((r.logs ?? []).join('\n'))}</failure>`
-    : r.status === 'error' || r.status === 'timeout'
-      ? `<error message="${escapeXml(r.error ?? r.status)}">${escapeXml((r.logs ?? []).join('\n'))}</error>`
-      : r.status === 'skipped' ? `<skipped message="${escapeXml(r.error ?? 'skipped')}"/>` : '';
+  const body = isQuarantinedFailure(r)
+    ? `<skipped message="${escapeXml(`quarantined (flaky): ${r.error ?? r.status}`)}"/><system-out>${escapeXml((r.logs ?? []).join('\n'))}</system-out>`
+    : r.status === 'failed'
+      ? `<failure message="${escapeXml(r.error ?? 'failed')}">${escapeXml((r.logs ?? []).join('\n'))}</failure>`
+      : r.status === 'error' || r.status === 'timeout'
+        ? `<error message="${escapeXml(r.error ?? r.status)}">${escapeXml((r.logs ?? []).join('\n'))}</error>`
+        : r.status === 'skipped' ? `<skipped message="${escapeXml(r.error ?? 'skipped')}"/>` : '';
   return `    <testcase name="${escapeXml(titleOf(r))}" classname="${escapeXml(String(r.metadata?.module ?? 'tests'))}" time="${t}">${body}</testcase>`;
 }).join('\n')}
   </testsuite>

@@ -170,4 +170,20 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_visual_baselines_project ON visual_baselines(project_id, agent_id);
     `,
   },
+  {
+    version: 6,
+    name: 'flaky test quarantine',
+    sql: `
+      CREATE TABLE IF NOT EXISTS test_quarantine (
+        test_case_id VARCHAR(255) PRIMARY KEY REFERENCES test_cases(id) ON DELETE CASCADE,
+        project_id VARCHAR(255) NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        reason TEXT NOT NULL,
+        auto BOOLEAN NOT NULL DEFAULT false,
+        quarantined_by VARCHAR(255),
+        quarantined_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        stats JSONB
+      );
+      CREATE INDEX IF NOT EXISTS idx_quarantine_project ON test_quarantine(project_id);
+    `,
+  },
 ];

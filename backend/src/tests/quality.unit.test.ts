@@ -246,3 +246,45 @@ describe('failure triage', () => {
     assert.equal(triageLine({ summary: { environment: 1 }, groups: [{ seenBefore: 1, tests: [{}] }] }), 'Triage: 1 environment — all seen before');
   });
 });
+
+describe('flaky-test quarantine', () => {
+  const h = (s: string) => s.split('').map((c) => ({ status: c === 'P' || c === 'R' ? 'passed' : c === 'S' ? 'skipped' : 'failed', attempt: c === 'R' ? 2 : 1 }));
+
+  it('measures flips, passes on retry and the clean streak', async () => {
+    const { flakeStats } = await import('../modules/quality/quarantine.js');
+    assert.deepEqual(flakeStats(h('PFPFPP')), { runs: 6, flips: 4, passedOnRetry: 0, failures: 2, cleanStreak: 2 });
+    assert.deepEqual(flakeStats(h('PRPSRP')), { runs: 5, flips: 0, passedOnRetry: 2, failures: 0, cleanStreak: 1 });
+    assert.equal(flakeStats(h('FFFF')).flips, 0);
+  });
+
+  it('quarantines flaky tests, not consistently failing ones, and releases after a clean streak', async () => {
+    const { decide, flakeStats, quarantinePolicy, describeFlake } = await import('../modules/quality/quarantine.js');
+    const policy = quarantinePolicy({ quarantine: { auto: true, flips: 3, passed_on_retry: 2, release_after: 3 } });
+    assert.deepEqual(policy, { auto: true, flips: 3, window: 10, passedOnRetry: 2, releaseAfter: 3 });
+    assert.equal(decide(flakeStats(h('PFPFP')), policy), 'quarantine');
+    assert.equal(decide(flakeStats(h('PRPR')), policy), 'quarantine', 'passing only on retry is flaky too');
+    assert.equal(decide(flakeStats(h('FFFFFF')), policy), null, 'always failing is a real failure');
+    assert.equal(decide(flakeStats(h('PPPP')), policy), null);
+    assert.equal(decide(flakeStats(h('PFPFP')), quarantinePolicy({})), null, 'auto is off by default');
+
+    const auto = { testCaseId: 't', projectId: 'p', reason: 'x', auto: true, quarantinedAt: new Date() };
+    assert.equal(decide(flakeStats(h('FPFPPP')), policy, auto), 'release');
+    assert.equal(decide(flakeStats(h('FPFPP')), policy, auto), null);
+    assert.equal(decide(flakeStats(h('FPPPPP')), policy, { ...auto, auto: false }), null, 'hand-quarantined tests stay until released by hand');
+    assert.match(describeFlake(flakeStats(h('PFPFP')), policy), /flipped between pass and fail 4 times in its last 5 runs/);
+  });
+
+  it('reports failed quarantined tests as skipped in JUnit', async () => {
+    const { ReportingAgentService } = await import('../modules/reporting/services/reporting-agent.service.js');
+    const run: any = {
+      id: 'RUN-Q', agentId: 'A', status: 'completed', startedAt: new Date(), totalTests: 2, passedTests: 1, failedTests: 0, skippedTests: 0,
+      results: [
+        { id: '1', testCaseId: 'T1', status: 'failed', error: 'Expected "OK"', startedAt: new Date(), metadata: { title: 'Flaky checkout', quarantined: true } },
+        { id: '2', testCaseId: 'T2', status: 'passed', startedAt: new Date(), metadata: { title: 'Login' } },
+      ],
+    };
+    const xml = new ReportingAgentService().render(run, 'junit');
+    assert.match(xml, /<testsuites [^>]*failures="0" errors="0" skipped="1"/);
+    assert.match(xml, /<skipped message="quarantined \(flaky\): Expected &quot;OK&quot;"\/>/);
+  });
+});

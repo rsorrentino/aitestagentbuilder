@@ -18,6 +18,7 @@ import { emitRunEvent } from '../../../infra/websocket/server.js';
 import { REPO_ROOT } from '../../../infra/config/env.js';
 import logger from '../../../infra/logger/index.js';
 import { triageRun } from '../../quality/triage.js';
+import { applyQuarantinePolicy } from '../../quality/quarantine.js';
 import { runEvents } from '../../automation/run-events.js';
 
 export class RunValidationError extends Error {
@@ -165,6 +166,7 @@ export class OrchestratorService {
         ...(error ? { metadata: { error } } : {}),
       });
       if (finalStatus === 'failed') await this.triage(runId, agent);
+      if (finalStatus !== 'cancelled') await this.updateQuarantine(runId, agent, plan);
       const done = await this.runRepo.findRunById(runId);
       emitRunEvent(runId, 'run_completed', {
         status: finalStatus,
@@ -180,6 +182,19 @@ export class OrchestratorService {
 
     markDone();
     this.pump();
+  }
+
+  /** Apply the agent's flaky-test policy to the tests of this run (quarantine / release). */
+  private async updateQuarantine(runId: string, agent: Agent, plan: TestPlan): Promise<void> {
+    try {
+      const changed = await applyQuarantinePolicy(agent, plan.testCases.map((tc) => tc.id));
+      if (changed.quarantined.length || changed.released.length) {
+        await this.runRepo.updateRun(runId, { metadata: { quarantine: changed } });
+        logger.info('Quarantine updated', { runId, ...changed });
+      }
+    } catch (e: any) {
+      logger.warn('Quarantine policy failed', { runId, error: e.message });
+    }
   }
 
   /** Group and classify the failures of a finished run (rules; AI too when the agent asks for it). */

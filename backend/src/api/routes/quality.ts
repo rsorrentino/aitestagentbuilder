@@ -12,6 +12,7 @@ import { TestCaseRepository } from '../../core/repositories/test-case.repository
 import { approveActual, VisualBaselineRepository, VisualEntry } from '../../modules/quality/visual.js';
 import { applyHealing, healedStepsOf } from '../../modules/quality/healing.js';
 import { triageRun } from '../../modules/quality/triage.js';
+import { QuarantineRepository } from '../../modules/quality/quarantine.js';
 import { AgentRepository } from '../../core/repositories/agent.repository.js';
 import { getLLMRouter } from '../../infra/llm/router.js';
 
@@ -77,6 +78,35 @@ export function registerQualityRoutes(router: Router, roles: { viewer: RequestHa
     await runs.updateResult(result.id, { metadata: { ...result.metadata, visual: entries } });
     res.locals.audit = { entityId: baseline.id, details: { name: entry.name, persona: entry.persona, viewport: entry.viewport, runId: run.id } };
     res.json({ ...baseline, image: signArtifactPath(baseline.path) });
+  }));
+
+  // ── Flaky-test quarantine ──────────────────────────────────────────────────
+  const quarantine = new QuarantineRepository();
+
+  router.get('/quarantine', viewer, wrap(async (req, res) => {
+    res.json(await quarantine.list(req.project!.id));
+  }));
+
+  /** Quarantine a test by hand. Body: { reason } */
+  router.post('/testcases/:id/quarantine', editor, audit('testcase.quarantine', 'testcase'), wrap(async (req, res) => {
+    const tc = await testCases.findById(req.params.id, req.project!.id);
+    if (!tc) {
+      res.status(404).json({ error: 'Test case not found' });
+      return;
+    }
+    const reason = String(req.body?.reason ?? '').trim().slice(0, 500) || 'Quarantined by hand';
+    const q = await quarantine.add({ testCaseId: tc.id, projectId: req.project!.id, reason, auto: false, by: req.user?.email ?? 'local' });
+    res.locals.audit = { entityId: tc.id, details: { reason } };
+    res.status(201).json({ ...q, title: tc.title });
+  }));
+
+  router.delete('/testcases/:id/quarantine', editor, audit('testcase.release', 'testcase'), wrap(async (req, res) => {
+    if (!(await quarantine.remove(req.params.id, req.project!.id))) {
+      res.status(404).json({ error: 'This test case is not quarantined' });
+      return;
+    }
+    res.locals.audit = { entityId: req.params.id };
+    res.status(204).end();
   }));
 
   // ── Failure triage ────────────────────────────────────────────────────────

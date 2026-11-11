@@ -53,6 +53,8 @@ for (const k of ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'AZURE_OPENAI_API_KEY', 
 // ---- application under test ----
 const page = (title: string, body: string) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${title}</title>
 <style>body{font-family:sans-serif;margin:0}main{padding:20px}</style></head><body><main><h1>${title}</h1>${body}</main></body></html>`;
+let flakyVisits = 0;
+let flakyMode: 'flaky' | 'stable' = 'flaky';
 const PAGES: Record<string, (q: URLSearchParams) => string> = {
   '/good': () => page('Accessible page', '<p>Everything here has a name.</p><button type="button">Save</button>'),
   // Images without alt text, an unnamed button and an unlabeled input: serious/critical axe violations
@@ -61,6 +63,12 @@ const PAGES: Record<string, (q: URLSearchParams) => string> = {
   '/box': (q) => page('Box', `<div id="box" style="width:300px;height:120px;background:${q.get('color') === 'red' ? '#d00' : '#00d'}"></div>`),
   '/login': () => page('Login', '<label for="pw">Password</label><input id="pw" type="password"><button type="button">Go</button>'),
   // The button was "renamed": tests still use #old-id
+  // Alternates OK / broken on each visit while flakyMode is 'flaky'
+  '/flaky': () => {
+    flakyVisits++;
+    const ok = flakyMode === 'stable' || flakyVisits % 2 === 1;
+    return page('Flaky', ok ? '<p id="state">OK</p>' : '<p id="state">Oops</p>');
+  },
   '/heal': () => page('Heal', '<button id="new-id" type="button" onclick="document.getElementById(\'out\').textContent=\'clicked\'">Continue</button><p id="out"></p>'),
 };
 
@@ -342,5 +350,48 @@ describe('quality extensions (integration)', () => {
     const passing = await newTest('Passes', [{ action: 'navigate', target: '/good' }]);
     const ok = await run(agent, [passing]);
     assert.equal(ok.metadata?.triage, undefined);
+  });
+
+  it('quarantines flaky tests automatically: they run but do not fail the run, and are released when stable', async (t) => {
+    if (!dbAvailable) return t.skip('database not available');
+    const agent = await newAgent('Flaky', { quarantine: { auto: true, flips: 2, release_after: 2 }, evidence: { trace: 'off', video: 'off' } });
+    const flaky = await newTest('Sometimes works', [{ action: 'navigate', target: '/flaky' }, { action: 'assert_text', target: '#state', data: { value: 'OK' } }]);
+    const steady = await newTest('Always works', [{ action: 'navigate', target: '/good' }]);
+
+    const r1 = await run(agent, [flaky, steady]); // OK
+    const r2 = await run(agent, [flaky, steady]); // Oops
+    assert.equal(r1.status, 'completed');
+    assert.equal(r2.status, 'failed', 'not quarantined yet');
+    const r3 = await run(agent, [flaky, steady]); // OK: 2 flips → quarantined after this run
+    assert.deepEqual(r3.metadata.quarantine, { quarantined: [flaky], released: [] });
+    const list = await call('GET', '/api/v1/quarantine');
+    assert.equal(list.data.length, 1);
+    assert.equal(list.data[0].auto, true);
+    assert.match(list.data[0].reason, /flipped between pass and fail 2 times/);
+
+    const r4 = await run(agent, [flaky, steady]); // Oops, but quarantined
+    assert.equal(r4.status, 'completed', 'a quarantined failure does not fail the run');
+    assert.equal(r4.failedTests, 0);
+    assert.equal(r4.metadata.quarantinedFailures, 1);
+    const failed = r4.results.find((r: any) => r.testCaseId === flaky);
+    assert.equal(failed.status, 'failed');
+    assert.equal(failed.metadata.quarantined, true);
+    const junit = await fetch(`${apiUrl}/api/v1/runs/${r4.id}/report?format=junit`).then((r) => r.text());
+    assert.match(junit, /failures="0" errors="0" skipped="1"/);
+
+    // It becomes stable: released after 2 clean passes
+    flakyMode = 'stable';
+    await run(agent, [flaky]);
+    const r6 = await run(agent, [flaky]);
+    assert.deepEqual(r6.metadata.quarantine, { quarantined: [], released: [flaky] });
+    assert.equal((await call('GET', '/api/v1/quarantine')).data.length, 0);
+
+    // By hand
+    const manual = await call('POST', `/api/v1/testcases/${steady}/quarantine`, { reason: 'Depends on a third-party sandbox' });
+    assert.equal(manual.status, 201, manual.text);
+    assert.equal(manual.data.auto, false);
+    assert.equal((await call('GET', '/api/v1/quarantine')).data[0].reason, 'Depends on a third-party sandbox');
+    assert.equal((await call('DELETE', `/api/v1/testcases/${steady}/quarantine`)).status, 204);
+    assert.equal((await call('DELETE', `/api/v1/testcases/${steady}/quarantine`)).status, 404);
   });
 });

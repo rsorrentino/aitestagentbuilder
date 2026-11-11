@@ -24,6 +24,7 @@ import { describeA11y, scanAccessibility } from '../quality/accessibility.js';
 import { evidenceConfig, keepEvidence, redactTrace } from '../quality/evidence.js';
 import { applyHealing, HealingCache, healedStepsOf } from '../quality/healing.js';
 import { failureSignature } from '../quality/triage.js';
+import { Quarantine, QuarantineRepository } from '../quality/quarantine.js';
 import { salesforceSettings, testPersonas } from '../salesforce/personas.js';
 import { SalesforceSessions } from '../salesforce/session.js';
 
@@ -55,6 +56,8 @@ export class RunExecutor {
   private secrets: Record<string, string>;
   private secretList: string[];
   private salesforce?: SalesforceSessions;
+  /** Quarantined tests of the project: they run, but their failures do not fail the run. */
+  private quarantined = new Map<string, Quarantine>();
   /** Selectors healed earlier in this run: reused without another model call. */
   private healingCache = new HealingCache();
 
@@ -127,8 +130,9 @@ export class RunExecutor {
   async execute(): Promise<'completed' | 'failed' | 'cancelled'> {
     const plan = this.plan();
     const total = plan.length;
-    const counts = { passed: 0, failed: 0, skipped: 0 };
+    const counts = { passed: 0, failed: 0, skipped: 0, quarantined: 0 };
     const config = this.config;
+    this.quarantined = await new QuarantineRepository().ids(this.agent.projectId).catch(() => new Map());
     const retries = Math.min(Math.max(Number(config.retries ?? 0), 0), 3);
 
     emitRunEvent(this.runId, 'run_started', { total, agentId: this.agent.id, agentName: this.agent.name });
@@ -154,7 +158,10 @@ export class RunExecutor {
 
         if (status === 'passed') counts.passed++;
         else if (status === 'skipped') counts.skipped++;
-        else counts.failed++;
+        else if (this.quarantined.has(testCase.id)) {
+          counts.quarantined++;
+          this.log(`  🧪 "${title}" is quarantined: its failure does not fail the run`, { testId: testCase.id }, 'warn');
+        } else counts.failed++;
 
         emitRunEvent(this.runId, 'run_progress', { status: 'running', completed: i + 1, total, ...counts });
       }
@@ -177,7 +184,11 @@ export class RunExecutor {
     const config = this.config;
     const startedAt = new Date();
     const title = persona ? `${testCase.title} [as ${persona}]` : testCase.title;
-    const baseMeta = { title, module: testCase.module, priority: testCase.priority, attempt: attempt + 1, ...(persona ? { persona } : {}) };
+    const baseMeta = {
+      title, module: testCase.module, priority: testCase.priority, attempt: attempt + 1,
+      ...(persona ? { persona } : {}),
+      ...(this.quarantined.has(testCase.id) ? { quarantined: true } : {}),
+    };
     const result = await this.runRepo.createResult({
       runId: this.runId,
       testCaseId: testCase.id,

@@ -55,6 +55,8 @@ export function summarizeFailure(r: any) {
     title: r.metadata?.title,
     persona: r.metadata?.persona,
     status: r.status,
+    // Known flaky: its failure does not fail the run
+    quarantined: r.metadata?.quarantined === true || undefined,
     error: r.error,
     failedStep: failedStep ? { stepId: failedStep.stepId, action: failedStep.action, target: failedStep.target, message: failedStep.message } : undefined,
     evidence: {

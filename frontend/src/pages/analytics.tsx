@@ -13,6 +13,8 @@ import {
 } from 'recharts';
 import Layout from '../components/Layout';
 import { api, errorMessage, formatDate, formatDuration } from '../lib/api';
+import { useQuarantine } from '../lib/useQuarantine';
+import { useSession } from '../lib/session';
 
 const COLORS = { passed: '#059669', failed: '#dc2626', rate: '#4f46e5', grid: '#e2e8f0', axis: '#64748b' };
 const RANGES = [7, 14, 30, 90];
@@ -25,6 +27,8 @@ const shortDay = (d: string) => new Date(`${d}T00:00:00`).toLocaleDateString(und
 export default function AnalyticsPage() {
   const [days, setDays] = useState(30);
   const [data, setData] = useState<any>(null);
+  const quarantine = useQuarantine();
+  const session = useSession();
   const [error, setError] = useState<string | null>(null);
   const [showTable, setShowTable] = useState(false);
 
@@ -158,11 +162,25 @@ export default function AnalyticsPage() {
               {data.flaky.length === 0 ? <div className="card-body text-muted">No flaky tests detected.</div> : (
                 <div className="table-wrapper">
                   <table className="data-table">
-                    <thead><tr><th>Test</th><th>Runs</th><th>Pass / fail</th><th>Flips</th><th>Passed on retry</th></tr></thead>
+                    <thead><tr><th>Test</th><th>Runs</th><th>Pass / fail</th><th>Flips</th><th>Passed on retry</th><th aria-label="Quarantine" /></tr></thead>
                     <tbody>
-                      {data.flaky.map((f: any) => (
-                        <tr key={f.testCaseId}><td className="fw-600">{f.title}</td><td>{f.runs}</td><td>{f.passes} / {f.failures}</td><td>{f.flips}</td><td>{f.passedOnRetry}</td></tr>
-                      ))}
+                      {data.flaky.map((f: any) => {
+                        const q = quarantine.get(f.testCaseId);
+                        return (
+                          <tr key={f.testCaseId}>
+                            <td className="fw-600">{f.title}{q && <div><span className="badge badge-warning" title={q.reason}>🧪 quarantined</span></div>}</td>
+                            <td>{f.runs}</td><td>{f.passes} / {f.failures}</td><td>{f.flips}</td><td>{f.passedOnRetry}</td>
+                            <td>
+                              {session.can('editor') && (q
+                                ? <button type="button" className="btn btn-ghost btn-sm" onClick={() => quarantine.release(f.testCaseId.split('@')[0])}>Release</button>
+                                : <button type="button" className="btn btn-secondary btn-sm" aria-label={`Quarantine ${f.title}`}
+                                    onClick={() => quarantine.quarantine(f.testCaseId.split('@')[0], `Flaky: ${f.flips} flips, ${f.passedOnRetry} passed on retry in ${f.runs} runs`)}>
+                                    Quarantine
+                                  </button>)}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>

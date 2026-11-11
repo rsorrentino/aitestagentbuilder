@@ -112,6 +112,11 @@ export function buildOpenApi(serverUrl: string) {
       '/runs/{runId}/results/{resultId}/visual/approve': {
         post: op('Quality', 'Approve the screenshot of a failed visual check as the new baseline', { parameters: [id('runId'), id('resultId')] }),
       },
+      '/quarantine': { get: op('Quality', 'Quarantined (flaky) test cases of the project') },
+      '/testcases/{id}/quarantine': {
+        post: op('Quality', 'Quarantine a test case: it runs, but its failures do not fail runs', { parameters: [id()] }),
+        delete: op('Quality', 'Release a quarantined test case', { parameters: [id()] }),
+      },
       '/runs/{runId}/triage': {
         post: op('Quality', 'Group and classify the failures of a run (app bug, test bug, environment), optionally explained by the AI', { parameters: [id('runId')] }),
       },

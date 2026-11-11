@@ -22,6 +22,12 @@ retries: 1                             # re-run failed tests (0–3)
 ai:
   auto_apply_healing: false            # write AI-repaired selectors back into the test cases
   triage: false                        # explain failed runs with AI (rules-based triage always runs)
+quarantine:
+  auto: false                          # quarantine flaky tests automatically
+  flips: 3                             # pass↔fail changes in the last `window` runs of a test
+  window: 10
+  passed_on_retry: 3                   # or passing only on retry this many times
+  release_after: 5                     # release after this many consecutive first-attempt passes
 checks:
   accessibility: report                # off | report | fail — axe-core scan of the page each test ends on
   accessibility_options: { level: wcag21aa, minImpact: serious }
@@ -182,3 +188,13 @@ error, without run-specific details such as ids, numbers and URLs).
   `POST /runs/:id/triage {"ai": true}` adds a likely cause and a next step to each group. It costs one AI call per run.
 - **Where it shows:** the triage summary is included in Slack / Teams / email notifications and in the MCP server's
   `run_tests` / `get_failures` answers.
+
+**Flaky-test quarantine.** A quarantined test still runs and reports its result, but its failure does not fail the run.
+- **Effect:** the run stays *completed*, CI wait mode reports `passed`, no failure notification is sent, and JUnit
+  reports it as *skipped*. The run page and reports mark it 🧪 and count it apart.
+- **By hand:** quarantine a test from the test case list or the analytics flaky table (with a reason), and release it the same way.
+- **Automatically:** with `quarantine.auto`, a test is quarantined after the run where it reaches `flips` pass↔fail changes
+  (or `passed_on_retry` passes on retry) within its last `window` runs. A test that always fails is a real failure and is
+  never quarantined automatically.
+- **Release:** an automatically quarantined test is released after `release_after` consecutive first-attempt passes;
+  hand-quarantined tests stay until released by hand.

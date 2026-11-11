@@ -80,7 +80,8 @@ export default function RunDetail() {
   if (!run) return <Layout title="Run not found"><div className="alert alert-error">{error ?? 'Run not found.'}</div></Layout>;
 
   const results = latest(run.results);
-  const finished = run.passedTests + run.failedTests + run.skippedTests;
+  const quarantinedFailures = Number(run.metadata?.quarantinedFailures ?? 0);
+  const finished = run.passedTests + run.failedTests + run.skippedTests + quarantinedFailures;
   const progress = run.totalTests > 0 ? Math.min(100, (finished / run.totalTests) * 100) : 0;
   const passRate = finished > 0 ? Math.round((run.passedTests / finished) * 100) : null;
   const active = run.status === 'running' || run.status === 'pending';
@@ -108,7 +109,11 @@ export default function RunDetail() {
         </div>
         <div className="stat-card"><div className="stat-label">Total</div><div className="stat-value">{run.totalTests}</div></div>
         <div className="stat-card success"><div className="stat-label">Passed</div><div className="stat-value" style={{ color: 'var(--success)' }}>{run.passedTests}</div></div>
-        <div className="stat-card danger"><div className="stat-label">Failed</div><div className="stat-value" style={{ color: 'var(--danger)' }}>{run.failedTests}</div></div>
+        <div className="stat-card danger">
+          <div className="stat-label">Failed</div>
+          <div className="stat-value" style={{ color: 'var(--danger)' }}>{run.failedTests}</div>
+          {quarantinedFailures > 0 && <div className="text-sm text-muted">+ {quarantinedFailures} quarantined (not counted)</div>}
+        </div>
         <div className="stat-card"><div className="stat-label">Duration</div><div className="stat-value" style={{ fontSize: 22 }}>{formatDuration(run.duration)}</div></div>
         {passRate !== null && <div className="stat-card accent"><div className="stat-label">Pass Rate</div><div className="stat-value">{passRate}%</div></div>}
       </div>
@@ -164,7 +169,10 @@ export default function RunDetail() {
                         <div className="fw-600">{r.metadata?.title ?? r.testCaseId}</div>
                         <div className="text-sm text-muted">{r.metadata?.module}{r.metadata?.attempt > 1 ? ` · attempt ${r.metadata.attempt}` : ''}</div>
                       </td>
-                      <td><span className={statusBadge(r.status)}>{r.status}</span></td>
+                      <td>
+                        <span className={statusBadge(r.status)}>{r.status}</span>
+                        {r.metadata?.quarantined && <div><span className="badge badge-warning" title="Quarantined (flaky): its failure does not fail the run">🧪 quarantined</span></div>}
+                      </td>
                       <td className="text-sm">{formatDuration(r.duration)}</td>
                       <td style={{ maxWidth: 420, color: 'var(--danger)', fontSize: 12 }}>{r.error}</td>
                     </tr>
