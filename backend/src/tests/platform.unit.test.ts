@@ -66,3 +66,26 @@ describe('cross-platform command launching', () => {
     assert.deepEqual(resolveCommand('copilot', ['-p', 'x'], 'linux'), { command: 'copilot', args: ['-p', 'x'] });
   });
 });
+
+describe('page outline for the AI (runs inside the browser)', () => {
+  it('works when the backend runs through tsx (no compiler helpers in the page)', async () => {
+    const { launchBrowser, outlinePage } = await import('../modules/execution/browser.js');
+    const browser = await launchBrowser();
+    try {
+      const page = await browser.newPage();
+      await page.setContent(`<title>Shop</title><h1>Welcome</h1>
+        <label for="q">Search</label><input id="q" name="q" placeholder="Find">
+        <button data-testid="go">Go   now</button><a href="/cart">Cart</a><button style="display:none">Hidden</button>`);
+      const outline = await outlinePage(page, 20);
+      assert.match(outline, /^url: about:blank\n/);
+      assert.match(outline, /title: Shop/);
+      assert.match(outline, /h1: Welcome/);
+      assert.match(outline, /input selector="#q"/);
+      assert.match(outline, /button selector="\[data-testid="go"\]" text="Go now"/);
+      assert.match(outline, /a selector="text=Cart" text="Cart" href="\/cart"/);
+      assert.doesNotMatch(outline, /Hidden/);
+    } finally {
+      await browser.close();
+    }
+  });
+});

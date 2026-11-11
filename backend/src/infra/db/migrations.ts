@@ -147,4 +147,27 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_deliveries_channel ON notification_deliveries(channel_id, attempted_at DESC);
     `,
   },
+  {
+    version: 5,
+    name: 'visual regression baselines',
+    sql: `
+      CREATE TABLE IF NOT EXISTS visual_baselines (
+        id VARCHAR(255) PRIMARY KEY,
+        project_id VARCHAR(255) NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        agent_id VARCHAR(255) NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+        name VARCHAR(200) NOT NULL,
+        persona VARCHAR(100) NOT NULL DEFAULT '',
+        viewport VARCHAR(20) NOT NULL,
+        path TEXT NOT NULL,
+        width INTEGER NOT NULL,
+        height INTEGER NOT NULL,
+        source_run_id VARCHAR(255),
+        approved_by VARCHAR(255),
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (agent_id, name, persona, viewport)
+      );
+      CREATE INDEX IF NOT EXISTS idx_visual_baselines_project ON visual_baselines(project_id, agent_id);
+    `,
+  },
 ];

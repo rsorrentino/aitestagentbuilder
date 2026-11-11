@@ -9,6 +9,8 @@
 import type { Locator, Page } from 'playwright';
 import { TestStep } from '../../core/domain/test-case.js';
 import { SalesforceSessions } from '../salesforce/session.js';
+import { A11yReport, describeA11y, scanAccessibility } from '../quality/accessibility.js';
+import { checkScreenshot, describeVisual, VisualEntry } from '../quality/visual.js';
 
 export type StepKind =
   | 'navigate' | 'click' | 'fill' | 'select' | 'check' | 'uncheck' | 'press' | 'hover' | 'wait'
@@ -16,6 +18,7 @@ export type StepKind =
   | 'assert_not_visible' | 'assert_access_denied'
   | 'salesforce_login' | 'salesforce_logout' | 'wait_for_lightning'
   | 'assert_profile' | 'assert_object_access' | 'assert_field_access' | 'assert_record_access'
+  | 'assert_accessible' | 'assert_screenshot'
   | 'manual';
 
 export interface StepOutcome {
@@ -33,6 +36,18 @@ export interface StepContext {
   salesforce?: SalesforceSessions;
   /** Persona this test runs as (persona matrix), used when a step names none. */
   persona?: string;
+  /** Where quality checks (accessibility, visual) store baselines and report their findings. */
+  quality?: QualityContext;
+}
+
+export interface QualityContext {
+  projectId: string;
+  agentId: string;
+  runId: string;
+  resultId: string;
+  testCaseId: string;
+  accessibility: A11yReport[];
+  visual: VisualEntry[];
 }
 
 /** Default text of Salesforce's "no access" pages. */
@@ -48,10 +63,15 @@ export function classifyAction(rawAction: string, step: Pick<TestStep, 'target' 
     'assert profile': 'assert_profile', 'assert object access': 'assert_object_access',
     'assert field access': 'assert_field_access', 'assert record access': 'assert_record_access',
     'assert not visible': 'assert_not_visible', 'assert access denied': 'assert_access_denied',
+    'assert accessible': 'assert_accessible', 'assert accessibility': 'assert_accessible', 'check accessibility': 'assert_accessible',
+    'accessibility check': 'assert_accessible', 'assert screenshot': 'assert_screenshot', 'compare screenshot': 'assert_screenshot',
+    'visual check': 'assert_screenshot', 'assert visual': 'assert_screenshot',
   };
   if (exact[a]) return exact[a];
   if (/^(assert|verify|expect|validate|confirm|ensure|check that|should|observe|see)\b/.test(a)) {
     if (/\b(access denied|insufficient privileges|no access|not authori[sz]ed|forbidden|cannot access|can't access)\b/.test(a)) return 'assert_access_denied';
+    if (/\b(accessib\w*|a11y|wcag)\b/.test(a)) return 'assert_accessible';
+    if (/\b(visual(ly)?|pixel|baseline|looks the same|screenshot match\w*|matches the screenshot)\b/.test(a)) return 'assert_screenshot';
     if (step.target && /\b(not (be )?(visible|displayed|shown|present)|hidden|absent|isn't (visible|shown|displayed)|is not shown|does not (appear|exist))\b/.test(a)) return 'assert_not_visible';
     if (/\burl\b/.test(a)) return 'assert_url';
     if (/\btitle\b/.test(a)) return 'assert_title';
@@ -246,6 +266,36 @@ export async function executeStep(step: TestStep, ctx: StepContext, targetOverri
       const text = await waitFor(() => page.locator('body').innerText().catch(() => ''), (t) => pattern.test(t), stepTimeout);
       if (!pattern.test(text)) throw new Error(`Expected access to be denied${target ? ` for ${target}` : ''}, but the page shows no access-denied message (${page.url()})`);
       return { status: 'passed', message: `Access denied${target ? ` to ${target}` : ''} as expected` };
+    }
+    case 'assert_accessible': {
+      const data = step.data ?? {};
+      const report = await scanAccessibility(page, {
+        level: data.level,
+        minImpact: data.min_impact ?? data.minImpact,
+        ignore: data.ignore,
+        exclude: data.exclude,
+        include: target ? [target] : data.include,
+      });
+      ctx.quality?.accessibility.push(report);
+      if (report.failing > 0 && data.report_only !== true) throw new Error(describeA11y(report));
+      return { status: 'passed', message: describeA11y(report) };
+    }
+    case 'assert_screenshot': {
+      if (!ctx.quality) throw new Error('Visual checks need a run context');
+      const data = step.data ?? {};
+      const locator = target ? await resolveLocator(page, target) : null;
+      const name = String(data.name ?? `${ctx.quality.testCaseId}#${step.stepId}`).slice(0, 200);
+      const entry = await checkScreenshot(page, locator, name, {
+        projectId: ctx.quality.projectId,
+        agentId: ctx.quality.agentId,
+        runId: ctx.quality.runId,
+        resultId: ctx.quality.resultId,
+        persona: ctx.persona,
+        index: ctx.quality.visual.length + 1,
+      }, data);
+      ctx.quality.visual.push(entry);
+      if (entry.status === 'failed') throw new Error(describeVisual(entry));
+      return { status: 'passed', message: describeVisual(entry) };
     }
     case 'salesforce_login': {
       const sessions = requireSalesforce(ctx);

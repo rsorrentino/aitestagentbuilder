@@ -136,7 +136,7 @@ describe('enterprise (AUTH_ENABLED=true)', () => {
   it('applies versioned migrations', async (t) => {
     if (!dbAvailable) return t.skip('database not available');
     const rows = (await db.query('SELECT version FROM schema_migrations ORDER BY version')).rows.map((r: any) => r.version);
-    assert.deepEqual(rows, [1, 2, 3, 4]);
+    assert.deepEqual(rows, [1, 2, 3, 4, 5]);
   });
 
   it('requires authentication and logs the admin in', async (t) => {

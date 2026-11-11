@@ -43,6 +43,15 @@ export class SalesforceSessions {
 
   constructor(public settings: SalesforceSettings) {}
 
+  /** Session credentials obtained during the run (access tokens, session ids), for redaction. */
+  sessionSecrets(): string[] {
+    const out = [...this.tokens.values()].map((t) => t.accessToken);
+    for (const cookies of this.cookies.values()) {
+      for (const c of cookies) if (c.name === 'sid') out.push(c.value);
+    }
+    return out.filter((v) => v && v.length >= 8);
+  }
+
   persona(name?: string): Persona {
     return findPersona(this.settings, name);
   }

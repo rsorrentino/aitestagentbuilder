@@ -37,11 +37,30 @@ export function signArtifactPath(path: string): string {
 
 export function signRunArtifacts<T extends TestRun | null>(run: T): T {
   if (!run) return run;
+  const sign = (p?: string) => (p ? signArtifactPath(p) : p);
   return {
     ...run,
-    results: (run.results ?? []).map((r) => r.evidence?.screenshots
-      ? { ...r, evidence: { ...r.evidence, screenshots: r.evidence.screenshots.map(signArtifactPath) } }
-      : r),
+    results: (run.results ?? []).map((r) => {
+      const ev = r.evidence;
+      const visual = Array.isArray(r.metadata?.visual) ? r.metadata!.visual : null;
+      return {
+        ...r,
+        ...(ev ? {
+          evidence: {
+            ...ev,
+            ...(ev.screenshots ? { screenshots: ev.screenshots.map(signArtifactPath) } : {}),
+            ...(ev.trace ? { trace: sign(ev.trace) } : {}),
+            ...(ev.video ? { video: sign(ev.video) } : {}),
+          },
+        } : {}),
+        ...(visual ? {
+          metadata: {
+            ...r.metadata,
+            visual: visual.map((v: any) => ({ ...v, baseline: sign(v.baseline), actual: sign(v.actual), diff: sign(v.diff) })),
+          },
+        } : {}),
+      };
+    }),
   };
 }
 

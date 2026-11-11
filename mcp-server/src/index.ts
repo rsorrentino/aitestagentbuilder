@@ -1,681 +1,348 @@
 /**
- * MCP Server for AI Test Agent Builder
- * Exposes tools to Cursor via Model Context Protocol
+ * MCP server for AI Test Agent Builder.
+ *
+ * Lets AI assistants and coding agents (Claude Code, GitHub Copilot, Cursor…)
+ * write test cases, run them in a real browser, wait for the verdict and read
+ * the evidence of failures — e.g. to check their own change before calling it done.
+ *
+ * Environment:
+ *   ATAB_API_URL (or API_URL)  default http://localhost:3000/api/v1
+ *   ATAB_API_KEY               project API key (Account → API keys), sent as "Authorization: ApiKey …"
+ *   ATAB_TOKEN                 alternatively a JWT from POST /auth/login
+ *   ATAB_PROJECT               project id (default: the API key's project, or "default")
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-  ErrorCode,
-  McpError,
-} from '@modelcontextprotocol/sdk/types.js';
-import { z } from 'zod';
-import axios from 'axios';
+import { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError } from '@modelcontextprotocol/sdk/types.js';
+import axios, { AxiosInstance } from 'axios';
 import dotenv from 'dotenv';
+import { basename } from 'path';
 
 dotenv.config();
 
-const API_URL = process.env.API_URL || 'http://localhost:3000/api/v1';
+export const API_URL = (process.env.ATAB_API_URL || process.env.API_URL || 'http://localhost:3000/api/v1').replace(/\/+$/, '');
+const BACKEND_URL = API_URL.replace(/\/api\/v\d+$/, '');
 
-/**
- * MCP Server for AI Test Agent Builder
- */
-class TestAgentMCPServer {
-  private server: Server;
-  private apiUrl: string;
+export function createApiClient(env: NodeJS.ProcessEnv = process.env): AxiosInstance {
+  const headers: Record<string, string> = {};
+  if (env.ATAB_API_KEY) headers.Authorization = `ApiKey ${env.ATAB_API_KEY}`;
+  else if (env.ATAB_TOKEN) headers.Authorization = `Bearer ${env.ATAB_TOKEN}`;
+  if (env.ATAB_PROJECT) headers['X-Project-Id'] = env.ATAB_PROJECT;
+  return axios.create({ baseURL: (env.ATAB_API_URL || env.API_URL || API_URL).replace(/\/+$/, ''), headers, timeout: 15 * 60_000 });
+}
 
-  constructor() {
-    this.apiUrl = API_URL;
-    this.server = new Server(
-      {
-        name: 'ai-test-agent-builder',
-        version: '1.0.0',
+/** A readable message for API errors (the API answers { error }). */
+function apiError(error: any): string {
+  const status = error?.response?.status;
+  const message = error?.response?.data?.error ?? error?.message ?? String(error);
+  if (status === 401) return `${message} — set ATAB_API_KEY (Account → API keys) for the MCP server`;
+  if (status === 403) return `${message} — the API key's role does not allow this`;
+  return status ? `HTTP ${status}: ${message}` : message;
+}
+
+const artifactUrl = (path?: string) => (path ? `${BACKEND_URL}/artifacts/${path}` : undefined);
+
+const text = (value: unknown) => ({ content: [{ type: 'text', text: JSON.stringify(value, null, 2) }] });
+
+/** Compact description of a failed result: what failed and the evidence to look at. */
+export function summarizeFailure(r: any) {
+  const steps: any[] = r.metadata?.steps ?? [];
+  const failedStep = steps.find((s) => s.status === 'failed');
+  return {
+    resultId: r.id,
+    testCaseId: r.testCaseId,
+    title: r.metadata?.title,
+    persona: r.metadata?.persona,
+    status: r.status,
+    error: r.error,
+    failedStep: failedStep ? { stepId: failedStep.stepId, action: failedStep.action, target: failedStep.target, message: failedStep.message } : undefined,
+    evidence: {
+      screenshots: (r.evidence?.screenshots ?? []).map(artifactUrl),
+      trace: artifactUrl(r.evidence?.trace),
+      video: artifactUrl(r.evidence?.video),
+    },
+    accessibility: (r.metadata?.accessibility ?? []).flatMap((a: any) =>
+      a.violations.filter((v: any) => v.counted).map((v: any) => ({ rule: v.id, impact: v.impact, help: v.help, elements: v.targets, url: a.url }))),
+    visual: (r.metadata?.visual ?? []).filter((v: any) => v.status === 'failed').map((v: any) => ({
+      name: v.name, changedPixels: v.diffPixels, ratio: v.ratio, baseline: artifactUrl(v.baseline), actual: artifactUrl(v.actual), diff: artifactUrl(v.diff),
+    })),
+    healedSelectors: r.metadata?.healing?.steps,
+  };
+}
+
+/** Latest attempt of each test (and persona) in a run. */
+function finalResults(results: any[] = []): any[] {
+  const map = new Map<string, any>();
+  for (const r of results) {
+    const key = `${r.testCaseId}@${r.metadata?.persona ?? ''}`;
+    const prev = map.get(key);
+    if (!prev || new Date(r.startedAt) >= new Date(prev.startedAt)) map.set(key, r);
+  }
+  return [...map.values()];
+}
+
+export function runSummary(run: any) {
+  const results = finalResults(run.results);
+  return {
+    runId: run.id,
+    status: run.status,
+    passed: run.status === 'completed',
+    totals: { tests: run.totalTests, passed: run.passedTests, failed: run.failedTests, skipped: run.skippedTests },
+    failures: results.filter((r) => ['failed', 'error', 'timeout'].includes(r.status)).map(summarizeFailure),
+  };
+}
+
+export const TOOLS = [
+  {
+    name: 'list_agents',
+    description: 'List the test agents (applications under test) of the project, with their base URL.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'plan_tests',
+    description: 'Show which test cases a run of an agent would execute, or search test cases by module/priority/tags.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agentId: { type: 'string', description: 'Agent whose next run to preview' },
+        module: { type: 'string' },
+        priority: { type: 'string', enum: ['Low', 'Medium', 'High', 'Critical'] },
+        tags: { type: 'array', items: { type: 'string' } },
+        testIds: { type: 'array', items: { type: 'string' } },
       },
-      {
-        capabilities: {
-          tools: {},
+    },
+  },
+  {
+    name: 'create_test_case',
+    description:
+      'Create a test case. Steps use actions such as navigate, click, fill, select, assert_text, assert_visible, assert_url, ' +
+      'assert_accessible (axe-core WCAG scan), assert_screenshot (visual regression), salesforce_login. ' +
+      'Targets are CSS selectors, text=…, or plain labels ("Sign in button"); data.value holds text to type or expect.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string' },
+        module: { type: 'string' },
+        priority: { type: 'string', enum: ['Low', 'Medium', 'High', 'Critical'] },
+        steps: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: { action: { type: 'string' }, target: { type: 'string' }, data: { type: 'object' } },
+            required: ['action'],
+          },
         },
-      }
-    );
+        expectedResults: { type: 'array', items: { type: 'string' } },
+        tags: { type: 'array', items: { type: 'string' } },
+        personas: { type: 'array', items: { type: 'string' }, description: 'Salesforce personas to run the test as' },
+      },
+      required: ['title', 'module', 'steps'],
+    },
+  },
+  {
+    name: 'run_tests',
+    description:
+      'Run an agent\'s tests in a real browser. By default waits for the result and returns pass/fail with, for each failure, ' +
+      'the failed step, error, screenshots, trace/video links, accessibility violations, visual differences and healed selectors.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agentId: { type: 'string' },
+        testIds: { type: 'array', items: { type: 'string' }, description: 'Only these test cases (default: the agent\'s selection)' },
+        wait: { type: 'boolean', description: 'Wait for the result (default true)' },
+        timeoutSeconds: { type: 'number', description: 'Maximum wait (default 600)' },
+      },
+      required: ['agentId'],
+    },
+  },
+  {
+    name: 'start_test_run',
+    description: 'Start a run without waiting (use get_run_status / get_failures afterwards).',
+    inputSchema: {
+      type: 'object',
+      properties: { agentId: { type: 'string' }, testIds: { type: 'array', items: { type: 'string' } } },
+      required: ['agentId'],
+    },
+  },
+  {
+    name: 'get_run_status',
+    description: 'Status and counts of a run.',
+    inputSchema: { type: 'object', properties: { runId: { type: 'string' } }, required: ['runId'] },
+  },
+  {
+    name: 'get_failures',
+    description: 'Failed tests of a run with their evidence (screenshots, trace, video, accessibility, visual diffs, healed selectors).',
+    inputSchema: { type: 'object', properties: { runId: { type: 'string' } }, required: ['runId'] },
+  },
+  {
+    name: 'apply_healing',
+    description: 'Write the selectors the AI repaired during a run back into the test case.',
+    inputSchema: {
+      type: 'object',
+      properties: { runId: { type: 'string' }, resultId: { type: 'string' }, stepIds: { type: 'array', items: { type: 'number' } } },
+      required: ['runId', 'resultId'],
+    },
+  },
+  {
+    name: 'ingest_test_book',
+    description: 'Upload a test specification (PDF, Word, Excel, Markdown, HTML, text) and let the AI extract test cases from it.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        filePath: { type: 'string', description: 'Path of the file on this machine' },
+        extractTestCases: { type: 'boolean', description: 'Extract test cases after the upload (default true)' },
+      },
+      required: ['filePath'],
+    },
+  },
+  {
+    name: 'run_api_check',
+    description: 'Send one HTTP request from this machine and compare status and body with what is expected.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        method: { type: 'string', enum: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] },
+        url: { type: 'string', description: 'Full URL or path' },
+        baseUrl: { type: 'string', description: 'Base URL when url is a path' },
+        headers: { type: 'object' },
+        body: {},
+        expectedStatus: { type: 'number' },
+        expectedBody: { description: 'Expected JSON body (exact match)' },
+      },
+      required: ['method', 'url'],
+    },
+  },
+  {
+    name: 'generate_report',
+    description: 'Generate HTML / JUnit / JSON reports of a run.',
+    inputSchema: {
+      type: 'object',
+      properties: { runId: { type: 'string' }, formats: { type: 'array', items: { type: 'string', enum: ['json', 'html', 'junit'] } } },
+      required: ['runId'],
+    },
+  },
+];
 
-    this.setupHandlers();
-  }
+export class TestAgentMCPServer {
+  private server: Server;
 
-  private setupHandlers(): void {
-    // List available tools
-    this.server.setRequestHandler(ListToolsRequestSchema, async () => {
-      return {
-        tools: [
-          {
-            name: 'ingest_test_book',
-            description: 'Upload and parse a test book document (PDF, Word, Excel) to extract test cases',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                filePath: {
-                  type: 'string',
-                  description: 'Path to the test book file',
-                },
-                sourceType: {
-                  type: 'string',
-                  enum: ['pdf', 'word', 'excel', 'markdown', 'html', 'text'],
-                  description: 'Type of document',
-                },
-                extractTestCases: {
-                  type: 'boolean',
-                  description: 'Whether to immediately extract test cases after upload',
-                  default: true,
-                },
-                module: {
-                  type: 'string',
-                  description: 'Optional module filter for extraction',
-                },
-                priority: {
-                  type: 'string',
-                  enum: ['Low', 'Medium', 'High', 'Critical'],
-                  description: 'Optional priority filter for extraction',
-                },
-              },
-              required: ['filePath', 'sourceType'],
-            },
-          },
-          {
-            name: 'plan_tests',
-            description: 'Plan which test cases to run based on agent configuration or filters',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                agentId: {
-                  type: 'string',
-                  description: 'Agent ID to use for planning',
-                },
-                module: {
-                  type: 'string',
-                  description: 'Filter by module',
-                },
-                priority: {
-                  type: 'string',
-                  enum: ['Low', 'Medium', 'High', 'Critical'],
-                  description: 'Filter by priority',
-                },
-                tags: {
-                  type: 'array',
-                  items: { type: 'string' },
-                  description: 'Filter by tags',
-                },
-                testIds: {
-                  type: 'array',
-                  items: { type: 'string' },
-                  description: 'Specific test case IDs to include',
-                },
-              },
-            },
-          },
-          {
-            name: 'run_api_check',
-            description: 'Execute an API test check (GET, POST, PUT, DELETE)',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                method: {
-                  type: 'string',
-                  enum: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
-                  description: 'HTTP method',
-                },
-                url: {
-                  type: 'string',
-                  description: 'Full URL or endpoint path',
-                },
-                baseUrl: {
-                  type: 'string',
-                  description: 'Base URL (if url is relative)',
-                },
-                headers: {
-                  type: 'object',
-                  description: 'HTTP headers',
-                },
-                body: {
-                  type: 'object',
-                  description: 'Request body (for POST/PUT)',
-                },
-                expectedStatus: {
-                  type: 'number',
-                  description: 'Expected HTTP status code',
-                },
-                expectedBody: {
-                  type: 'object',
-                  description: 'Expected response body structure',
-                },
-              },
-              required: ['method', 'url'],
-            },
-          },
-          {
-            name: 'run_ui_step',
-            description: 'Execute a UI test step using Playwright',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                action: {
-                  type: 'string',
-                  enum: ['navigate', 'click', 'fill', 'select', 'get_text', 'wait', 'screenshot'],
-                  description: 'Action to perform',
-                },
-                target: {
-                  type: 'string',
-                  description: 'Selector or URL target',
-                },
-                data: {
-                  type: 'object',
-                  description: 'Additional data (e.g., value for fill, option for select)',
-                },
-                baseUrl: {
-                  type: 'string',
-                  description: 'Base URL for navigation',
-                },
-                headless: {
-                  type: 'boolean',
-                  description: 'Run browser in headless mode',
-                  default: true,
-                },
-              },
-              required: ['action', 'target'],
-            },
-          },
-          {
-            name: 'start_test_run',
-            description: 'Start a test run with an agent',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                agentId: {
-                  type: 'string',
-                  description: 'Agent ID to use for execution',
-                },
-                environment: {
-                  type: 'string',
-                  description: 'Environment name',
-                },
-                metadata: {
-                  type: 'object',
-                  description: 'Additional metadata',
-                },
-              },
-              required: ['agentId'],
-            },
-          },
-          {
-            name: 'get_run_status',
-            description: 'Get the status of a test run',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                runId: {
-                  type: 'string',
-                  description: 'Test run ID',
-                },
-              },
-              required: ['runId'],
-            },
-          },
-          {
-            name: 'generate_report',
-            description: 'Generate test reports for a completed run',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                runId: {
-                  type: 'string',
-                  description: 'Test run ID',
-                },
-                formats: {
-                  type: 'array',
-                  items: { type: 'string', enum: ['json', 'html', 'junit'] },
-                  description: 'Report formats to generate',
-                  default: ['json', 'html'],
-                },
-              },
-              required: ['runId'],
-            },
-          },
-        ],
-      };
-    });
-
-    // Handle tool calls
+  constructor(private api: AxiosInstance = createApiClient()) {
+    this.server = new Server({ name: 'ai-test-agent-builder', version: '1.1.0' }, { capabilities: { tools: {} } });
+    this.server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
-      const { name, arguments: args } = request.params;
-
+      const { name, arguments: args = {} } = request.params as { name: string; arguments?: any };
+      const handler = (this.handlers as Record<string, (a: any) => Promise<any>>)[name];
+      if (!handler) throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
       try {
-        switch (name) {
-          case 'ingest_test_book':
-            return await this.handleIngestTestBook(args as any);
-          case 'plan_tests':
-            return await this.handlePlanTests(args as any);
-          case 'run_api_check':
-            return await this.handleRunApiCheck(args as any);
-          case 'run_ui_step':
-            return await this.handleRunUiStep(args as any);
-          case 'start_test_run':
-            return await this.handleStartTestRun(args as any);
-          case 'get_run_status':
-            return await this.handleGetRunStatus(args as any);
-          case 'generate_report':
-            return await this.handleGenerateReport(args as any);
-          default:
-            throw new McpError(
-              ErrorCode.MethodNotFound,
-              `Unknown tool: ${name}`
-            );
-        }
+        return text(await handler.call(this, args));
       } catch (error: any) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                isError: true,
-                error: {
-                  code: ErrorCode.InternalError,
-                  message: error.message || 'Unknown error',
-                },
-              }),
-            },
-          ],
-        };
+        return { ...text({ isError: true, error: apiError(error) }), isError: true };
       }
     });
   }
 
-  private async handleIngestTestBook(args: {
-    filePath: string;
-    sourceType: string;
-    extractTestCases?: boolean;
-    module?: string;
-    priority?: string;
-  }) {
-    const { filePath, sourceType, extractTestCases = true, module, priority } = args;
+  private handlers = {
+    list_agents: async () => {
+      const { data } = await this.api.get('/agents');
+      return data.map((a: any) => ({ id: a.id, name: a.name, baseUrl: a.config?.base_url, status: a.status }));
+    },
 
-    try {
-      // Read file and upload via API
-      const fs = await import('fs');
+    plan_tests: async (args: { agentId?: string; module?: string; priority?: string; tags?: string[]; testIds?: string[] }) => {
+      if (args.agentId) {
+        const { data } = await this.api.get(`/agents/${encodeURIComponent(args.agentId)}/plan`);
+        return { strategy: data.strategy, count: data.count, testCases: data.testCases.map((tc: any) => ({ id: tc.id, title: tc.title, module: tc.module, priority: tc.priority })) };
+      }
+      const params: Record<string, string> = {};
+      if (args.module) params.module = args.module;
+      if (args.priority) params.priority = args.priority;
+      if (args.tags?.length) params.tags = args.tags.join(',');
+      const { data } = await this.api.get('/testcases', { params });
+      const list = args.testIds?.length ? data.filter((tc: any) => args.testIds!.includes(tc.id)) : data;
+      return { count: list.length, testCases: list.map((tc: any) => ({ id: tc.id, title: tc.title, module: tc.module, priority: tc.priority })) };
+    },
+
+    create_test_case: async (args: any) => {
+      const { personas, ...rest } = args;
+      const { data } = await this.api.post('/testcases', {
+        priority: 'Medium',
+        expectedResults: [],
+        ...rest,
+        ...(personas?.length ? { data: { personas } } : {}),
+      });
+      return { id: data.id, title: data.title, steps: data.steps.length };
+    },
+
+    run_tests: async (args: { agentId: string; testIds?: string[]; wait?: boolean; timeoutSeconds?: number }) => {
+      const wait = args.wait !== false;
+      const { data } = await this.api.post('/runs', {
+        agentId: args.agentId,
+        ...(args.testIds?.length ? { testIds: args.testIds } : {}),
+        ...(wait ? { wait: true, timeoutSeconds: Math.min(Math.max(Number(args.timeoutSeconds) || 600, 10), 3600) } : {}),
+        metadata: { triggeredBy: 'mcp' },
+      });
+      if (!wait) return { runId: data.id, status: data.status };
+      if (data.timedOut) return { runId: data.id, status: data.status, timedOut: true, message: 'Still running: call get_run_status / get_failures later' };
+      const { data: run } = await this.api.get(`/runs/${data.id}`);
+      return runSummary(run);
+    },
+
+    start_test_run: async (args: { agentId: string; testIds?: string[] }) => this.handlers.run_tests({ ...args, wait: false }),
+
+    get_run_status: async (args: { runId: string }) => {
+      const { data } = await this.api.get(`/runs/${encodeURIComponent(args.runId)}`);
+      const { failures, ...summary } = runSummary(data);
+      return { ...summary, failedTests: failures.map((f) => f.title), startedAt: data.startedAt, finishedAt: data.finishedAt };
+    },
+
+    get_failures: async (args: { runId: string }) => {
+      const { data } = await this.api.get(`/runs/${encodeURIComponent(args.runId)}`);
+      return runSummary(data);
+    },
+
+    apply_healing: async (args: { runId: string; resultId: string; stepIds?: number[] }) => {
+      const { data } = await this.api.post(`/runs/${encodeURIComponent(args.runId)}/results/${encodeURIComponent(args.resultId)}/apply-healing`,
+        args.stepIds?.length ? { stepIds: args.stepIds } : {});
+      return data;
+    },
+
+    ingest_test_book: async (args: { filePath: string; extractTestCases?: boolean }) => {
+      const { readFileSync } = await import('fs');
       const FormData = (await import('form-data')).default;
-      const fileBuffer = fs.readFileSync(filePath);
-      const fileName = filePath.split('/').pop() || 'document';
+      const form = new FormData();
+      form.append('file', readFileSync(args.filePath), { filename: basename(args.filePath) });
+      const { data: doc } = await this.api.post('/ingestion/upload', form, { headers: form.getHeaders() });
+      if (args.extractTestCases === false) return { documentId: doc.id };
+      const { data } = await this.api.post(`/ingestion/documents/${doc.id}/extract`, {});
+      return { documentId: doc.id, extracted: data.extracted ?? data.testCases?.length ?? 0, testCases: (data.testCases ?? []).map((tc: any) => ({ id: tc.id, title: tc.title })) };
+    },
 
-      // Upload document using form-data
-      const formData = new FormData();
-      formData.append('file', fileBuffer, {
-        filename: fileName,
-        contentType: this.getContentType(sourceType),
+    run_api_check: async (args: { method: string; url: string; baseUrl?: string; headers?: Record<string, string>; body?: any; expectedStatus?: number; expectedBody?: any }) => {
+      const url = /^https?:\/\//i.test(args.url) ? args.url : `${args.baseUrl ?? ''}${args.url}`;
+      const res = await axios.request({ method: args.method as any, url, headers: args.headers ?? {}, data: args.body, validateStatus: () => true, timeout: 60_000 });
+      const statusOk = args.expectedStatus === undefined || res.status === args.expectedStatus;
+      const bodyOk = args.expectedBody === undefined || JSON.stringify(res.data) === JSON.stringify(args.expectedBody);
+      return { passed: statusOk && bodyOk, status: res.status, body: res.data, expectedStatus: args.expectedStatus, bodyMatches: bodyOk };
+    },
+
+    generate_report: async (args: { runId: string; formats?: string[] }) => {
+      const { data } = await this.api.post(`/reports/runs/${encodeURIComponent(args.runId)}/generate`, {
+        formats: args.formats ?? ['json', 'html'], includeScreenshots: true, includeLogs: true,
       });
-
-      const uploadResponse = await axios.post(
-        `${this.apiUrl}/ingestion/upload`,
-        formData,
-        {
-          headers: {
-            ...formData.getHeaders(),
-          },
-        }
-      );
-
-      const documentId = uploadResponse.data.id;
-      let extractionResult = null;
-
-      // Extract test cases if requested
-      if (extractTestCases) {
-        const extractResponse = await axios.post(
-          `${this.apiUrl}/ingestion/documents/${documentId}/extract`,
-          {},
-          {
-            params: {
-              ...(module && { module }),
-              ...(priority && { priority }),
-            },
-          }
-        );
-        extractionResult = extractResponse.data;
-      }
-
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(
-              {
-                success: true,
-                documentId,
-                extracted: extractionResult?.extracted || 0,
-                testCases: extractionResult?.testCases || [],
-              },
-              null,
-              2
-            ),
-          },
-        ],
-      };
-    } catch (error: any) {
-      throw new Error(`Ingestion failed: ${error.message}`);
-    }
-  }
-
-  private async handlePlanTests(args: {
-    agentId?: string;
-    module?: string;
-    priority?: string;
-    tags?: string[];
-    testIds?: string[];
-  }) {
-    const { agentId, module, priority, tags, testIds } = args;
-
-    try {
-      if (agentId) {
-        // Use agent configuration for planning
-        const agentResponse = await axios.get(`${this.apiUrl}/agents/${agentId}`);
-        const agent = agentResponse.data;
-
-        // Preview the plan without starting a run
-        const planResponse = await axios.get(`${this.apiUrl}/agents/${agentId}/plan`);
-
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(
-                {
-                  success: true,
-                  plan: {
-                    agent: agent.name,
-                    strategy: planResponse.data.strategy,
-                    tests: planResponse.data.count,
-                    testCases: planResponse.data.testCases,
-                  },
-                },
-                null,
-                2
-              ),
-            },
-          ],
-        };
-      } else {
-        // Direct test case query
-        const params: any = {};
-        if (module) params.module = module;
-        if (priority) params.priority = priority;
-        if (tags) params.tags = tags.join(',');
-
-        const testCasesResponse = await axios.get(`${this.apiUrl}/testcases`, {
-          params,
-        });
-
-        const testCases = testIds
-          ? testCasesResponse.data.filter((tc: any) => testIds.includes(tc.id))
-          : testCasesResponse.data;
-
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(
-                {
-                  success: true,
-                  plan: {
-                    tests: testCases.map((tc: any) => ({
-                      id: tc.id,
-                      title: tc.title,
-                      module: tc.module,
-                      priority: tc.priority,
-                    })),
-                    count: testCases.length,
-                  },
-                },
-                null,
-                2
-              ),
-            },
-          ],
-        };
-      }
-    } catch (error: any) {
-      throw new Error(`Planning failed: ${error.message}`);
-    }
-  }
-
-  private async handleRunApiCheck(args: {
-    method: string;
-    url: string;
-    baseUrl?: string;
-    headers?: Record<string, string>;
-    body?: any;
-    expectedStatus?: number;
-    expectedBody?: any;
-  }) {
-    const { method, url, baseUrl, headers, body, expectedStatus, expectedBody } = args;
-
-    try {
-      const fullUrl = url.startsWith('http') ? url : `${baseUrl || ''}${url}`;
-
-      const response = await axios.request({
-        method: method as any,
-        url: fullUrl,
-        headers: headers || {},
-        data: body,
-        validateStatus: () => true, // Don't throw on any status
-      });
-
-      const passed =
-        (!expectedStatus || response.status === expectedStatus) &&
-        (!expectedBody || this.matchBody(response.data, expectedBody));
-
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(
-              {
-                success: passed,
-                status: response.status,
-                statusText: response.statusText,
-                headers: response.headers,
-                body: response.data,
-                expectedStatus,
-                expectedBody,
-                passed,
-              },
-              null,
-              2
-            ),
-          },
-        ],
-      };
-    } catch (error: any) {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(
-              {
-                success: false,
-                error: error.message,
-              },
-              null,
-              2
-            ),
-          },
-        ],
-      };
-    }
-  }
-
-  private async handleRunUiStep(args: {
-    action: string;
-    target: string;
-    data?: any;
-    baseUrl?: string;
-    headless?: boolean;
-  }) {
-    // For UI steps, we need to call the Python executor
-    // This is a simplified version - in production, you'd call the executor service
-    const { action, target, data, baseUrl, headless = true } = args;
-
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(
-            {
-              success: true,
-              message: 'UI step execution requires Python executor',
-              action,
-              target,
-              note: 'Use start_test_run with an agent configured for web testing',
-            },
-            null,
-            2
-          ),
-        },
-      ],
-    };
-  }
-
-  private async handleStartTestRun(args: {
-    agentId: string;
-    environment?: string;
-    metadata?: Record<string, any>;
-  }) {
-    const { agentId, environment, metadata } = args;
-
-    try {
-      const response = await axios.post(`${this.apiUrl}/runs`, {
-        agentId,
-        metadata: {
-          ...metadata,
-          environment,
-        },
-      });
-
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(
-              {
-                success: true,
-                runId: response.data.id,
-                status: response.data.status,
-                message: 'Test run started',
-              },
-              null,
-              2
-            ),
-          },
-        ],
-      };
-    } catch (error: any) {
-      throw new Error(`Failed to start test run: ${error.message}`);
-    }
-  }
-
-  private async handleGetRunStatus(args: { runId: string }) {
-    const { runId } = args;
-
-    try {
-      const response = await axios.get(`${this.apiUrl}/runs/${runId}`);
-
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(
-              {
-                success: true,
-                run: {
-                  id: response.data.id,
-                  status: response.data.status,
-                  totalTests: response.data.totalTests,
-                  passedTests: response.data.passedTests,
-                  failedTests: response.data.failedTests,
-                  startedAt: response.data.startedAt,
-                  finishedAt: response.data.finishedAt,
-                  duration: response.data.duration,
-                },
-              },
-              null,
-              2
-            ),
-          },
-        ],
-      };
-    } catch (error: any) {
-      throw new Error(`Failed to get run status: ${error.message}`);
-    }
-  }
-
-  private async handleGenerateReport(args: {
-    runId: string;
-    formats?: string[];
-  }) {
-    const { runId, formats = ['json', 'html'] } = args;
-
-    try {
-      const response = await axios.post(
-        `${this.apiUrl}/reports/runs/${runId}/generate`,
-        {
-          formats,
-          includeScreenshots: true,
-          includeLogs: true,
-        }
-      );
-
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(
-              {
-                success: true,
-                reports: response.data.reports,
-                message: response.data.message,
-              },
-              null,
-              2
-            ),
-          },
-        ],
-      };
-    } catch (error: any) {
-      throw new Error(`Failed to generate report: ${error.message}`);
-    }
-  }
-
-  private matchBody(actual: any, expected: any): boolean {
-    // Simple deep equality check
-    return JSON.stringify(actual) === JSON.stringify(expected);
-  }
-
-  private getContentType(sourceType: string): string {
-    const contentTypes: Record<string, string> = {
-      pdf: 'application/pdf',
-      word: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      excel: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      markdown: 'text/markdown',
-      html: 'text/html',
-      text: 'text/plain',
-    };
-    return contentTypes[sourceType.toLowerCase()] || 'application/octet-stream';
-  }
+      return data;
+    },
+  };
 
   async run(): Promise<void> {
-    const transport = new StdioServerTransport();
-    await this.server.connect(transport);
-    console.error('AI Test Agent Builder MCP Server running on stdio');
+    await this.server.connect(new StdioServerTransport());
+    console.error(`AI Test Agent Builder MCP server running on stdio (API ${API_URL})`);
   }
 }
 
-// Start server
-const server = new TestAgentMCPServer();
-server.run().catch(console.error);
-
+const isMain = process.argv[1] && /index\.(ts|js)$/.test(process.argv[1]) && !process.env.ATAB_MCP_NO_START;
+if (isMain) {
+  new TestAgentMCPServer().run().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+}

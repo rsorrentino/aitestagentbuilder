@@ -3,7 +3,8 @@
  * results in the database, and streams progress over WebSocket.
  */
 
-import { mkdirSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
 import { join } from 'path';
 import type { Browser, BrowserContext, Page } from 'playwright';
 import { Agent } from '../../core/domain/agent.js';
@@ -12,16 +13,20 @@ import { RunRepository } from '../../core/repositories/run.repository.js';
 import { emitRunEvent } from '../../infra/websocket/server.js';
 import { getLLMRouter } from '../../infra/llm/router.js';
 import { extractJsonArray } from '../../infra/llm/json.js';
-import { BACKEND_ROOT } from '../../infra/config/env.js';
+import { ARTIFACTS_PATH } from '../../infra/config/paths.js';
 import logger from '../../infra/logger/index.js';
 import { decryptAgentConfig, resolvePlaceholders, secretValues } from '../../core/domain/agent-secrets.js';
 import { maskSecrets } from '../../infra/security/secrets.js';
 import { launchBrowser, outlinePage } from './browser.js';
-import { classifyAction, executeStep, isSelectorFailure, StepContext } from './step-runner.js';
+import { classifyAction, executeStep, isSelectorFailure, QualityContext, StepContext } from './step-runner.js';
+import { TestCaseRepository } from '../../core/repositories/test-case.repository.js';
+import { describeA11y, scanAccessibility } from '../quality/accessibility.js';
+import { evidenceConfig, keepEvidence, redactTrace } from '../quality/evidence.js';
+import { applyHealing, HealingCache, healedStepsOf } from '../quality/healing.js';
 import { salesforceSettings, testPersonas } from '../salesforce/personas.js';
 import { SalesforceSessions } from '../salesforce/session.js';
 
-export const ARTIFACTS_PATH = process.env.ARTIFACTS_PATH || join(BACKEND_ROOT, 'artifacts');
+export { ARTIFACTS_PATH };
 
 export interface StepLog {
   stepId: number;
@@ -49,6 +54,8 @@ export class RunExecutor {
   private secrets: Record<string, string>;
   private secretList: string[];
   private salesforce?: SalesforceSessions;
+  /** Selectors healed earlier in this run: reused without another model call. */
+  private healingCache = new HealingCache();
 
   constructor(private runId: string, private agent: Agent, private testCases: TestCase[]) {
     this.config = decryptAgentConfig(agent.config);
@@ -187,8 +194,29 @@ export class RunExecutor {
 
     this.log(`▶ ${title}`, { testId: testCase.id });
 
+    const evidence = evidenceConfig(config);
+    const videoDir = evidence.video !== 'off' ? mkdtempSync(join(tmpdir(), 'atab-video-')) : undefined;
+    const quality: QualityContext = {
+      projectId: this.agent.projectId,
+      agentId: this.agent.id,
+      runId: this.runId,
+      resultId: result.id,
+      testCaseId: testCase.id,
+      accessibility: [],
+      visual: [],
+    };
+
     try {
-      context = await this.browser!.newContext({ viewport: { width: 1280, height: 800 }, ignoreHTTPSErrors: true });
+      context = await this.browser!.newContext({
+        viewport: { width: 1280, height: 800 },
+        ignoreHTTPSErrors: true,
+        ...(videoDir ? { recordVideo: { dir: videoDir, size: { width: 1280, height: 800 } } } : {}),
+      });
+      if (evidence.trace !== 'off') {
+        await context.tracing.start({ title, screenshots: true, snapshots: true, sources: false }).catch((e) => {
+          logger.warn('Could not start tracing', { error: e.message });
+        });
+      }
       page = await context.newPage();
       const ctx: StepContext = {
         page,
@@ -197,6 +225,7 @@ export class RunExecutor {
         config,
         salesforce: this.salesforce,
         persona,
+        quality,
       };
 
       const steps: TestStep[] = testCase.steps ?? [];
@@ -233,6 +262,22 @@ export class RunExecutor {
         status = 'skipped';
         error = 'No automatable steps — use actions such as navigate, click, fill, assert_text.';
       }
+
+      // Agent-wide accessibility scan of the page each test ends on (checks.accessibility: report | fail)
+      const a11yMode = config.checks?.accessibility;
+      if ((a11yMode === 'report' || a11yMode === 'fail') && status === 'passed' && !page.isClosed()) {
+        try {
+          const report = await scanAccessibility(page, config.checks?.accessibility_options ?? {});
+          quality.accessibility.push(report);
+          this.log(`  ♿ ${describeA11y(report)}`, { testId: testCase.id }, report.failing ? 'warn' : 'info');
+          if (a11yMode === 'fail' && report.failing > 0) {
+            status = 'failed';
+            error = describeA11y(report);
+          }
+        } catch (e: any) {
+          this.log(`  ♿ Accessibility scan failed: ${e.message}`, { testId: testCase.id }, 'warn');
+        }
+      }
     } catch (e: any) {
       if (e instanceof CancelledError || this.cancelled) {
         status = 'skipped';
@@ -247,7 +292,17 @@ export class RunExecutor {
       const file = await this.saveScreenshot(page, result.id, status === 'passed' ? 'final' : 'failure');
       if (file) screenshots.push(file);
     }
+    const kept = await this.collectEvidence(context, page, result.id, status, evidence, videoDir);
     await context?.close().catch(() => undefined);
+    if (kept.videoTask) kept.video = await kept.videoTask;
+    if (videoDir) rmSync(videoDir, { recursive: true, force: true });
+
+    // Keep selectors the AI repaired: write them back to the test case when the agent asks for it
+    const healed = healedStepsOf({ steps: stepLogs });
+    let healingApplied = false;
+    if (healed.length && status === 'passed' && config.ai?.auto_apply_healing === true) {
+      healingApplied = await this.writeBackHealing(testCase, healed);
+    }
 
     const finishedAt = new Date();
     const duration = finishedAt.getTime() - startedAt.getTime();
@@ -257,8 +312,15 @@ export class RunExecutor {
       duration,
       logs: stepLogs.map((l) => `[${l.status.toUpperCase()}] Step ${l.stepId}: ${l.action}${l.target ? ` → ${l.target}` : ''} — ${l.message}`),
       error,
-      evidence: { screenshots },
-      metadata: { ...baseMeta, steps: stepLogs },
+      evidence: { screenshots, ...(kept.trace ? { trace: kept.trace } : {}), ...(kept.video ? { video: kept.video } : {}) },
+      metadata: {
+        ...baseMeta,
+        steps: stepLogs,
+        ...(quality.accessibility.length ? { accessibility: quality.accessibility } : {}),
+        ...(quality.visual.length ? { visual: quality.visual } : {}),
+        ...(healed.length ? { healing: { steps: healed, applied: healingApplied } } : {}),
+        ...(kept.traceMasked ? { traceRedactions: kept.traceMasked } : {}),
+      },
     });
     await this.runRepo.updateRunStats(this.runId);
 
@@ -291,8 +353,22 @@ export class RunExecutor {
   /** Ask the LLM for a replacement selector when a step fails on a selector. */
   private async trySelfHeal(step: TestStep, ctx: StepContext, kind: ReturnType<typeof classifyAction>, error: string, testCase: TestCase, persona?: string) {
     const config = this.config;
+    if (!config.ai?.self_healing || !step.target || !isSelectorFailure(kind, error)) return null;
+
+    // Healed earlier in this run on the same page: reuse it, no model call
+    const cached = this.healingCache.get(step.target, ctx.page.url());
+    if (cached) {
+      try {
+        const outcome = await executeStep(this.resolveStep(step, persona), ctx, cached);
+        this.log(`  🩹 Reused healed selector "${cached}" for "${step.target}"`, { testId: testCase.id, stepId: step.stepId });
+        return { ...outcome, message: `${outcome.message} (healed selector reused: "${step.target}" → "${cached}")`, healedSelector: cached };
+      } catch {
+        // the page changed again: ask the model
+      }
+    }
+
     const router = getLLMRouter();
-    if (!config.ai?.self_healing || !step.target || !isSelectorFailure(kind, error) || !router.hasAnyProvider()) return null;
+    if (!router.hasAnyProvider()) return null;
 
     try {
       this.log(`  🩹 Self-healing selector "${step.target}"…`, { testId: testCase.id, stepId: step.stepId }, 'warn');
@@ -312,12 +388,91 @@ export class RunExecutor {
       const selector = extractJsonArray(response.content)[0]?.selector;
       if (!selector || selector === step.target) return null;
 
+      const failedUrl = ctx.page.url();
       const outcome = await executeStep(this.resolveStep(step, persona), ctx, selector);
+      this.healingCache.set(step.target, failedUrl, selector);
       this.log(`  🩹 Healed: "${step.target}" → "${selector}"`, { testId: testCase.id, stepId: step.stepId });
       return { ...outcome, message: `${outcome.message} (self-healed from "${step.target}")`, healedSelector: selector };
     } catch (e: any) {
       logger.debug('Self-healing failed', { error: e.message });
       return null;
+    }
+  }
+
+  /**
+   * Stop tracing and keep the trace / video when the agent's evidence settings ask for it.
+   * Traces are redacted: every secret of the run is replaced with •••• inside the file.
+   */
+  private async collectEvidence(
+    context: BrowserContext | undefined,
+    page: Page | undefined,
+    resultId: string,
+    status: string,
+    evidence: ReturnType<typeof evidenceConfig>,
+    videoDir?: string,
+  ): Promise<{ trace?: string; video?: string; videoTask?: Promise<string | undefined>; traceMasked?: number }> {
+    const out: { trace?: string; video?: string; videoTask?: Promise<string | undefined>; traceMasked?: number } = {};
+    if (!context) return out;
+    const dir = join(ARTIFACTS_PATH, this.runId);
+
+    if (evidence.trace !== 'off') {
+      try {
+        if (keepEvidence(evidence.trace, status)) {
+          mkdirSync(dir, { recursive: true });
+          // Unredacted trace only ever exists outside the served artifacts folder
+          const raw = join(mkdtempSync(join(tmpdir(), 'atab-trace-')), 'trace.zip');
+          // Session cookies are credentials too (any app): mask their values in headers
+          const cookieValues = (await context.cookies().catch(() => [])).map((c) => c.value).filter((v) => v.length >= 16);
+          await context.tracing.stop({ path: raw });
+          const secrets = [...this.secretList, ...(this.salesforce?.sessionSecrets() ?? []), ...cookieValues];
+          const { zip, masked } = await redactTrace(readFileSync(raw), secrets);
+          writeFileSync(join(dir, `${resultId}-trace.zip`), zip);
+          rmSync(join(raw, '..'), { recursive: true, force: true });
+          out.trace = `${this.runId}/${resultId}-trace.zip`;
+          if (masked) out.traceMasked = masked;
+        } else {
+          await context.tracing.stop();
+        }
+      } catch (e: any) {
+        logger.warn('Could not save the trace', { error: e.message });
+      }
+    }
+
+    const video = page?.video();
+    if (video && videoDir) {
+      const keep = keepEvidence(evidence.video, status);
+      // The video is finalised when the context closes; saveAs waits for that.
+      out.videoTask = (async () => {
+        try {
+          if (!keep) return undefined;
+          mkdirSync(dir, { recursive: true });
+          await video.saveAs(join(dir, `${resultId}-video.webm`));
+          return `${this.runId}/${resultId}-video.webm`;
+        } catch (e: any) {
+          logger.warn('Could not save the video', { error: e.message });
+          return undefined;
+        } finally {
+          await video.delete().catch(() => undefined);
+        }
+      })();
+    }
+    return out;
+  }
+
+  /** Write healed selectors back into the test case (agent config ai.auto_apply_healing). */
+  private async writeBackHealing(testCase: TestCase, healed: ReturnType<typeof healedStepsOf>): Promise<boolean> {
+    try {
+      const repo = new TestCaseRepository();
+      const current = await repo.findById(testCase.id, this.agent.projectId);
+      if (!current) return false;
+      const { steps, applied } = applyHealing(current.steps, healed);
+      if (!applied.length) return false;
+      await repo.update(current.id, { steps }, this.agent.projectId);
+      this.log(`  🩹 Saved ${applied.length} healed selector(s) to "${testCase.title}"`, { testId: testCase.id });
+      return true;
+    } catch (e: any) {
+      logger.warn('Could not save healed selectors', { error: e.message });
+      return false;
     }
   }
 

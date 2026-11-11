@@ -30,6 +30,7 @@ import { audit } from '../../infra/audit/audit.js';
 import { rateLimiters } from '../../infra/rate-limit/rate-limiter.js';
 import { seedDemo } from '../../demo/seed-demo.js';
 import { registerAutomationRoutes } from './automation.js';
+import { registerQualityRoutes } from './quality.js';
 import { AgentRepository } from '../../core/repositories/agent.repository.js';
 
 const router = Router();
@@ -190,6 +191,7 @@ scoped.post('/demo/seed', editor, audit('demo.seed', 'agent'), async (req: Authe
 
 // Schedules, notifications, analytics (Phase 2/3)
 registerAutomationRoutes(scoped, { viewer, editor, projectAdmin });
+registerQualityRoutes(scoped, { viewer, editor });
 
 router.use(scoped);
 
