@@ -171,6 +171,8 @@ jobs:
           Get-ScheduledTask -TaskName ATAB | Format-Table TaskName, State
           npm run service:uninstall; if ($LASTEXITCODE) { exit 1 }
           if (-not (Wait-Status 1 30)) { throw 'still answering after service:uninstall' }
+          # The last "npm run status" exits 1 (down, as expected); don't let it become the step's result
+          exit 0
       - if: failure()
         shell: pwsh
         run: Get-ChildItem logs, logs-start.* -ErrorAction SilentlyContinue | ForEach-Object { "== $($_.Name)"; Get-Content $_.FullName -Tail 80 }
