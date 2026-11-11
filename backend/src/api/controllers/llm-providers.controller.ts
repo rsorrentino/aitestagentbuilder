@@ -28,6 +28,7 @@ export class LlmProvidersController {
           chat: router.providerOrder('chat'),
           healing: router.providerOrder('healing'),
           codegen: router.providerOrder('codegen'),
+          analysis: router.providerOrder('analysis'),
         },
         anyConfigured: router.hasAnyProvider(),
       });

@@ -23,6 +23,7 @@ import { TestCaseRepository } from '../../core/repositories/test-case.repository
 import { describeA11y, scanAccessibility } from '../quality/accessibility.js';
 import { evidenceConfig, keepEvidence, redactTrace } from '../quality/evidence.js';
 import { applyHealing, HealingCache, healedStepsOf } from '../quality/healing.js';
+import { failureSignature } from '../quality/triage.js';
 import { salesforceSettings, testPersonas } from '../salesforce/personas.js';
 import { SalesforceSessions } from '../salesforce/session.js';
 
@@ -320,6 +321,10 @@ export class RunExecutor {
         ...(quality.visual.length ? { visual: quality.visual } : {}),
         ...(healed.length ? { healing: { steps: healed, applied: healingApplied } } : {}),
         ...(kept.traceMasked ? { traceRedactions: kept.traceMasked } : {}),
+        // Lets triage recognise the same failure in later runs
+        ...((status === 'failed' || status === 'error') && error
+          ? { failureSignature: failureSignature(error, stepLogs.find((l) => l.status === 'failed')?.action) }
+          : {}),
       },
     });
     await this.runRepo.updateRunStats(this.runId);

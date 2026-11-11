@@ -172,6 +172,8 @@ describe('MCP server (integration, login enabled)', () => {
       assert.equal(run.data.totals.tests, 2);
       assert.equal(run.data.failures.length, 1);
       const failure = run.data.failures[0];
+      assert.equal(run.data.triage.summary.app_bug, 1, 'failures come triaged');
+      assert.equal(run.data.triage.groups[0].seenBefore, 0);
       assert.equal(failure.title, 'Login shows a wrong greeting (written by an agent)');
       assert.equal(failure.failedStep.stepId, 5);
       assert.match(failure.error, /Welcome back, admin/);

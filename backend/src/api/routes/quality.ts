@@ -11,6 +11,9 @@ import { RunRepository } from '../../core/repositories/run.repository.js';
 import { TestCaseRepository } from '../../core/repositories/test-case.repository.js';
 import { approveActual, VisualBaselineRepository, VisualEntry } from '../../modules/quality/visual.js';
 import { applyHealing, healedStepsOf } from '../../modules/quality/healing.js';
+import { triageRun } from '../../modules/quality/triage.js';
+import { AgentRepository } from '../../core/repositories/agent.repository.js';
+import { getLLMRouter } from '../../infra/llm/router.js';
 
 type Handler = (req: AuthenticatedRequest, res: Response) => Promise<void>;
 const wrap = (fn: Handler): RequestHandler => (req, res) => {
@@ -74,6 +77,26 @@ export function registerQualityRoutes(router: Router, roles: { viewer: RequestHa
     await runs.updateResult(result.id, { metadata: { ...result.metadata, visual: entries } });
     res.locals.audit = { entityId: baseline.id, details: { name: entry.name, persona: entry.persona, viewport: entry.viewport, runId: run.id } };
     res.json({ ...baseline, image: signArtifactPath(baseline.path) });
+  }));
+
+  // ── Failure triage ────────────────────────────────────────────────────────
+  /** (Re)triage a run's failures. Body: { ai?: boolean } — ai asks the AI to explain each group. */
+  router.post('/runs/:runId/triage', editor, audit('run.triage', 'run'), wrap(async (req, res) => {
+    const run = await runs.findRunById(req.params.runId, req.project!.id);
+    if (!run) {
+      res.status(404).json({ error: 'Run not found' });
+      return;
+    }
+    const ai = req.body?.ai === true;
+    if (ai && !getLLMRouter().hasAnyProvider()) {
+      res.status(503).json({ error: 'No AI provider is configured; triage by rules is already on the run' });
+      return;
+    }
+    const agent = await new AgentRepository().findById(run.agentId, req.project!.id).catch(() => null);
+    const triage = await triageRun(run, { ai, preferred: (agent?.config as any)?.ai?.provider });
+    await runs.updateRun(run.id, { metadata: { triage } });
+    res.locals.audit = { entityId: run.id, details: { ai, groups: triage.groups.length } };
+    res.json(triage);
   }));
 
   // ── Self-healing ──────────────────────────────────────────────────────────

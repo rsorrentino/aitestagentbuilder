@@ -17,6 +17,7 @@ import { RunExecutor } from '../../execution/run-executor.js';
 import { emitRunEvent } from '../../../infra/websocket/server.js';
 import { REPO_ROOT } from '../../../infra/config/env.js';
 import logger from '../../../infra/logger/index.js';
+import { triageRun } from '../../quality/triage.js';
 import { runEvents } from '../../automation/run-events.js';
 
 export class RunValidationError extends Error {
@@ -163,6 +164,7 @@ export class OrchestratorService {
         finishedAt: new Date(),
         ...(error ? { metadata: { error } } : {}),
       });
+      if (finalStatus === 'failed') await this.triage(runId, agent);
       const done = await this.runRepo.findRunById(runId);
       emitRunEvent(runId, 'run_completed', {
         status: finalStatus,
@@ -178,6 +180,24 @@ export class OrchestratorService {
 
     markDone();
     this.pump();
+  }
+
+  /** Group and classify the failures of a finished run (rules; AI too when the agent asks for it). */
+  private async triage(runId: string, agent: Agent): Promise<void> {
+    try {
+      const run = await this.runRepo.findRunById(runId);
+      if (!run || !(run.results ?? []).some((r) => ['failed', 'error', 'timeout'].includes(r.status))) return;
+      const cfg: any = agent.config ?? {};
+      const { getLLMRouter } = await import('../../../infra/llm/router.js');
+      const ai = cfg.ai?.triage === true && getLLMRouter().hasAnyProvider();
+      const triage = await triageRun(run, { ai, preferred: cfg.ai?.provider }).catch(async (e) => {
+        logger.warn('AI triage failed, using rules only', { runId, error: e.message });
+        return triageRun(run, { ai: false });
+      });
+      await this.runRepo.updateRun(runId, { metadata: { triage } });
+    } catch (e: any) {
+      logger.warn('Failure triage failed', { runId, error: e.message });
+    }
   }
 
   /** Legacy Python executor (requires `pip install -r executor/requirements.txt`). */

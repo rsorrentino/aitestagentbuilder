@@ -29,6 +29,7 @@ export default function AgentQualityCard({ agentId, config, canEdit, onSaved }: 
     video: config.evidence?.video ?? 'on_failure',
     selfHealing: !!config.ai?.self_healing,
     autoApply: !!config.ai?.auto_apply_healing,
+    aiTriage: !!config.ai?.triage,
   }));
   const [baselines, setBaselines] = useState<any[]>([]);
   const [saving, setSaving] = useState(false);
@@ -54,7 +55,7 @@ export default function AgentQualityCard({ agentId, config, canEdit, onSaved }: 
         config: {
           checks: { accessibility: form.accessibility, accessibility_options: { level: form.level, minImpact: form.minImpact } },
           evidence: { trace: form.trace, video: form.video },
-          ai: { ...(config.ai ?? {}), self_healing: form.selfHealing, auto_apply_healing: form.selfHealing && form.autoApply },
+          ai: { ...(config.ai ?? {}), self_healing: form.selfHealing, auto_apply_healing: form.selfHealing && form.autoApply, triage: form.aiTriage },
         },
       });
       onSaved(res.data);
@@ -135,6 +136,10 @@ export default function AgentQualityCard({ agentId, config, canEdit, onSaved }: 
               <label className="flex gap-2 mt-2" style={{ alignItems: 'center', opacity: form.selfHealing ? 1 : 0.5 }}>
                 <input type="checkbox" checked={form.autoApply} disabled={!form.selfHealing} onChange={(e) => set({ autoApply: e.target.checked })} />
                 Save repaired selectors to the test cases automatically (otherwise: review them on the run page)
+              </label>
+              <label className="flex gap-2 mt-2" style={{ alignItems: 'center' }}>
+                <input type="checkbox" checked={form.aiTriage} onChange={(e) => set({ aiTriage: e.target.checked })} />
+                Explain failed runs with AI automatically (one call per failed run; rules-based triage always runs)
               </label>
             </div>
             {canEdit && <button className="btn btn-primary btn-sm" type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save quality settings'}</button>}

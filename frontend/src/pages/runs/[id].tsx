@@ -12,6 +12,7 @@ import {
 import { useRunEvents } from '../../lib/useRunEvents';
 import { useSession } from '../../lib/session';
 import ResultQuality from '../../components/ResultQuality';
+import RunTriage from '../../components/RunTriage';
 
 /** Latest attempt per test case and persona (retries create several results) */
 function latest(results: any[]): any[] {
@@ -33,6 +34,10 @@ export default function RunDetail() {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState(false);
   const session = useSession();
+  const [aiAvailable, setAiAvailable] = useState(false);
+  useEffect(() => {
+    api.get('/llm/providers').then((r) => setAiAvailable(!!r.data.anyConfigured)).catch(() => setAiAvailable(false));
+  }, []);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -128,6 +133,17 @@ export default function RunDetail() {
         </div>
       </div>
 
+      <RunTriage
+        run={run}
+        canEdit={session.can('editor')}
+        aiAvailable={aiAvailable}
+        onChanged={load}
+        onOpenResult={(resultId) => {
+          setExpanded(resultId);
+          setTimeout(() => document.getElementById(`result-${resultId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 50);
+        }}
+      />
+
       <div className="card">
         <div className="card-header"><h3>Test Results</h3><span className="text-sm text-muted">click a row for step details</span></div>
         {results.length === 0 ? (
@@ -143,7 +159,7 @@ export default function RunDetail() {
               <tbody>
                 {results.map((r) => (
                   <Fragment key={r.id}>
-                    <tr onClick={() => setExpanded(expanded === r.id ? null : r.id)} style={{ cursor: 'pointer' }}>
+                    <tr id={`result-${r.id}`} onClick={() => setExpanded(expanded === r.id ? null : r.id)} style={{ cursor: 'pointer' }}>
                       <td>
                         <div className="fw-600">{r.metadata?.title ?? r.testCaseId}</div>
                         <div className="text-sm text-muted">{r.metadata?.module}{r.metadata?.attempt > 1 ? ` · attempt ${r.metadata.attempt}` : ''}</div>

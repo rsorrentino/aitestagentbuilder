@@ -29,6 +29,7 @@ const fs = require('fs');
 fs.appendFileSync(${JSON.stringify(callsFile)}, 'call\\n');
 const prompt = process.argv[process.argv.indexOf('-p') + 1] || '';
 if (prompt.includes('fix broken UI test selectors')) console.log('[{"selector": "#new-id"}]');
+else if (prompt.includes('You triage failed UI test runs')) console.log('[{"group": 1, "category": "app_bug", "cause": "The page no longer shows the expected text", "suggestion": "Check the release notes of the last deploy"}]');
 else console.log('[]');
 `);
 chmodSync(fakeScript, 0o755);
@@ -295,5 +296,51 @@ describe('quality extensions (integration)', () => {
     assert.equal(r2.results[0].status, 'passed', r2.results[0].error);
     assert.equal(r2.results[0].metadata.healing.applied, true);
     assert.equal((await call('GET', `/api/v1/testcases/${three}`)).data.steps[1].target, '#new-id');
+  });
+
+  it('triages failures: groups, categories, known vs new, AI explanation', async (t) => {
+    if (!dbAvailable) return t.skip('database not available');
+    const agent = await newAgent('Triage', { evidence: { trace: 'off', video: 'off' } });
+    const wrongText = await newTest('Shows the promo banner', [{ action: 'navigate', target: '/good' }, { action: 'assert_text', data: { value: 'Summer sale' } }]);
+    const wrongText2 = await newTest('Shows the promo banner (mobile)', [{ action: 'navigate', target: '/good' }, { action: 'assert_text', data: { value: 'Winter sale' } }]);
+    const missing = await newTest('Clicks a removed button', [{ action: 'navigate', target: '/good' }, { action: 'click', target: '#removed-button' }]);
+    // A port that was free a moment ago: nothing listens there
+    const probe = http.createServer();
+    await new Promise<void>((r) => probe.listen(0, '127.0.0.1', () => r()));
+    const closedPort = (probe.address() as AddressInfo).port;
+    await new Promise((r) => probe.close(r));
+    const down = await newTest('Opens a server that is down', [{ action: 'navigate', target: `http://127.0.0.1:${closedPort}/` }]);
+    const ids = [wrongText, wrongText2, missing, down];
+
+    const first = await run(agent, ids);
+    const triage = first.metadata.triage;
+    assert.ok(triage, 'failed runs are triaged automatically');
+    assert.equal(triage.ai, false);
+    assert.deepEqual(triage.summary, { app_bug: 2, test_bug: 1, environment: 1, unknown: 0 });
+    const byCategory = (c: string) => triage.groups.find((g: any) => g.category === c);
+    assert.equal(byCategory('app_bug').tests.length, 2, 'the two text assertions are one group');
+    assert.equal(byCategory('test_bug').sample.target, '#removed-button');
+    assert.match(byCategory('environment').sample.error, /ERR_CONNECTION_REFUSED/);
+    assert.ok(triage.groups.every((g: any) => g.seenBefore === 0 && g.source === 'rules'));
+    assert.ok(first.results.every((r: any) => r.metadata.failureSignature));
+
+    // The same failures again: now known
+    const second = await run(agent, ids);
+    assert.ok(second.metadata.triage.groups.every((g: any) => g.seenBefore === 1 && g.firstSeen));
+
+    // On demand, with the AI explaining the groups
+    const explained = await call('POST', `/api/v1/runs/${second.id}/triage`, { ai: true });
+    assert.equal(explained.status, 200, explained.text);
+    assert.equal(explained.data.ai, true);
+    const firstGroup = explained.data.groups[0];
+    assert.equal(firstGroup.source, 'ai');
+    assert.equal(firstGroup.cause, 'The page no longer shows the expected text');
+    assert.equal(firstGroup.suggestion, 'Check the release notes of the last deploy');
+    assert.equal((await call('GET', `/api/v1/runs/${second.id}`)).data.metadata.triage.ai, true, 'stored on the run');
+
+    // Passing runs are not triaged
+    const passing = await newTest('Passes', [{ action: 'navigate', target: '/good' }]);
+    const ok = await run(agent, [passing]);
+    assert.equal(ok.metadata?.triage, undefined);
   });
 });

@@ -21,6 +21,7 @@ ai:
 retries: 1                             # re-run failed tests (0–3)
 ai:
   auto_apply_healing: false            # write AI-repaired selectors back into the test cases
+  triage: false                        # explain failed runs with AI (rules-based triage always runs)
 checks:
   accessibility: report                # off | report | fail — axe-core scan of the page each test ends on
   accessibility_options: { level: wcag21aa, minImpact: serious }
@@ -169,3 +170,15 @@ A healed step passes with the note `(self-healed from "<old selector>")`. The ru
 - **After the run:** it is recorded in the result. The run page's **Save to the test case** writes it into the test case,
   or `ai.auto_apply_healing: true` does that automatically after a passing test.
 - **Safety check:** a step is only changed while it still has the broken selector.
+
+**Failure triage.** When a run fails, its failures are grouped by what went wrong (the failed step and the
+error, without run-specific details such as ids, numbers and URLs).
+- **Categories:** each group is classified by rules as
+  - **app bug:** an expectation about the application failed (text, URL, access, visual, accessibility);
+  - **test bug:** a selector no longer finds its element, or the test is misconfigured;
+  - **environment:** the application, network or login was not available.
+- **New or known:** groups are marked *new*, or *seen in N earlier runs* of the same agent in the last 30 days.
+- **AI explanation:** with an AI provider, **Explain with AI** on the run page, `ai.triage: true`, or
+  `POST /runs/:id/triage {"ai": true}` adds a likely cause and a next step to each group. It costs one AI call per run.
+- **Where it shows:** the triage summary is included in Slack / Teams / email notifications and in the MCP server's
+  `run_tests` / `get_failures` answers.

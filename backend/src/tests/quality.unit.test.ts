@@ -192,3 +192,57 @@ describe('HTML report', () => {
     assert.ok(!html.includes('<script>'), 'titles are escaped');
   });
 });
+
+describe('failure triage', () => {
+  it('ignores run-specific details in the failure signature', async () => {
+    const { failureSignature } = await import('../modules/quality/triage.js');
+    const a = failureSignature('Step 3 (click): Element "#buy-42" was not found or not actionable (locator.click: Timeout 10000ms exceeded.)', 'click');
+    const b = failureSignature('Step 7 (click): Element "#buy-99" was not found or not actionable (locator.click: Timeout 2500ms exceeded.)', 'Click');
+    assert.equal(a, b);
+    assert.notEqual(a, failureSignature('Element "#buy" was not found or not actionable', 'fill'), 'the action is part of the signature');
+    assert.equal(failureSignature('page.goto: net::ERR_CONNECTION_REFUSED at http://127.0.0.1:4100/x', 'navigate'),
+      failureSignature('page.goto: net::ERR_CONNECTION_REFUSED at http://10.0.0.5:8080/y', 'navigate'));
+  });
+
+  it('classifies failures by rules', async () => {
+    const { classifyFailure } = await import('../modules/quality/triage.js');
+    const cases: Array<[string, string]> = [
+      ['page.goto: net::ERR_NAME_NOT_RESOLVED at https://staging.example.com', 'environment'],
+      ['Salesforce token request failed: invalid_grant', 'environment'],
+      ['Element "#save" was not found or not actionable (locator.click: Timeout 10000ms exceeded.)', 'test_bug'],
+      ['Unknown secret "PASSWORD" — define it in the agent\'s secrets', 'test_bug'],
+      ['Expected #welcome to contain "Hello" but found "Hi"', 'app_bug'],
+      ['Unexpected access to Opportunity for rep: delete is allowed (expected denied)', 'app_bug'],
+      ['Screenshot "cart" (1280x800) differs from the baseline: 3.0% of pixels (900) changed, max 0.100%', 'app_bug'],
+      ['2 accessibility violation(s) at serious+ (WCAG21AA): image-alt', 'app_bug'],
+      ['Something odd happened', 'unknown'],
+    ];
+    for (const [error, category] of cases) assert.equal(classifyFailure(error).category, category, error);
+  });
+
+  it('groups the final attempt of each failed test, app bugs first', async () => {
+    const { groupFailures, summarize } = await import('../modules/quality/triage.js');
+    const result = (id: string, tc: string, status: string, error: string, startedAt: string, persona?: string) => ({
+      id, testCaseId: tc, status, error, startedAt, metadata: { title: tc, persona, steps: [{ status: 'failed', action: 'assert_text', target: '#x' }] },
+    });
+    const groups = groupFailures([
+      result('1', 'A', 'failed', 'Element "#a" was not found or not actionable', '2026-01-01T00:00:00Z'),
+      result('2', 'A', 'passed', '', '2026-01-01T00:01:00Z'), // passed on retry: not a failure
+      result('3', 'B', 'failed', 'Expected #x to contain "1" but found "2"', '2026-01-01T00:00:00Z', 'rep'),
+      result('4', 'B', 'failed', 'Expected #x to contain "5" but found "6"', '2026-01-01T00:00:00Z', 'admin'),
+      result('5', 'C', 'failed', 'Element "#c" was not found or not actionable', '2026-01-01T00:00:00Z'),
+    ]);
+    assert.deepEqual(groups.map((g) => [g.category, g.tests.length]), [['app_bug', 2], ['test_bug', 1]]);
+    assert.deepEqual(groups[0].tests.map((t) => t.persona), ['rep', 'admin']);
+    assert.deepEqual(summarize(groups), { app_bug: 2, test_bug: 1, environment: 0, unknown: 0 });
+  });
+
+  it('summarises triage in one line for notifications', async () => {
+    const { triageLine } = await import('../modules/automation/notification.service.js');
+    assert.equal(triageLine(undefined), undefined);
+    assert.equal(triageLine({ summary: { app_bug: 2, test_bug: 1, environment: 0 }, groups: [
+      { seenBefore: 0, tests: [{}, {}] }, { seenBefore: 3, tests: [{}] },
+    ] }), 'Triage: 2 app bug, 1 test bug — 2 new failures');
+    assert.equal(triageLine({ summary: { environment: 1 }, groups: [{ seenBefore: 1, tests: [{}] }] }), 'Triage: 1 environment — all seen before');
+  });
+});

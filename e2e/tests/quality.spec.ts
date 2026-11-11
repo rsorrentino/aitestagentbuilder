@@ -43,8 +43,13 @@ test('visual differences can be approved, accessibility and evidence are shown',
   const run = await runAndWait(request, agent.id, [login, broken]);
   expect(run.status).toBe('failed');
 
-  // Run page: the visual difference, approved as the new baseline
+  // Run page: failures triaged (both are app behaviour that differs from the test)
   await page.goto(`/runs/${run.id}`);
+  const triage = page.getByRole('region', { name: 'Failure triage' });
+  await expect(triage).toContainText('2 failures in 2 groups');
+  await expect(triage.getByTestId('triage-app_bug').first()).toContainText('new');
+
+  // The visual difference, approved as the new baseline
   await page.getByText('Login page compared with the home baseline').first().click();
   const visual = page.getByTestId('visual-main-page');
   await expect(visual).toContainText('of pixels changed');

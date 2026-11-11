@@ -112,6 +112,9 @@ export function buildOpenApi(serverUrl: string) {
       '/runs/{runId}/results/{resultId}/visual/approve': {
         post: op('Quality', 'Approve the screenshot of a failed visual check as the new baseline', { parameters: [id('runId'), id('resultId')] }),
       },
+      '/runs/{runId}/triage': {
+        post: op('Quality', 'Group and classify the failures of a run (app bug, test bug, environment), optionally explained by the AI', { parameters: [id('runId')] }),
+      },
       '/runs/{runId}/results/{resultId}/apply-healing': {
         post: op('Quality', 'Write AI-repaired selectors of a result back into its test case', { parameters: [id('runId'), id('resultId')] }),
       },

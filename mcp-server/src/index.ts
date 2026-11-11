@@ -90,6 +90,16 @@ export function runSummary(run: any) {
     passed: run.status === 'completed',
     totals: { tests: run.totalTests, passed: run.passedTests, failed: run.failedTests, skipped: run.skippedTests },
     failures: results.filter((r) => ['failed', 'error', 'timeout'].includes(r.status)).map(summarizeFailure),
+    // Failures grouped by cause: app bug / test bug / environment, new or seen before
+    ...(run.metadata?.triage ? {
+      triage: {
+        summary: run.metadata.triage.summary,
+        groups: run.metadata.triage.groups.map((g: any) => ({
+          category: g.category, tests: g.tests.map((t: any) => t.title), error: g.sample?.error,
+          cause: g.cause ?? g.reason, suggestion: g.suggestion, seenBefore: g.seenBefore,
+        })),
+      },
+    } : {}),
   };
 }
 
@@ -172,7 +182,7 @@ export const TOOLS = [
   },
   {
     name: 'get_failures',
-    description: 'Failed tests of a run with their evidence (screenshots, trace, video, accessibility, visual diffs, healed selectors).',
+    description: 'Failed tests of a run with their evidence (screenshots, trace, video, accessibility, visual diffs, healed selectors) and the triage: failures grouped as app bug, test bug or environment, new or seen before.',
     inputSchema: { type: 'object', properties: { runId: { type: 'string' } }, required: ['runId'] },
   },
   {

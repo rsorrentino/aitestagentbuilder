@@ -143,6 +143,7 @@ export function runSummary(run: TestRun, projectName?: string) {
     triggeredBy: run.metadata?.triggeredBy,
     error: run.metadata?.error,
     url: `${appUrl}/runs/${run.id}`,
+    triage: triageLine(run.metadata?.triage),
     failures: (run.results ?? [])
       .filter((r) => r.status === 'failed' || r.status === 'error')
       .slice(0, 10)
@@ -151,6 +152,16 @@ export function runSummary(run: TestRun, projectName?: string) {
 }
 
 type Summary = ReturnType<typeof runSummary>;
+
+const CATEGORY_LABEL: Record<string, string> = { app_bug: 'app bug', test_bug: 'test bug', environment: 'environment', unknown: 'unclassified' };
+
+/** "Triage: 2 app bug, 1 test bug — 1 new failure" */
+export function triageLine(triage: any): string | undefined {
+  if (!triage?.groups?.length) return undefined;
+  const parts = Object.entries(triage.summary ?? {}).filter(([, n]) => Number(n) > 0).map(([k, n]) => `${n} ${CATEGORY_LABEL[k] ?? k}`);
+  const fresh = triage.groups.filter((g: any) => !g.seenBefore).reduce((sum: number, g: any) => sum + g.tests.length, 0);
+  return `Triage: ${parts.join(', ')}${fresh ? ` — ${fresh} new failure${fresh === 1 ? '' : 's'}` : ' — all seen before'}`;
+}
 
 function headline(event: RunEventName, s: Summary): string {
   const icon = event === 'run.completed' ? '✅' : event === 'run.failed' ? '❌' : '⏹';
@@ -253,6 +264,7 @@ export class NotificationService {
       id: 'RUN-TEST', status: 'failed', agentId: 'AGENT-TEST', agentName: 'Sample agent', projectId, projectName: undefined,
       total: 3, passed: 2, failed: 1, skipped: 0, durationMs: 4200, startedAt: new Date(), finishedAt: new Date(),
       triggeredBy: 'test', error: undefined, url: `${(process.env.PUBLIC_APP_URL || 'http://localhost:4000').replace(/\/$/, '')}/runs`,
+      triage: 'Triage: 1 app bug — 1 new failure',
       failures: [{ title: 'Sample failing test', error: 'This is a test notification from AI Test Agent Builder' }],
     };
     return this.deliver(channel, 'run.failed', sample, true);
@@ -310,7 +322,7 @@ export class NotificationService {
 
   private async send(channel: NotificationChannel, event: RunEventName, s: Summary, isTest: boolean): Promise<number | undefined> {
     const title = `${isTest ? '[TEST] ' : ''}${headline(event, s)}`;
-    const failures = s.failures.map((f) => `• ${f.title}${f.error ? ` — ${f.error}` : ''}`).join('\n');
+    const failures = [s.triage, ...s.failures.map((f) => `• ${f.title}${f.error ? ` — ${f.error}` : ''}`)].filter(Boolean).join('\n');
 
     switch (channel.type) {
       case 'webhook': {

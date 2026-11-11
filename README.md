@@ -44,6 +44,7 @@
 | **CLI / CI** | `npm run cli -- run -c agent.yml` waits for the run, writes reports and exits non-zero on failure |
 | **Salesforce personas** | Test as administrators, sales reps and read-only users: UI password, password + authenticator code (TOTP), OAuth JWT bearer → frontdoor, OAuth password, or "Log in as". Identity checks (profile, permission sets), one test run as many personas with per-persona expectations, object/field/record access and access-denied assertions. Built-in Salesforce simulator at `/demo/salesforce` |
 | **Quality checks** | Accessibility (axe-core, WCAG 2.x), visual regression against approved baselines, Playwright trace + video of failures (secrets masked), AI-repaired selectors kept and written back to test cases |
+| **Failure triage** | Failures grouped by cause and classified as app bug, test bug or environment, new vs. seen before, optionally explained by the AI; in notifications and the MCP server |
 | **MCP server** | Claude Code, Copilot, Cursor and other agents can write tests, run them and read failure evidence ([docs/mcp-server.md](docs/mcp-server.md)) |
 | **Demo** | Built-in demo shop at `/demo` with ready-made tests: one click on the dashboard |
 
