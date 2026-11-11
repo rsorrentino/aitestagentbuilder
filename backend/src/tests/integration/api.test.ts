@@ -12,16 +12,21 @@ import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import http, { Server } from 'http';
 import { AddressInfo } from 'net';
-import { chmodSync, mkdtempSync, writeFileSync } from 'fs';
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
 
 const DB_URL = process.env.TEST_DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/aitestagentbuilder_test';
 
 // ---- environment for the app under test (set before any app module loads) ----
 const workDir = mkdtempSync(join(tmpdir(), 'atab-it-'));
-const fakeCopilot = join(workDir, 'copilot');
-writeFileSync(fakeCopilot, `#!/usr/bin/env node
+// On Windows the CLI is installed as an npm .cmd shim; reproduce that layout so the
+// real Windows launch path (shim -> node + script, no shell) is exercised.
+const isWindows = process.platform === 'win32';
+const fakeCopilotScript = isWindows ? join(workDir, 'node_modules', 'fake-copilot', 'index.js') : join(workDir, 'copilot');
+const fakeCopilot = isWindows ? join(workDir, 'copilot.cmd') : fakeCopilotScript;
+mkdirSync(dirname(fakeCopilotScript), { recursive: true });
+writeFileSync(fakeCopilotScript, `#!/usr/bin/env node
 // Fake GitHub Copilot CLI: checks the non-interactive flags and returns test cases as JSON.
 const args = process.argv.slice(2);
 const need = ['-p', '-s', '--no-ask-user', '--available-tools'];
@@ -32,7 +37,10 @@ console.log(JSON.stringify([{ title: 'Extracted: sign in', module: 'Auth', prior
   steps: [{ action: 'navigate', target: '/login' }, { action: 'assert_visible', target: '#login-btn' }],
   expectedResults: ['Login form shown'] }]));
 `);
-chmodSync(fakeCopilot, 0o755);
+chmodSync(fakeCopilotScript, 0o755);
+if (isWindows) {
+  writeFileSync(fakeCopilot, '@ECHO off\r\nSETLOCAL\r\nendLocal & "node" "%dp0%\\node_modules\\fake-copilot\\index.js" %*\r\n');
+}
 
 Object.assign(process.env, {
   NODE_ENV: 'test',

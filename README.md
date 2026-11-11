@@ -51,7 +51,8 @@ Turn on authentication (`AUTH_ENABLED=true`) to get projects with role-based acc
 administration with password policy and lockout, project-scoped API keys, an audit log, encrypted
 secrets, cron schedules, CI runs that wait for the result, notifications (webhooks, Slack, Teams,
 email), analytics (pass-rate trends, flaky tests), data retention, an OpenAPI reference at
-`/api/docs` and Docker images (`docker compose --profile full up -d --build`).
+`/api/docs` and Docker images (`docker compose --profile full up -d --build`) or a native Windows Server install
+without Docker ([docs/windows.md](docs/windows.md)).
 See [docs/enterprise-roadmap.md](docs/enterprise-roadmap.md) for the full list and what comes next.
 
 ## 🚀 Quick start
@@ -153,6 +154,7 @@ The integration suite also exercises the Copilot **CLI** and **API** transports 
 - [docs/architecture.md](docs/architecture.md): how the pieces fit together
 - [docs/agents.md](docs/agents.md): agent configuration, CLI and CI usage
 - [docs/mvp-demo.md](docs/mvp-demo.md): 10-minute guided demo
+- [docs/windows.md](docs/windows.md): install on Windows Server without Docker (PowerShell scripts, Windows services)
 - [docs/enterprise-roadmap.md](docs/enterprise-roadmap.md): enterprise features and roadmap
 - [docs/salesforce-guide.md](docs/salesforce-guide.md): testing Salesforce orgs as many users (personas, MFA, JWT, Log in as, permission assertions)
 - [docs/mcp-server.md](docs/mcp-server.md): MCP server

@@ -188,7 +188,7 @@ export class OrchestratorService {
     registerCancel: (cancel: () => void) => void,
   ): Promise<'completed' | 'failed'> {
     return new Promise((resolve, reject) => {
-      const child = spawn(process.env.PYTHON_BIN || 'python3', [
+      const child = spawn(process.env.PYTHON_BIN || (process.platform === 'win32' ? 'python' : 'python3'), [
         '-m', 'src.runner.test_runner',
         '--run-id', runId,
         '--agent-config', JSON.stringify(agent.config),

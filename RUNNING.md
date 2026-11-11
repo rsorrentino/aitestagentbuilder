@@ -105,6 +105,15 @@ cd frontend && npm run build && npm start         # next start -p 4000
 
 Set `NEXT_PUBLIC_API_URL` at frontend build time when the API is not at `http://localhost:3000/api/v1`.
 
+## Windows Server (no Docker)
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\windows\install.ps1 -PublicHost myserver -DatabaseUrl "postgresql://postgres:PASSWORD@localhost:5432/aitestagentbuilder"
+powershell -ExecutionPolicy Bypass -File scripts\windows\install-service.ps1
+```
+
+Full guide: [docs/windows.md](docs/windows.md).
+
 ## Docker (whole stack)
 
 ```bash
