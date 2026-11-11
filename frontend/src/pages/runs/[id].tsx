@@ -11,12 +11,13 @@ import {
 } from '../../lib/api';
 import { useRunEvents } from '../../lib/useRunEvents';
 
-/** Latest attempt per test case (retries create several results) */
+/** Latest attempt per test case and persona (retries create several results) */
 function latest(results: any[]): any[] {
   const map = new Map<string, any>();
   for (const r of results ?? []) {
-    const prev = map.get(r.testCaseId);
-    if (!prev || new Date(r.startedAt) >= new Date(prev.startedAt)) map.set(r.testCaseId, r);
+    const key = `${r.testCaseId}@${r.metadata?.persona ?? ''}`;
+    const prev = map.get(key);
+    if (!prev || new Date(r.startedAt) >= new Date(prev.startedAt)) map.set(key, r);
   }
   return Array.from(map.values());
 }

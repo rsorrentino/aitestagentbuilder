@@ -77,26 +77,105 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Install
+      - name: npm run setup (development .env, browsers, e2e dependencies)
+        run: npm run setup -- --with-deps --with-e2e
+      - run: npm run build
+      - name: npm start
         run: |
-          (cd backend && npm ci && npx playwright install --with-deps chromium)
-          (cd frontend && npm ci && npm run build)
-          (cd e2e && npm ci)
-      - name: Start backend and frontend
-        run: |
-          (cd backend && nohup npx tsx src/index.ts > ../backend.log 2>&1 &)
-          (cd frontend && nohup npm start > ../frontend.log 2>&1 &)
-          npx --yes wait-on@8.0.3 -t 90000 http://localhost:3000/health/ready http://localhost:4000
-      - run: npm test
-        working-directory: e2e
+          nohup npm start > app.log 2>&1 &
+          npx --yes wait-on@8.0.3 -t 120000 http://localhost:3000/health/ready http://localhost:4000
+          npm run status
+      - run: npm run test:e2e
       - if: failure()
-        run: tail -n 200 backend.log frontend.log
+        run: tail -n 200 app.log
       - if: always()
         uses: actions/upload-artifact@v4
         with:
           name: playwright-report
           path: e2e/playwright-report
           retention-days: 7
+
+  windows:
+    name: Windows Server (no Docker) - npm scripts, tests, service
+    runs-on: windows-latest
+    env:
+      PGPASSWORD: root            # preinstalled PostgreSQL on GitHub's Windows runners
+      TEST_DATABASE_URL: postgresql://postgres:root@localhost:5432/aitestagentbuilder_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Start the preinstalled PostgreSQL
+        shell: pwsh
+        run: |
+          $svc = Get-Service -Name 'postgresql*' | Select-Object -First 1
+          Set-Service -Name $svc.Name -StartupType Manual
+          Start-Service -Name $svc.Name
+          & "$env:PGBIN\psql.exe" -U postgres -c "CREATE DATABASE aitestagentbuilder;"
+          & "$env:PGBIN\psql.exe" -U postgres -c "CREATE DATABASE aitestagentbuilder_test;"
+      - name: Backend unit + integration tests (real Chromium, Copilot CLI via .cmd shim)
+        shell: pwsh
+        run: |
+          npm --prefix backend ci --no-audit --no-fund; if ($LASTEXITCODE) { exit 1 }
+          npm --prefix backend exec -- playwright install chromium; if ($LASTEXITCODE) { exit 1 }
+          npm --prefix backend run typecheck; if ($LASTEXITCODE) { exit 1 }   # the UI is typechecked by its build in "npm run setup"
+          npm run test:all; if ($LASTEXITCODE) { exit 1 }
+      - name: npm run setup -- --production
+        shell: pwsh
+        run: |
+          npm run setup -- --production --host localhost --db postgresql://postgres:root@localhost:5432/aitestagentbuilder
+          if ($LASTEXITCODE) { exit 1 }
+      - name: npm start, sign in, run the demo tests in a browser
+        shell: pwsh
+        run: |
+          $sup = Start-Process -FilePath node -ArgumentList 'scripts/atab.mjs', 'start' -PassThru -NoNewWindow `
+            -RedirectStandardOutput logs-start.out -RedirectStandardError logs-start.err
+          foreach ($i in 1..90) { npm run status *> $null; if ($LASTEXITCODE -eq 0) { break }; Start-Sleep 2 }
+          npm run status; if ($LASTEXITCODE) { Get-Content logs-start.out, logs-start.err -Tail 60; exit 1 }
+          $admin = @{}
+          Get-Content .env | Where-Object { $_ -match '^(ADMIN_EMAIL|ADMIN_PASSWORD)=(.*)$' } | ForEach-Object { $admin[$Matches[1]] = $Matches[2] }
+          $login = Invoke-RestMethod -Method Post -Uri http://localhost:3000/api/v1/auth/login -ContentType 'application/json' `
+            -Body (@{ email = $admin.ADMIN_EMAIL; password = $admin.ADMIN_PASSWORD } | ConvertTo-Json)
+          $h = @{ Authorization = "Bearer $($login.accessToken)" }
+          $demo = Invoke-RestMethod -Method Post -Uri http://localhost:3000/api/v1/demo/seed -Headers $h -ContentType 'application/json' -Body '{}'
+          $run = Invoke-RestMethod -Method Post -Uri http://localhost:3000/api/v1/runs -Headers $h -ContentType 'application/json' `
+            -TimeoutSec 400 -Body (@{ agentId = $demo.agentId; wait = $true; timeoutSeconds = 300 } | ConvertTo-Json)
+          "Run $($run.id): $($run.status), passed=$($run.passed), $($run.passedTests)/$($run.totalTests)"
+          taskkill /PID $sup.Id /T /F | Out-Null
+          if (-not $run.passed) { exit 1 }
+      - name: npm run service:install (NSSM service, then Scheduled Task)
+        shell: pwsh
+        run: |
+          function Wait-Status([int]$want, [int]$tries = 90) {
+            foreach ($i in 1..$tries) { npm run status *> $null; if ($LASTEXITCODE -eq $want) { return $true }; Start-Sleep 2 }
+            return $false
+          }
+          if (Get-Command nssm -ErrorAction SilentlyContinue) {
+            npm run service:install; if ($LASTEXITCODE) { exit 1 }
+            if (-not (Wait-Status 0)) { Get-Content logs\atab.log -Tail 80; throw 'service did not start' }
+            Get-Service ATAB | Format-Table Name, Status
+            # Crash the API: the supervisor exits with an error and the service starts a new API process
+            function Api-Pid { (Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" | Where-Object { $_.CommandLine -like '*backend\dist\index.js*' } | Select-Object -First 1).ProcessId }
+            $before = Api-Pid
+            Stop-Process -Id $before -Force
+            $restarted = $false
+            foreach ($i in 1..60) { $now = Api-Pid; if ($now -and $now -ne $before) { $restarted = $true; break }; Start-Sleep 2 }
+            if (-not $restarted -or -not (Wait-Status 0)) { Get-Content logs\atab.log -Tail 80; throw 'service did not restart the app after a crash' }
+            "Restarted after a crash: API pid $before -> $now"
+            npm run service:uninstall; if ($LASTEXITCODE) { exit 1 }
+            if (-not (Wait-Status 1 30)) { throw 'still answering after service:uninstall' }
+          } else { 'NSSM not installed on this runner: testing the Scheduled Task only' }
+          npm run service:install -- --no-nssm; if ($LASTEXITCODE) { exit 1 }
+          if (-not (Wait-Status 0)) { Get-Content logs\atab.log -Tail 80; throw 'scheduled task did not start the app' }
+          Get-ScheduledTask -TaskName ATAB | Format-Table TaskName, State
+          npm run service:uninstall; if ($LASTEXITCODE) { exit 1 }
+          if (-not (Wait-Status 1 30)) { throw 'still answering after service:uninstall' }
+          # The last "npm run status" exits 1 (down, as expected); don't let it become the step's result
+          exit 0
+      - if: failure()
+        shell: pwsh
+        run: Get-ChildItem logs, logs-start.* -ErrorAction SilentlyContinue | ForEach-Object { "== $($_.Name)"; Get-Content $_.FullName -Tail 80 }
 
   executor:
     name: Legacy Python executor (unit tests)

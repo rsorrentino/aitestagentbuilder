@@ -6,6 +6,7 @@ import { useState, useEffect } from 'react';
 import { api, errorMessage } from '../../lib/api';
 import Link from 'next/link';
 import Layout from '../../components/Layout';
+import { useSession } from '../../lib/session';
 
 
 function statusBadge(status: string) {
@@ -16,6 +17,7 @@ function statusBadge(status: string) {
 }
 
 export default function AgentsPage() {
+  const session = useSession();
   const [agents, setAgents] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -121,13 +123,13 @@ export default function AgentsPage() {
                     <td>
                       <div className="flex gap-2">
                         <Link href={`/agents/${agent.id}`} className="btn btn-secondary btn-sm">View</Link>
-                        <button
+                        {session.can('admin') && <button
                           className="btn btn-danger btn-sm"
                           onClick={() => deleteAgent(agent.id)}
                           disabled={deletingId === agent.id}
                         >
                           {deletingId === agent.id ? '…' : 'Delete'}
-                        </button>
+                        </button>}
                       </div>
                     </td>
                   </tr>

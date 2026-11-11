@@ -17,6 +17,7 @@ import { RunExecutor } from '../../execution/run-executor.js';
 import { emitRunEvent } from '../../../infra/websocket/server.js';
 import { REPO_ROOT } from '../../../infra/config/env.js';
 import logger from '../../../infra/logger/index.js';
+import { runEvents } from '../../automation/run-events.js';
 
 export class RunValidationError extends Error {
   constructor(message: string, public statusCode = 400) {
@@ -46,14 +47,14 @@ export class OrchestratorService {
   private active = new Map<string, { cancel: () => void; done: Promise<void> }>();
   private queue: QueuedRun[] = [];
 
-  async previewPlan(agentId: string): Promise<TestPlan> {
-    const agent = await this.agentRepo.findById(agentId);
+  async previewPlan(agentId: string, projectId: string): Promise<TestPlan> {
+    const agent = await this.agentRepo.findById(agentId, projectId);
     if (!agent) throw new RunValidationError(`Agent not found: ${agentId}`, 404);
-    return this.planner.createTestPlan(agent.config);
+    return this.planner.createTestPlan(agent.config, agent.projectId);
   }
 
   async startRun(input: TestRunCreateInput & { testIds?: string[] }): Promise<TestRun> {
-    const agent = await this.agentRepo.findById(input.agentId);
+    const agent = await this.agentRepo.findById(input.agentId, input.projectId);
     if (!agent) throw new RunValidationError(`Agent not found: ${input.agentId}`, 404);
     if (agent.status !== 'active') throw new RunValidationError(`Agent "${agent.name}" is ${agent.status}`);
     if (!agent.config?.base_url) throw new RunValidationError('Agent has no base_url configured');
@@ -61,7 +62,7 @@ export class OrchestratorService {
     const config = input.testIds?.length
       ? { ...agent.config, test_selection: { testIds: input.testIds } }
       : agent.config;
-    const plan = await this.planner.createTestPlan(config);
+    const plan = await this.planner.createTestPlan(config, agent.projectId);
     if (plan.tests.length === 0) {
       throw new RunValidationError(
         "No test cases match this agent's test selection. Add test cases (Documents → Extract, " +
@@ -71,6 +72,7 @@ export class OrchestratorService {
 
     const run = await this.runRepo.createRun({
       agentId: agent.id,
+      projectId: agent.projectId,
       metadata: { ...(input.metadata ?? {}), strategy: plan.strategy, environment: agent.config.environment },
     });
     await this.runRepo.updateRun(run.id, { totalTests: plan.tests.length });
@@ -82,12 +84,12 @@ export class OrchestratorService {
     return run;
   }
 
-  async getRunStatus(runId: string): Promise<TestRun | null> {
-    return this.runRepo.findRunById(runId);
+  async getRunStatus(runId: string, projectId?: string): Promise<TestRun | null> {
+    return this.runRepo.findRunById(runId, projectId);
   }
 
-  async cancelRun(runId: string): Promise<TestRun> {
-    const run = await this.runRepo.findRunById(runId);
+  async cancelRun(runId: string, projectId?: string): Promise<TestRun> {
+    const run = await this.runRepo.findRunById(runId, projectId);
     if (!run) throw new RunValidationError(`Run not found: ${runId}`, 404);
     if (run.status !== 'running' && run.status !== 'pending') {
       throw new RunValidationError(`Cannot cancel a run with status "${run.status}"`, 409);
@@ -99,7 +101,9 @@ export class OrchestratorService {
 
     await this.runRepo.updateRun(runId, { status: 'cancelled', finishedAt: new Date() });
     emitRunEvent(runId, 'run_completed', { status: 'cancelled', total: run.totalTests, passed: run.passedTests, failed: run.failedTests, skipped: run.skippedTests });
-    return (await this.runRepo.findRunById(runId))!;
+    const cancelled = (await this.runRepo.findRunById(runId))!;
+    runEvents.emitFinished(cancelled);
+    return cancelled;
   }
 
   getConcurrencyStats(): { running: number; queued: number; maxConcurrent: number } {
@@ -169,6 +173,7 @@ export class OrchestratorService {
         error,
       });
       logger.info('Run finished', { runId, status: finalStatus, passed: done?.passedTests, failed: done?.failedTests });
+      if (done) runEvents.emitFinished(done);
     }
 
     markDone();
@@ -183,7 +188,7 @@ export class OrchestratorService {
     registerCancel: (cancel: () => void) => void,
   ): Promise<'completed' | 'failed'> {
     return new Promise((resolve, reject) => {
-      const child = spawn(process.env.PYTHON_BIN || 'python3', [
+      const child = spawn(process.env.PYTHON_BIN || (process.platform === 'win32' ? 'python' : 'python3'), [
         '-m', 'src.runner.test_runner',
         '--run-id', runId,
         '--agent-config', JSON.stringify(agent.config),

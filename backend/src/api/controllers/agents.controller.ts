@@ -1,14 +1,21 @@
 /**
- * Agents Controller
+ * Agents Controller (project-scoped). Secrets in agent configs are encrypted
+ * at rest and never returned in plaintext.
  */
 
-import { Request, Response } from 'express';
+import { Response } from 'express';
 import { AgentRepository } from '../../core/repositories/agent.repository.js';
 import { TestCaseRepository } from '../../core/repositories/test-case.repository.js';
-import { AgentConfig } from '../../core/domain/agent.js';
+import { Agent, AgentConfig } from '../../core/domain/agent.js';
+import { decryptAgentConfig, redactAgentConfig, secretValues } from '../../core/domain/agent-secrets.js';
+import { maskSecrets } from '../../infra/security/secrets.js';
+import { salesforceSettings } from '../../modules/salesforce/personas.js';
+import { SalesforceSessions } from '../../modules/salesforce/session.js';
+import { launchBrowser } from '../../modules/execution/browser.js';
 import { AiTestGeneratorService } from '../../modules/agents/services/ai-test-generator.service.js';
 import { OrchestratorService, RunValidationError } from '../../modules/orchestration/services/orchestrator.service.js';
 import { NoLLMProviderError } from '../../infra/llm/router.js';
+import { AuthenticatedRequest } from '../../infra/auth/auth.middleware.js';
 import logger from '../../infra/logger/index.js';
 
 const APPLICATION_TYPES = ['web', 'api', 'mobile', 'hybrid'];
@@ -33,10 +40,14 @@ export function buildAgentConfig(name: string, raw: any): { errors: string[]; co
   }
   const appType = cfg.application_type ?? 'web';
   if (!APPLICATION_TYPES.includes(appType)) errors.push(`config.application_type must be one of ${APPLICATION_TYPES.join(', ')}`);
+  if (cfg.secrets !== undefined && (typeof cfg.secrets !== 'object' || Array.isArray(cfg.secrets))) {
+    errors.push('config.secrets must be an object of NAME: value');
+  }
   if (errors.length) return { errors };
 
   const selection = cfg.test_selection ?? {};
   const list = (v: any) => (Array.isArray(v) ? v.map(String).map((s) => s.trim()).filter(Boolean) : []);
+  delete cfg.baseUrl;
 
   return {
     errors,
@@ -62,13 +73,21 @@ export function buildAgentConfig(name: string, raw: any): { errors: string[]; co
   };
 }
 
+/** Agent as returned by the API: secrets replaced by a placeholder. */
+export function publicAgent(agent: Agent): Agent {
+  return { ...agent, config: redactAgentConfig(agent.config) };
+}
+
+const badSecret = (e: any) => /Invalid secret name|persona|salesforce\./i.test(e?.message ?? '');
+
 export class AgentsController {
   private agentRepo = new AgentRepository();
   private testCaseRepo = new TestCaseRepository();
   private testGenerator = new AiTestGeneratorService();
 
-  async createAgent(req: Request, res: Response): Promise<void> {
+  async createAgent(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
+      const projectId = req.project!.id;
       const name = String(req.body?.name ?? '').trim();
       if (!name) {
         res.status(400).json({ error: 'name is required' });
@@ -79,47 +98,104 @@ export class AgentsController {
         res.status(400).json({ error: errors.join('; ') });
         return;
       }
-      if (await this.agentRepo.findByName(name)) {
-        res.status(409).json({ error: `An agent named "${name}" already exists` });
+      if (await this.agentRepo.findByName(name, projectId)) {
+        res.status(409).json({ error: `An agent named "${name}" already exists in this project` });
         return;
       }
 
-      const agent = await this.agentRepo.create({ name, config: config! });
-      res.status(201).json(agent);
+      const agent = await this.agentRepo.create({ name, config: config!, projectId, createdBy: req.user?.userId });
+      res.locals.audit = { entityId: agent.id, details: { name, baseUrl: config!.base_url } };
+      res.status(201).json(publicAgent(agent));
     } catch (error: any) {
+      if (badSecret(error)) {
+        res.status(400).json({ error: error.message });
+        return;
+      }
       logger.error('Agent creation failed', { error: error.message });
       res.status(500).json({ error: error.message });
     }
   }
 
-  async getAgent(req: Request, res: Response): Promise<void> {
+  async getAgent(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
-      const agent = await this.agentRepo.findById(req.params.id);
+      const agent = await this.agentRepo.findById(req.params.id, req.project!.id);
       if (!agent) {
         res.status(404).json({ error: 'Agent not found' });
         return;
       }
-      res.json(agent);
+      res.json(publicAgent(agent));
     } catch (error: any) {
-      logger.error('Failed to fetch agent', { error: error.message });
       res.status(500).json({ error: error.message });
     }
   }
 
-  async listAgents(req: Request, res: Response): Promise<void> {
+  /**
+   * Log in as a Salesforce persona and report who Salesforce says it is
+   * (profile, permission sets) compared with what the persona expects.
+   */
+  async verifyPersona(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const agent = await this.agentRepo.findById(req.params.id, req.project!.id).catch(() => null);
+    if (!agent) {
+      res.status(404).json({ error: 'Agent not found' });
+      return;
+    }
+    const config = decryptAgentConfig(agent.config);
+    const settings = salesforceSettings(config);
+    const mask = (t: string) => maskSecrets(t, secretValues(config));
+    if (!settings || settings.personas.length === 0) {
+      res.status(400).json({ error: 'This agent has no Salesforce personas' });
+      return;
+    }
+    const sessions = new SalesforceSessions({ ...settings, reuseSessions: false });
+    const name = req.params.name;
+    let persona;
+    try {
+      persona = sessions.persona(name);
+    } catch (error: any) {
+      res.status(404).json({ error: error.message });
+      return;
+    }
+    res.locals.audit = { entityId: agent.id, details: { persona: persona.name, method: persona.auth_method } };
+
+    const started = Date.now();
+    const browser = await launchBrowser();
+    try {
+      const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, ignoreHTTPSErrors: true });
+      const page = await context.newPage();
+      const login = await sessions.login(page, persona.name);
+      const identity = await sessions.identity(page, persona.name).catch((e: any) => ({ error: mask(e.message) }));
+      const mismatches = 'error' in identity ? [] : SalesforceSessions.identityMismatches(persona, identity);
+      res.json({
+        ok: !('error' in identity) && mismatches.length === 0,
+        persona: persona.name,
+        authMethod: persona.auth_method,
+        message: mask(login.message),
+        landedUrl: page.url().split('?')[0],
+        identity,
+        mismatches,
+        durationMs: Date.now() - started,
+      });
+    } catch (error: any) {
+      res.status(200).json({ ok: false, persona: persona.name, authMethod: persona.auth_method, error: mask(String(error.message).split('\n')[0]), durationMs: Date.now() - started });
+    } finally {
+      await browser.close().catch(() => undefined);
+    }
+  }
+
+  async listAgents(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
       const limit = parseInt(req.query.limit as string) || 100;
       const offset = parseInt(req.query.offset as string) || 0;
-      res.json(await this.agentRepo.findAll(limit, offset));
+      res.json((await this.agentRepo.findAll(req.project!.id, limit, offset)).map(publicAgent));
     } catch (error: any) {
-      logger.error('Failed to list agents', { error: error.message });
       res.status(500).json({ error: error.message });
     }
   }
 
-  async updateAgent(req: Request, res: Response): Promise<void> {
+  async updateAgent(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
-      const existing = await this.agentRepo.findById(req.params.id);
+      const projectId = req.project!.id;
+      const existing = await this.agentRepo.findById(req.params.id, projectId);
       if (!existing) {
         res.status(404).json({ error: 'Agent not found' });
         return;
@@ -127,6 +203,10 @@ export class AgentsController {
       const name = req.body?.name !== undefined ? String(req.body.name).trim() : existing.name;
       if (!name) {
         res.status(400).json({ error: 'name cannot be empty' });
+        return;
+      }
+      if (req.body?.status !== undefined && !['active', 'inactive', 'archived'].includes(req.body.status)) {
+        res.status(400).json({ error: 'status must be active, inactive or archived' });
         return;
       }
 
@@ -140,37 +220,50 @@ export class AgentsController {
         config = built.config;
       }
 
-      const agent = await this.agentRepo.update(req.params.id, {
+      const agent = await this.agentRepo.update(existing.id, {
         name: req.body?.name !== undefined ? name : undefined,
         config,
         status: req.body?.status,
-      });
-      res.json(agent);
+      }, projectId);
+
+      const changedSecrets = req.body?.config?.secrets !== undefined || req.body?.config?.salesforce !== undefined;
+      res.locals.audit = {
+        details: {
+          fields: Object.keys(req.body ?? {}),
+          ...(req.body?.config ? { configKeys: Object.keys(req.body.config) } : {}),
+          ...(changedSecrets ? { secretsChanged: true } : {}),
+        },
+      };
+      res.json(publicAgent(agent!));
     } catch (error: any) {
-      logger.error('Agent update failed', { error: error.message });
+      if (badSecret(error)) {
+        res.status(400).json({ error: error.message });
+        return;
+      }
       const conflict = /duplicate key/i.test(error.message);
-      res.status(conflict ? 409 : 500).json({ error: conflict ? 'An agent with that name already exists' : error.message });
+      if (!conflict) logger.error('Agent update failed', { error: error.message });
+      res.status(conflict ? 409 : 500).json({ error: conflict ? 'An agent with that name already exists in this project' : error.message });
     }
   }
 
-  async deleteAgent(req: Request, res: Response): Promise<void> {
+  async deleteAgent(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
-      const deleted = await this.agentRepo.delete(req.params.id);
-      if (!deleted) {
+      const agent = await this.agentRepo.findById(req.params.id, req.project!.id);
+      if (!agent || !(await this.agentRepo.delete(agent.id, req.project!.id))) {
         res.status(404).json({ error: 'Agent not found' });
         return;
       }
+      res.locals.audit = { details: { name: agent.name } };
       res.status(204).send();
     } catch (error: any) {
-      logger.error('Agent deletion failed', { error: error.message });
       res.status(500).json({ error: error.message });
     }
   }
 
   /** GET /agents/:id/plan — the test cases a run of this agent would execute. */
-  async getPlan(req: Request, res: Response): Promise<void> {
+  async getPlan(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
-      const plan = await OrchestratorService.get().previewPlan(req.params.id);
+      const plan = await OrchestratorService.get().previewPlan(req.params.id, req.project!.id);
       res.json({
         strategy: plan.strategy,
         estimatedDuration: plan.estimatedDuration,
@@ -187,12 +280,13 @@ export class AgentsController {
 
   /**
    * POST /agents/:id/generate-tests  { description?, count?, modules?, save? }
-   * Generates test cases with the LLM and (by default) saves them, tagged
-   * with `agent:<id>` so they are easy to find.
+   * Generates test cases with the LLM and (by default) saves them in the
+   * project, tagged with `agent:<id>`.
    */
-  async generateTests(req: Request, res: Response): Promise<void> {
+  async generateTests(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
-      const agent = await this.agentRepo.findById(req.params.id);
+      const projectId = req.project!.id;
+      const agent = await this.agentRepo.findById(req.params.id, projectId);
       if (!agent) {
         res.status(404).json({ error: 'Agent not found' });
         return;
@@ -216,11 +310,13 @@ export class AgentsController {
 
       // Respect the agent's priority filter so the saved tests actually run.
       const priorities = agent.config.test_selection?.priority ?? [];
-      const toSave = tests.map((t) =>
-        priorities.length && !priorities.includes(t.priority) ? { ...t, priority: priorities[0] } : t,
-      );
+      const toSave = tests.map((t) => ({
+        ...(priorities.length && !priorities.includes(t.priority) ? { ...t, priority: priorities[0] } : t),
+        projectId,
+      }));
 
       const saved = save ? await Promise.all(toSave.map((t) => this.testCaseRepo.create(t))) : toSave;
+      res.locals.audit = { details: { generated: saved.length, provider, saved: !!save } };
       res.json({ agentId: agent.id, provider, pageCaptured, saved: !!save, count: saved.length, tests: saved });
     } catch (error: any) {
       logger.error('Test generation failed', { error: error.message });

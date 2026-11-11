@@ -11,10 +11,15 @@ import {
   api, errorMessage, formatDuration, priorityBadge, reportUrl, shortId, statusBadge,
 } from '../../lib/api';
 import { useRunsChanged } from '../../lib/useRunEvents';
+import { useSession } from '../../lib/session';
+import AgentSecretsCard from '../../components/AgentSecretsCard';
+import SalesforcePersonasCard from '../../components/SalesforcePersonasCard';
 
 export default function AgentDetailPage() {
   const router = useRouter();
   const id = router.query.id as string | undefined;
+  const session = useSession();
+  const canEdit = session.can('editor');
 
   const [agent, setAgent] = useState<any>(null);
   const [plan, setPlan] = useState<any>(null);
@@ -91,8 +96,9 @@ export default function AgentDetailPage() {
   const actions = (
     <>
       <Link href="/agents" className="btn btn-secondary btn-sm">← Agents</Link>
-      {agent && (
+      {agent && canEdit && (
         <>
+          <Link href="/schedules" className="btn btn-secondary btn-sm">⏰ Schedule</Link>
           <button className="btn btn-secondary btn-sm" onClick={() => setShowGen(!showGen)}>🤖 Generate Tests</button>
           <button className="btn btn-primary btn-sm" onClick={startRun} disabled={runLoading || agent.status !== 'active' || !plan?.count}>
             {runLoading ? 'Starting…' : '▶ Start Run'}
@@ -146,7 +152,7 @@ export default function AgentDetailPage() {
         <div className="card">
           <div className="card-header">
             <h3>Configuration</h3>
-            <button className={`btn btn-sm ${agent.status === 'active' ? 'btn-ghost' : 'btn-secondary'}`} onClick={toggleStatus} title="Toggle active">
+            <button className={`btn btn-sm ${agent.status === 'active' ? 'btn-ghost' : 'btn-secondary'}`} onClick={toggleStatus} title="Toggle active" disabled={!canEdit}>
               <span className={statusBadge(agent.status)}>{agent.status}</span>
             </button>
           </div>
@@ -198,6 +204,18 @@ export default function AgentDetailPage() {
           )}
         </div>
       </div>
+
+      <AgentSecretsCard agentId={agent.id} secrets={cfg.secrets ?? {}} canEdit={session.can('admin')} onSaved={setAgent} />
+
+      <SalesforcePersonasCard
+        key={agent.id}
+        agentId={agent.id}
+        baseUrl={cfg.base_url}
+        salesforce={cfg.salesforce}
+        canAdmin={session.can('admin')}
+        canVerify={canEdit}
+        onSaved={setAgent}
+      />
 
       <div className="card">
         <div className="card-header"><h3>Recent Runs</h3></div>

@@ -3,6 +3,7 @@ import Head from 'next/head';
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
 import { api, getToken } from '../lib/api';
+import { SessionProvider } from '../lib/session';
 import '../styles/globals.css';
 
 /**
@@ -35,7 +36,11 @@ export default function App({ Component, pageProps }: AppProps) {
         <title>AI Test Agent Builder</title>
         <meta name="viewport" content="width=device-width, initial-scale=1" />
       </Head>
-      {ready ? <Component {...pageProps} /> : <div className="page-loading" style={{ height: '100vh' }}><div className="spinner" /></div>}
+      {ready
+        ? (router.pathname === '/login'
+          ? <Component {...pageProps} />
+          : <SessionProvider><Component {...pageProps} /></SessionProvider>)
+        : <div className="page-loading" style={{ height: '100vh' }}><div className="spinner" /></div>}
     </>
   );
 }

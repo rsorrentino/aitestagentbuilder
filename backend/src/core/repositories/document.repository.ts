@@ -13,8 +13,8 @@ export class DocumentRepository {
 
     const result = await this.db.query(
       `INSERT INTO documents (
-        id, name, source_type, content, file_path, file_size, mime_type, uploaded_at, uploaded_by, metadata, status
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'uploaded')
+        id, name, source_type, content, file_path, file_size, mime_type, uploaded_at, uploaded_by, metadata, status, project_id
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'uploaded', $11)
       RETURNING *`,
       [
         id,
@@ -27,28 +27,32 @@ export class DocumentRepository {
         new Date(),
         input.uploadedBy || null,
         input.metadata ? JSON.stringify(input.metadata) : null,
+        input.projectId || 'default',
       ],
     );
 
     return this.mapRowToDocument(result.rows[0]);
   }
 
-  async findById(id: string): Promise<Document | null> {
-    const result = await this.db.query('SELECT * FROM documents WHERE id = $1', [id]);
+  async findById(id: string, projectId?: string): Promise<Document | null> {
+    const result = projectId
+      ? await this.db.query('SELECT * FROM documents WHERE id = $1 AND project_id = $2', [id, projectId])
+      : await this.db.query('SELECT * FROM documents WHERE id = $1', [id]);
     if (result.rows.length === 0) return null;
     return this.mapRowToDocument(result.rows[0]);
   }
 
   /** Lists documents without their (potentially large) content. */
-  async findAll(limit: number = 100, offset: number = 0): Promise<Document[]> {
+  async findAll(projectId: string, limit: number = 100, offset: number = 0): Promise<Document[]> {
     const result = await this.db.query(
-      `SELECT d.id, d.name, d.source_type, d.file_size, d.mime_type, d.uploaded_at, d.uploaded_by,
+      `SELECT d.id, d.name, d.source_type, d.file_size, d.mime_type, d.uploaded_at, d.uploaded_by, d.project_id,
               d.metadata, d.status, d.error,
               (SELECT COUNT(*) FROM test_cases tc WHERE tc.document_id = d.id)::int AS test_case_count
          FROM documents d
+        WHERE d.project_id = $3
         ORDER BY d.uploaded_at DESC
         LIMIT $1 OFFSET $2`,
-      [limit, offset],
+      [limit, offset, projectId],
     );
     return result.rows.map(row => this.mapRowToDocument(row));
   }
@@ -57,8 +61,10 @@ export class DocumentRepository {
     await this.db.query('UPDATE documents SET status = $1, error = $2 WHERE id = $3', [status, error ?? null, id]);
   }
 
-  async delete(id: string): Promise<boolean> {
-    const result = await this.db.query('DELETE FROM documents WHERE id = $1', [id]);
+  async delete(id: string, projectId?: string): Promise<boolean> {
+    const result = projectId
+      ? await this.db.query('DELETE FROM documents WHERE id = $1 AND project_id = $2', [id, projectId])
+      : await this.db.query('DELETE FROM documents WHERE id = $1', [id]);
     return result.rowCount !== null && result.rowCount > 0;
   }
 
@@ -76,6 +82,7 @@ export class DocumentRepository {
       status: row.status ?? 'uploaded',
       error: row.error ?? undefined,
       testCaseCount: row.test_case_count,
+      projectId: row.project_id,
       metadata: row.metadata ? (typeof row.metadata === 'string' ? JSON.parse(row.metadata) : row.metadata) : undefined,
     };
   }

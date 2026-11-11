@@ -20,9 +20,10 @@
 
 import OpenAI from 'openai';
 import { spawn } from 'child_process';
-import { mkdtempSync, existsSync } from 'fs';
+import { mkdtempSync } from 'fs';
 import { tmpdir } from 'os';
-import { join, delimiter } from 'path';
+import { join } from 'path';
+import { findOnPath, MAX_ARGS_LENGTH, resolveCommand } from '../process/resolve-command.js';
 import type { LLMMessage, LLMResponse } from './client.js';
 import '../config/env.js';
 import logger from '../logger/index.js';
@@ -48,8 +49,7 @@ function getCliCommand(): string {
 }
 
 function isOnPath(command: string): boolean {
-  if (command.includes('/') || command.includes('\\')) return existsSync(command);
-  return (process.env.PATH || '').split(delimiter).some((dir) => dir && existsSync(join(dir, command)));
+  return findOnPath(command) !== null;
 }
 
 /**
@@ -285,9 +285,9 @@ export class CopilotClient {
   private chatCli(messages: LLMMessage[]): Promise<LLMResponse> {
     const { system, prompt } = flattenForPrompt(messages);
     const fullPrompt = system ? `${system}\n\n---\n\n${prompt}` : prompt;
-    if (Buffer.byteLength(fullPrompt) > 120_000) {
+    if (fullPrompt.length > MAX_ARGS_LENGTH) {
       return Promise.reject(new Error(
-        'prompt is too large for the Copilot CLI command line (max ~120 KB); use COPILOT_MODE=api or sdk for large documents',
+        `prompt is too large for the Copilot CLI command line (max ~${Math.round(MAX_ARGS_LENGTH / 1000)} KB on this OS); use COPILOT_MODE=api or sdk for large documents`,
       ));
     }
 
@@ -302,8 +302,16 @@ export class CopilotClient {
     ];
     if (this.model) args.push('--model', this.model);
 
+    let launch: { command: string; args: string[] };
+    try {
+      launch = resolveCommand(getCliCommand(), args);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+
     return new Promise((resolve, reject) => {
-      const child = spawn(getCliCommand(), args, {
+      const child = spawn(launch.command, launch.args, {
+        windowsHide: true,
         // Run in an empty directory so the CLI never reads project files.
         cwd: mkdtempSync(join(tmpdir(), 'copilot-cli-')),
         env: process.env,

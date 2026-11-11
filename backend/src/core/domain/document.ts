@@ -20,6 +20,7 @@ export interface Document {
   uploadedBy?: string;
   status?: DocumentStatus;
   error?: string;
+  projectId?: string;
   testCaseCount?: number;
   metadata?: {
     author?: string;
@@ -40,6 +41,7 @@ export interface DocumentCreateInput {
   mimeType?: string;
   uploadedBy?: string;
   metadata?: Document['metadata'];
+  projectId?: string;
 }
 
 export interface ParsedTestCases {

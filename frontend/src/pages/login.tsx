@@ -20,8 +20,12 @@ export default function LoginPage() {
     try {
       const res = await api.post('/auth/login', { email, password });
       setToken(res.data.accessToken);
-      const next = typeof router.query.next === 'string' && router.query.next.startsWith('/') ? router.query.next : '/';
-      router.replace(next);
+      if (res.data.user?.mustChangePassword) {
+        window.location.href = '/account?mustChange=1';
+        return;
+      }
+      const next = typeof router.query.next === 'string' && router.query.next.startsWith('/') && !router.query.next.startsWith('//') ? router.query.next : '/';
+      window.location.href = next;
     } catch (err) {
       setError(errorMessage(err));
     } finally {

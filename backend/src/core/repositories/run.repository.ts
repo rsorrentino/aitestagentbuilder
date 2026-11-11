@@ -14,8 +14,8 @@ export class RunRepository {
 
     const query = `
       INSERT INTO runs (
-        id, agent_id, status, started_at, total_tests, passed_tests, failed_tests, skipped_tests, metadata
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        id, agent_id, status, started_at, total_tests, passed_tests, failed_tests, skipped_tests, metadata, project_id
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
       RETURNING *
     `;
 
@@ -29,14 +29,16 @@ export class RunRepository {
       0,
       0,
       input.metadata ? JSON.stringify(input.metadata) : null,
+      input.projectId || 'default',
     ]);
 
     return this.mapRowToRun(result.rows[0], []);
   }
 
-  async findRunById(id: string): Promise<TestRun | null> {
-    const runQuery = 'SELECT r.*, a.name AS agent_name FROM runs r LEFT JOIN agents a ON a.id = r.agent_id WHERE r.id = $1';
-    const runResult = await this.db.query(runQuery, [id]);
+  async findRunById(id: string, projectId?: string): Promise<TestRun | null> {
+    const runQuery = 'SELECT r.*, a.name AS agent_name FROM runs r LEFT JOIN agents a ON a.id = r.agent_id WHERE r.id = $1'
+      + (projectId ? ' AND r.project_id = $2' : '');
+    const runResult = await this.db.query(runQuery, projectId ? [id, projectId] : [id]);
     
     if (runResult.rows.length === 0) return null;
 
@@ -92,10 +94,10 @@ export class RunRepository {
   async updateRunStats(id: string): Promise<void> {
     const statsQuery = `
       WITH latest AS (
-        SELECT DISTINCT ON (test_case_id) status
+        SELECT DISTINCT ON (test_case_id, COALESCE(metadata->>'persona', '')) status
         FROM results
         WHERE run_id = $1
-        ORDER BY test_case_id, started_at DESC
+        ORDER BY test_case_id, COALESCE(metadata->>'persona', ''), started_at DESC
       )
       SELECT
         COUNT(*) as total_tests,
@@ -222,11 +224,11 @@ export class RunRepository {
   }
 
   /** Run summaries (without per-test results), newest first. */
-  async findAll(limit: number = 50): Promise<TestRun[]> {
+  async findAll(projectId: string, limit: number = 50): Promise<TestRun[]> {
     const result = await this.db.query(
       `SELECT r.*, a.name AS agent_name FROM runs r LEFT JOIN agents a ON a.id = r.agent_id
-        ORDER BY r.started_at DESC LIMIT $1`,
-      [limit],
+        WHERE r.project_id = $2 ORDER BY r.started_at DESC LIMIT $1`,
+      [limit, projectId],
     );
     return result.rows.map(row => this.mapRowToRun(row, []));
   }
@@ -251,6 +253,7 @@ export class RunRepository {
       id: row.id,
       agentId: row.agent_id,
       agentName: row.agent_name ?? undefined,
+      projectId: row.project_id,
       status: row.status,
       startedAt,
       finishedAt,

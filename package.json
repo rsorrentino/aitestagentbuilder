@@ -1,0 +1,29 @@
+{
+  "name": "ai-test-agent-builder",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AI Test Agent Builder: run every task from here with npm, on Windows, Linux and macOS",
+  "engines": {
+    "node": ">=20.19"
+  },
+  "scripts": {
+    "setup": "node scripts/atab.mjs setup",
+    "build": "node scripts/atab.mjs build",
+    "start": "node scripts/atab.mjs start",
+    "dev": "node scripts/atab.mjs dev",
+    "status": "node scripts/atab.mjs status",
+    "db:migrate": "node scripts/atab.mjs migrate",
+    "demo:seed": "npm --prefix backend run seed:demo",
+    "cli": "npm --prefix backend run cli --",
+    "test": "npm --prefix backend test",
+    "test:integration": "npm --prefix backend run test:integration",
+    "test:e2e": "npm --prefix e2e test",
+    "test:all": "npm --prefix backend run test:all",
+    "typecheck": "npm --prefix backend run typecheck && npm --prefix frontend run typecheck",
+    "service:install": "node scripts/atab.mjs service:install",
+    "service:uninstall": "node scripts/atab.mjs service:uninstall",
+    "docker:db": "docker compose up -d postgres",
+    "docker:up": "docker compose --profile full up -d --build",
+    "docker:down": "docker compose --profile full down"
+  }
+}

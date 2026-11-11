@@ -2,13 +2,15 @@
  * Reports Controller
  */
 
-import { Request, Response } from 'express';
+import { Response } from 'express';
+import { AuthenticatedRequest } from '../../infra/auth/auth.middleware.js';
 import {
   REPORT_CONTENT_TYPES,
   ReportFormat,
   ReportingAgentService,
 } from '../../modules/reporting/services/reporting-agent.service.js';
 import logger from '../../infra/logger/index.js';
+import { signRunArtifacts } from '../../infra/security/signed-urls.js';
 
 export class ReportsController {
   private reporting = new ReportingAgentService();
@@ -17,7 +19,7 @@ export class ReportsController {
    * GET /runs/:runId/report?format=html|json|junit[&download=1]
    * Renders the report on the fly.
    */
-  async downloadReport(req: Request, res: Response): Promise<void> {
+  async downloadReport(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
       const format = ((req.query.format as string) || 'html').toLowerCase() as ReportFormat;
       const meta = REPORT_CONTENT_TYPES[format];
@@ -25,7 +27,7 @@ export class ReportsController {
         res.status(400).json({ error: 'format must be one of html, json, junit' });
         return;
       }
-      const run = await this.reporting.loadRun(req.params.runId);
+      const run = signRunArtifacts(await this.reporting.loadRun(req.params.runId, req.project!.id));
       const artifactsBaseUrl = `${req.protocol}://${req.get('host')}/artifacts/`;
       const content = this.reporting.render(run, format, { artifactsBaseUrl });
 
@@ -42,9 +44,10 @@ export class ReportsController {
   }
 
   /** POST /reports/runs/:runId/generate — writes report files to REPORT_STORAGE_PATH */
-  async generateReport(req: Request, res: Response): Promise<void> {
+  async generateReport(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
       const { formats, includeScreenshots, includeLogs } = req.body ?? {};
+      await this.reporting.loadRun(req.params.runId, req.project!.id);
       const reports = await this.reporting.generateReports(req.params.runId, {
         formats: Array.isArray(formats) && formats.length ? formats : ['json', 'html', 'junit'],
         includeScreenshots: includeScreenshots ?? true,

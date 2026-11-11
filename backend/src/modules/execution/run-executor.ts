@@ -14,8 +14,12 @@ import { getLLMRouter } from '../../infra/llm/router.js';
 import { extractJsonArray } from '../../infra/llm/json.js';
 import { BACKEND_ROOT } from '../../infra/config/env.js';
 import logger from '../../infra/logger/index.js';
+import { decryptAgentConfig, resolvePlaceholders, secretValues } from '../../core/domain/agent-secrets.js';
+import { maskSecrets } from '../../infra/security/secrets.js';
 import { launchBrowser, outlinePage } from './browser.js';
 import { classifyAction, executeStep, isSelectorFailure, StepContext } from './step-runner.js';
+import { salesforceSettings, testPersonas } from '../salesforce/personas.js';
+import { SalesforceSessions } from '../salesforce/session.js';
 
 export const ARTIFACTS_PATH = process.env.ARTIFACTS_PATH || join(BACKEND_ROOT, 'artifacts');
 
@@ -40,7 +44,67 @@ export class RunExecutor {
   private cancelled = false;
   private browser?: Browser;
 
-  constructor(private runId: string, private agent: Agent, private testCases: TestCase[]) {}
+  /** Agent config with decrypted secrets — kept in memory only for this run. */
+  private config: any;
+  private secrets: Record<string, string>;
+  private secretList: string[];
+  private salesforce?: SalesforceSessions;
+
+  constructor(private runId: string, private agent: Agent, private testCases: TestCase[]) {
+    this.config = decryptAgentConfig(agent.config);
+    this.secrets = this.config.secrets ?? {};
+    this.secretList = secretValues(this.config);
+    const sf = salesforceSettings(this.config);
+    if (sf) this.salesforce = new SalesforceSessions(sf);
+  }
+
+  /** Tests to execute: one per test case, or one per persona for tests with data.personas. */
+  private plan(): Array<{ testCase: TestCase; persona?: string }> {
+    const settings = this.salesforce?.settings ?? null;
+    return this.testCases.flatMap((testCase) => {
+      const personas = testPersonas(testCase.data, settings);
+      return personas.length ? personas.map((persona) => ({ testCase, persona })) : [{ testCase }];
+    });
+  }
+
+  private mask(text: string): string {
+    return maskSecrets(text, this.secretList);
+  }
+
+  /**
+   * Resolve {{secrets.NAME}} / {{env.NAME}} in a step's target and data values,
+   * and apply per-persona overrides: data.by_persona = { rep: { edit: false }, admin: { edit: true } }.
+   */
+  private resolveStep(step: TestStep, persona?: string): TestStep {
+    const resolve = (v: any): any => {
+      if (typeof v === 'string') return resolvePlaceholders(v, this.secrets);
+      if (Array.isArray(v)) return v.map(resolve);
+      if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, resolve(x)]));
+      return v;
+    };
+    let data = step.data;
+    if (data?.by_persona && typeof data.by_persona === 'object') {
+      const { by_persona, ...rest } = data;
+      const override = persona ? by_persona[persona] ?? by_persona.default : by_persona.default;
+      data = { ...rest, ...(override && typeof override === 'object' ? override : {}) };
+    }
+    let target = step.target;
+    if (step.data?.by_persona && data && data.target !== undefined) {
+      const { target: t, ...others } = data;
+      target = String(t);
+      data = others;
+    }
+    return { ...step, target: target ? resolve(target) : target, data: data ? resolve(data) : data };
+  }
+
+  /** Steps limited with data.only_personas / data.skip_personas do not run for other personas. */
+  private stepAppliesTo(step: TestStep, persona?: string): boolean {
+    const list = (v: any): string[] => (Array.isArray(v) ? v : typeof v === 'string' ? v.split(',') : []).map((x: any) => String(x).trim()).filter(Boolean);
+    const only = list(step.data?.only_personas);
+    if (only.length && (!persona || !only.includes(persona))) return false;
+    if (persona && list(step.data?.skip_personas).includes(persona)) return false;
+    return true;
+  }
 
   cancel(): void {
     this.cancelled = true;
@@ -48,14 +112,15 @@ export class RunExecutor {
   }
 
   private log(message: string, extra: Record<string, any> = {}, level: 'info' | 'warn' | 'error' = 'info'): void {
-    emitRunEvent(this.runId, 'run_log', { level, message, ...extra });
+    emitRunEvent(this.runId, 'run_log', { level, message: this.mask(message), ...extra });
   }
 
   /** Runs every test; resolves with the final run status. */
   async execute(): Promise<'completed' | 'failed' | 'cancelled'> {
-    const total = this.testCases.length;
+    const plan = this.plan();
+    const total = plan.length;
     const counts = { passed: 0, failed: 0, skipped: 0 };
-    const config = this.agent.config as any;
+    const config = this.config;
     const retries = Math.min(Math.max(Number(config.retries ?? 0), 0), 3);
 
     emitRunEvent(this.runId, 'run_started', { total, agentId: this.agent.id, agentName: this.agent.name });
@@ -67,13 +132,14 @@ export class RunExecutor {
 
       for (let i = 0; i < total; i++) {
         if (this.cancelled) throw new CancelledError();
-        const testCase = this.testCases[i];
-        emitRunEvent(this.runId, 'test_started', { testId: testCase.id, title: testCase.title, index: i + 1, total });
+        const { testCase, persona } = plan[i];
+        const title = persona ? `${testCase.title} [as ${persona}]` : testCase.title;
+        emitRunEvent(this.runId, 'test_started', { testId: testCase.id, title, persona, index: i + 1, total });
 
         let status: string = 'failed';
         for (let attempt = 0; attempt <= retries; attempt++) {
-          if (attempt > 0) this.log(`Retrying "${testCase.title}" (attempt ${attempt + 1}/${retries + 1})`, { testId: testCase.id }, 'warn');
-          status = await this.runTestCase(testCase, attempt);
+          if (attempt > 0) this.log(`Retrying "${title}" (attempt ${attempt + 1}/${retries + 1})`, { testId: testCase.id }, 'warn');
+          status = await this.runTestCase(testCase, attempt, persona);
           if (status !== 'failed' && status !== 'error') break;
           if (this.cancelled) throw new CancelledError();
         }
@@ -99,15 +165,17 @@ export class RunExecutor {
     }
   }
 
-  private async runTestCase(testCase: TestCase, attempt: number): Promise<string> {
-    const config = this.agent.config as any;
+  private async runTestCase(testCase: TestCase, attempt: number, persona?: string): Promise<string> {
+    const config = this.config;
     const startedAt = new Date();
+    const title = persona ? `${testCase.title} [as ${persona}]` : testCase.title;
+    const baseMeta = { title, module: testCase.module, priority: testCase.priority, attempt: attempt + 1, ...(persona ? { persona } : {}) };
     const result = await this.runRepo.createResult({
       runId: this.runId,
       testCaseId: testCase.id,
       status: 'running' as any,
       startedAt,
-      metadata: { title: testCase.title, module: testCase.module, priority: testCase.priority, attempt: attempt + 1 },
+      metadata: baseMeta,
     });
 
     const stepLogs: StepLog[] = [];
@@ -117,7 +185,7 @@ export class RunExecutor {
     let status: 'passed' | 'failed' | 'skipped' | 'error' = 'passed';
     let error: string | undefined;
 
-    this.log(`▶ ${testCase.title}`, { testId: testCase.id });
+    this.log(`▶ ${title}`, { testId: testCase.id });
 
     try {
       context = await this.browser!.newContext({ viewport: { width: 1280, height: 800 }, ignoreHTTPSErrors: true });
@@ -127,14 +195,30 @@ export class RunExecutor {
         baseUrl: config.base_url,
         stepTimeout: parseInt(process.env.STEP_TIMEOUT_MS || '') || Math.min(Number(config.step_timeout) || 10000, 60000),
         config,
+        salesforce: this.salesforce,
+        persona,
       };
 
       const steps: TestStep[] = testCase.steps ?? [];
       if (steps.length === 0) throw new Error('Test case has no steps');
 
-      for (const step of steps) {
+      // Persona tests without an explicit login step start logged in as the persona.
+      if (persona && !steps.some((s) => classifyAction(s.action, s) === 'salesforce_login')) {
+        const log = await this.runStep({ stepId: 0, action: 'salesforce_login', data: { persona } }, ctx, testCase, persona);
+        stepLogs.push(log);
+        if (log.status === 'failed') {
+          status = 'failed';
+          error = `Login as ${persona}: ${log.message}`;
+        }
+      }
+
+      for (const step of status === 'failed' ? [] : steps) {
         if (this.cancelled) throw new CancelledError();
-        const log = await this.runStep(step, ctx, testCase);
+        if (!this.stepAppliesTo(step, persona)) {
+          stepLogs.push({ stepId: step.stepId, action: step.action, target: step.target, status: 'skipped', message: `Not for persona ${persona ?? '(none)'}`, durationMs: 0 });
+          continue;
+        }
+        const log = await this.runStep(step, ctx, testCase, persona);
         stepLogs.push(log);
         await this.streamScreenshot(page, testCase.id);
         if (log.status === 'failed') {
@@ -155,7 +239,7 @@ export class RunExecutor {
         error = 'Run cancelled';
       } else {
         status = 'error';
-        error = e.message;
+        error = this.mask(e.message);
       }
     }
 
@@ -174,39 +258,39 @@ export class RunExecutor {
       logs: stepLogs.map((l) => `[${l.status.toUpperCase()}] Step ${l.stepId}: ${l.action}${l.target ? ` → ${l.target}` : ''} — ${l.message}`),
       error,
       evidence: { screenshots },
-      metadata: { title: testCase.title, module: testCase.module, priority: testCase.priority, attempt: attempt + 1, steps: stepLogs },
+      metadata: { ...baseMeta, steps: stepLogs },
     });
     await this.runRepo.updateRunStats(this.runId);
 
     const icon = status === 'passed' ? '✓' : status === 'skipped' ? '○' : '✗';
-    this.log(`${icon} ${testCase.title}: ${status}${error ? ` — ${error}` : ''}`, { testId: testCase.id }, status === 'passed' ? 'info' : 'warn');
-    emitRunEvent(this.runId, 'test_result', { testId: testCase.id, resultId: result.id, title: testCase.title, status, error, duration });
+    this.log(`${icon} ${title}: ${status}${error ? ` — ${error}` : ''}`, { testId: testCase.id }, status === 'passed' ? 'info' : 'warn');
+    emitRunEvent(this.runId, 'test_result', { testId: testCase.id, resultId: result.id, title, persona, status, error, duration });
     return status;
   }
 
-  private async runStep(step: TestStep, ctx: StepContext, testCase: TestCase): Promise<StepLog> {
+  private async runStep(step: TestStep, ctx: StepContext, testCase: TestCase, persona?: string): Promise<StepLog> {
     const started = Date.now();
     const base = { stepId: step.stepId, action: step.action, target: step.target };
     const kind = classifyAction(step.action, step);
     this.log(`  Step ${step.stepId}: ${step.action}${step.target ? ` → ${step.target}` : ''}`, { testId: testCase.id, stepId: step.stepId });
 
     try {
-      const outcome = await executeStep(step, ctx);
-      return { ...base, ...outcome, durationMs: Date.now() - started };
+      const outcome = await executeStep(this.resolveStep(step, persona), ctx);
+      return { ...base, ...outcome, message: this.mask(outcome.message), durationMs: Date.now() - started };
     } catch (e: any) {
-      let message = String(e.message || e).split('\n')[0];
+      let message = this.mask(String(e.message || e).split('\n')[0]);
       if (step.target && /Timeout \d+ms exceeded/.test(message)) {
         message = `Element "${step.target}" was not found or not actionable (${message})`;
       }
-      const healed = await this.trySelfHeal(step, ctx, kind, message, testCase);
+      const healed = await this.trySelfHeal(step, ctx, kind, message, testCase, persona);
       if (healed) return { ...base, ...healed, durationMs: Date.now() - started };
       return { ...base, status: 'failed', message, durationMs: Date.now() - started };
     }
   }
 
   /** Ask the LLM for a replacement selector when a step fails on a selector. */
-  private async trySelfHeal(step: TestStep, ctx: StepContext, kind: ReturnType<typeof classifyAction>, error: string, testCase: TestCase) {
-    const config = this.agent.config as any;
+  private async trySelfHeal(step: TestStep, ctx: StepContext, kind: ReturnType<typeof classifyAction>, error: string, testCase: TestCase, persona?: string) {
+    const config = this.config;
     const router = getLLMRouter();
     if (!config.ai?.self_healing || !step.target || !isSelectorFailure(kind, error) || !router.hasAnyProvider()) return null;
 
@@ -228,7 +312,7 @@ export class RunExecutor {
       const selector = extractJsonArray(response.content)[0]?.selector;
       if (!selector || selector === step.target) return null;
 
-      const outcome = await executeStep(step, ctx, selector);
+      const outcome = await executeStep(this.resolveStep(step, persona), ctx, selector);
       this.log(`  🩹 Healed: "${step.target}" → "${selector}"`, { testId: testCase.id, stepId: step.stepId });
       return { ...outcome, message: `${outcome.message} (self-healed from "${step.target}")`, healedSelector: selector };
     } catch (e: any) {

@@ -524,6 +524,7 @@ textarea.form-control { resize: vertical; min-height: 80px; }
 .mt-2          { margin-top: 8px; }
 .mt-3          { margin-top: 12px; }
 .mt-4          { margin-top: 16px; }
+.mb-2          { margin-bottom: 8px; }
 .mb-4          { margin-bottom: 16px; }
 .mb-6          { margin-bottom: 24px; }
 .text-sm       { font-size: 13px; }
@@ -539,3 +540,6 @@ textarea.form-control { resize: vertical; min-height: 80px; }
   .main-area { margin-left: 0; }
   .page-content { padding: 16px; }
 }
+
+/* Two-column form grid that collapses on narrow screens */
+.form-grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }

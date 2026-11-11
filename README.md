@@ -42,27 +42,43 @@
 | **Chat assistant** | Write tests conversationally and save the JSON it returns as test cases |
 | **Auth** | Off by default for local use; with `AUTH_ENABLED=true`: login page, JWT, API keys, roles |
 | **CLI / CI** | `npm run cli -- run -c agent.yml` waits for the run, writes reports and exits non-zero on failure |
+| **Salesforce personas** | Test as administrators, sales reps and read-only users: UI password, password + authenticator code (TOTP), OAuth JWT bearer → frontdoor, OAuth password, or "Log in as". Identity checks (profile, permission sets), one test run as many personas with per-persona expectations, object/field/record access and access-denied assertions. Built-in Salesforce simulator at `/demo/salesforce` |
 | **Demo** | Built-in demo shop at `/demo` with ready-made tests: one click on the dashboard |
+
+## 🏢 Enterprise features
+
+Turn on authentication (`AUTH_ENABLED=true`) to get projects with role-based access, user
+administration with password policy and lockout, project-scoped API keys, an audit log, encrypted
+secrets, cron schedules, CI runs that wait for the result, notifications (webhooks, Slack, Teams,
+email), analytics (pass-rate trends, flaky tests), data retention, an OpenAPI reference at
+`/api/docs` and Docker images (`docker compose --profile full up -d --build`) or a native Windows Server install
+without Docker ([docs/windows.md](docs/windows.md)).
+See [docs/enterprise-roadmap.md](docs/enterprise-roadmap.md) for the full list and what comes next.
 
 ## 🚀 Quick start
 
-**Prerequisites:** Node.js 20.19+ and PostgreSQL 14+ (or Docker).
+**Prerequisites:** Node.js 20.19+ (22 recommended) and PostgreSQL 14+. Works the same on Windows, Linux and macOS.
+
+Everything runs from the root `package.json`:
 
 ```bash
 git clone https://github.com/rsorrentino/aitestagentbuilder.git
 cd aitestagentbuilder
-./scripts/setup.sh        # installs deps + Chromium, creates .env, starts Postgres via Docker if available
+npm run setup        # installs dependencies + Chromium, creates .env, migrates the database
+npm run dev          # API on http://localhost:3000 + UI on http://localhost:4000, live reload
 ```
 
-Then start the two servers in two terminals:
+No PostgreSQL yet? `npm run docker:db` starts one with Docker, or install it natively and set `DATABASE_URL` in `.env`.
 
-```bash
-cd backend && npm run dev     # API on http://localhost:3000 (creates/migrates the DB schema on start)
-```
-
-```bash
-cd frontend && npm run dev    # UI on http://localhost:4000
-```
+| Command | What it does |
+|---|---|
+| `npm run setup` | development install (`.env` from `.env.example`) |
+| `npm run setup -- --production --host myserver --db postgresql://…` | production install: generated secrets, admin account, build, migrations |
+| `npm run dev` / `npm start` | run API + UI with live reload / the production build (Ctrl+C stops both) |
+| `npm run build` · `npm run db:migrate` · `npm run status` | build both apps · migrate the database · check both are answering |
+| `npm run service:install` / `service:uninstall` | start at boot: Windows service or systemd unit |
+| `npm test` · `npm run test:integration` · `npm run test:e2e` | unit · API + database + browser · UI end-to-end |
+| `npm run demo:seed` · `npm run cli -- run -c agent.yml` | create the demo agent · run tests from CI |
 
 Open **http://localhost:4000** and click **🎮 Try the demo** → **▶ Start Run**. Three tests run against the built-in demo shop and you can watch them live.
 
@@ -75,7 +91,7 @@ COPILOT_MODE=api                      # api | sdk | cli
 COPILOT_GITHUB_TOKEN=...              # e.g. the output of `gh auth token`
 ```
 
-Step-by-step instructions, manual setup without Docker, and troubleshooting are in **[RUNNING.md](RUNNING.md)**.
+Step-by-step instructions and troubleshooting are in **[RUNNING.md](RUNNING.md)**; Windows Server specifics in **[docs/windows.md](docs/windows.md)**.
 
 ## 🐙 GitHub Copilot
 
@@ -104,8 +120,14 @@ A test case is a list of steps. Each step has an **action**, an optional **targe
 | `assert_text` | element (optional; whole page if empty) | expected text |
 | `assert_url`, `assert_title` | | expected substring |
 | `screenshot` | | |
+| `assert_not_visible` | selector | |
+| `salesforce_login`, `salesforce_logout` | persona name | |
+| `assert_object_access`, `assert_field_access`, `assert_record_access` | `Account`, `Account.AnnualRevenue`, record Id | `{"read": true, "delete": false}` |
+| `assert_profile`, `assert_access_denied` | expected profile / page to open | |
 
 Targets can be CSS selectors (`#id`, `.class`, `input[name=q]`), Playwright selectors (`text=Sign in`), or **plain labels** like `Sign in button` or `Username`. Plain labels resolve in priority order: label, placeholder, button, link, then text. Natural phrasing from extracted documents ("Enter username", "Verify the welcome message is displayed") is understood too. Steps that cannot be automated are reported as skipped rather than failing.
+
+For Salesforce, mark a test with the personas it must run as (`data.personas`) and give per-persona expectations with `by_persona` — see the [Salesforce guide](docs/salesforce-guide.md#1-authentication-and-personas).
 
 ## 🏗️ Project layout
 
@@ -122,9 +144,9 @@ docs/       Documentation
 ## ✅ Tests
 
 ```bash
-cd backend && npm test                  # unit tests
-cd backend && npm run test:integration  # API + real Postgres + real browser (needs TEST_DATABASE_URL or a local DB)
-cd e2e && npm test                      # UI end-to-end; start backend + frontend first
+npm test                  # unit tests
+npm run test:integration  # API, enterprise, Salesforce personas: real Postgres + real browser (TEST_DATABASE_URL or a local DB)
+npm run test:e2e          # UI end-to-end; run "npm run setup -- --with-e2e" once and start the app first
 ```
 
 The integration suite also exercises the Copilot **CLI** and **API** transports against local fakes, so it needs no credentials.
@@ -137,7 +159,9 @@ The integration suite also exercises the Copilot **CLI** and **API** transports 
 - [docs/architecture.md](docs/architecture.md): how the pieces fit together
 - [docs/agents.md](docs/agents.md): agent configuration, CLI and CI usage
 - [docs/mvp-demo.md](docs/mvp-demo.md): 10-minute guided demo
-- [docs/salesforce-guide.md](docs/salesforce-guide.md): testing Salesforce orgs
+- [docs/windows.md](docs/windows.md): install on Windows Server without Docker (PowerShell scripts, Windows services)
+- [docs/enterprise-roadmap.md](docs/enterprise-roadmap.md): enterprise features and roadmap
+- [docs/salesforce-guide.md](docs/salesforce-guide.md): testing Salesforce orgs as many users (personas, MFA, JWT, Log in as, permission assertions)
 - [docs/mcp-server.md](docs/mcp-server.md): MCP server
 - [docs/production-readiness.md](docs/production-readiness.md): deployment notes
 

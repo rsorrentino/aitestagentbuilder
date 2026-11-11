@@ -70,3 +70,7 @@ artifacts/
 reports/
 *.tsbuildinfo
 next-env.d.ts.bak
+.data/
+
+# Chromium downloaded by scripts/windows/install.ps1
+.playwright-browsers/
