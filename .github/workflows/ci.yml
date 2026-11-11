@@ -119,7 +119,7 @@ jobs:
         run: |
           npm --prefix backend ci --no-audit --no-fund; if ($LASTEXITCODE) { exit 1 }
           npm --prefix backend exec -- playwright install chromium; if ($LASTEXITCODE) { exit 1 }
-          npm run typecheck; if ($LASTEXITCODE) { exit 1 }
+          npm --prefix backend run typecheck; if ($LASTEXITCODE) { exit 1 }   # the UI is typechecked by its build in "npm run setup"
           npm run test:all; if ($LASTEXITCODE) { exit 1 }
       - name: npm run setup -- --production
         shell: pwsh
