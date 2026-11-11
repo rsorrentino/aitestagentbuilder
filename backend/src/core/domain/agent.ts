@@ -39,7 +39,24 @@ export interface AgentConfig {
   environment: string;
   /** Named secrets usable in steps as {{secrets.NAME}} (encrypted at rest) */
   secrets?: Record<string, string>;
-  salesforce?: { username?: string; password?: string; security_token?: string; sandbox?: boolean };
+  /** Salesforce org + personas (see modules/salesforce/personas.ts). Secret fields are encrypted at rest. */
+  salesforce?: {
+    login_url?: string;
+    instance_url?: string;
+    api_version?: string;
+    default_persona?: string;
+    api_persona?: string;
+    frontdoor_mode?: 'auto' | 'single_access' | 'sid';
+    reuse_sessions?: boolean;
+    mfa?: { code_selector?: string; submit_selector?: string };
+    connected_app?: { client_id?: string; client_secret?: string; private_key?: string };
+    personas?: Array<Record<string, any>>;
+    /** legacy single user */
+    username?: string;
+    password?: string;
+    security_token?: string;
+    sandbox?: boolean;
+  };
   ai?: { provider?: string; self_healing?: boolean; model?: string };
   max_parallel_tests?: number;
   timeout?: number;

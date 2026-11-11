@@ -15,6 +15,7 @@ import { metricsMiddleware } from './api/middlewares/metrics.middleware.js';
 import { rateLimiters } from './infra/rate-limit/rate-limiter.js';
 import { ARTIFACTS_PATH } from './modules/execution/run-executor.js';
 import { demoRouter } from './demo/pages.js';
+import { salesforceSimulator } from './demo/salesforce-simulator.js';
 import swaggerUi from 'swagger-ui-express';
 import { buildOpenApi } from './api/openapi.js';
 import { verifyArtifactSignature } from './infra/security/signed-urls.js';
@@ -51,6 +52,10 @@ export function createApp(): express.Express {
 
   // Built-in demo application under test (disable with DEMO_ENABLED=false)
   if (process.env.DEMO_ENABLED !== 'false') {
+    // Salesforce look-alike for persona/permission tests (off in production unless SALESFORCE_SIMULATOR=true)
+    if (process.env.NODE_ENV !== 'production' || process.env.SALESFORCE_SIMULATOR === 'true') {
+      app.use('/demo/salesforce', salesforceSimulator());
+    }
     app.use('/demo', demoRouter());
   }
 

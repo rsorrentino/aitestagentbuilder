@@ -107,6 +107,9 @@ export function buildOpenApi(serverUrl: string) {
         delete: op('Agents', 'Delete an agent (admin)', { parameters: [id()], responses: { 204: { description: 'Deleted' } } }),
       },
       '/agents/{id}/plan': { get: op('Agents', 'Tests the next run would execute', { parameters: [id()] }) },
+      '/agents/{id}/salesforce/personas/{name}/verify': {
+        post: op('Agents', 'Log in as a Salesforce persona and report its profile and permission sets', { parameters: [id(), id('name', 'Persona name')] }),
+      },
       '/agents/{id}/generate-tests': { post: op('Agents', 'Generate tests with AI from the live page', { parameters: [id()], requestBody: { content: json({ type: 'object', properties: { description: { type: 'string' }, count: { type: 'integer' }, save: { type: 'boolean' } } }) } }) },
 
       // ── Test cases ───────────────────────────────────────────────────────

@@ -13,12 +13,27 @@ export interface TestCaseEditorProps {
   onCancel: () => void;
 }
 
+/** Step value column: plain text becomes data.value; a JSON object is used as the step data as-is. */
+export function valueToData(value: string): Record<string, any> | undefined {
+  if (value === '') return undefined;
+  const trimmed = value.trim();
+  if (trimmed.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+    } catch {
+      // not JSON: plain text
+    }
+  }
+  return { value };
+}
+
 function toRows(steps: any[] | undefined): StepRow[] {
   if (!steps || steps.length === 0) return [{ action: 'navigate', target: '/', value: '' }];
   return steps.map((s) => ({
     action: s.action ?? '',
     target: s.target ?? '',
-    value: s.data?.value !== undefined ? String(s.data.value) : s.data ? JSON.stringify(s.data) : '',
+    value: s.data?.value !== undefined && Object.keys(s.data).length === 1 ? String(s.data.value) : s.data ? JSON.stringify(s.data) : '',
   }));
 }
 
@@ -31,6 +46,8 @@ export default function TestCaseEditor({ initial, onSaved, onCancel }: TestCaseE
   const [tags, setTags] = useState((initial?.tags ?? []).join(', '));
   const [expected, setExpected] = useState((initial?.expectedResults ?? []).join('\n'));
   const [steps, setSteps] = useState<StepRow[]>(toRows(initial?.steps));
+  const initialPersonas = initial?.data?.personas;
+  const [personas, setPersonas] = useState<string>(Array.isArray(initialPersonas) ? initialPersonas.join(', ') : initialPersonas ?? '');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -60,8 +77,15 @@ export default function TestCaseEditor({ initial, onSaved, onCancel }: TestCaseE
         .map((s) => ({
           action: s.action.trim(),
           ...(s.target.trim() ? { target: s.target.trim() } : {}),
-          ...(s.value !== '' ? { data: { value: s.value } } : {}),
+          ...(valueToData(s.value) ? { data: valueToData(s.value) } : {}),
         })),
+      data: (() => {
+        const list = personas.split(',').map((p: string) => p.trim()).filter(Boolean);
+        const rest = { ...(initial?.data ?? {}) };
+        delete rest.personas;
+        const next = list.length ? { ...rest, personas: list.includes('all') ? 'all' : list } : rest;
+        return Object.keys(next).length ? next : null;
+      })(),
     };
     try {
       const res = initial?.id
@@ -102,6 +126,11 @@ export default function TestCaseEditor({ initial, onSaved, onCancel }: TestCaseE
             </select>
           </div>
           <div className="form-group">
+            <label className="form-label" htmlFor="tc-personas">Run as personas</label>
+            <input id="tc-personas" className="form-control" value={personas} onChange={(e) => setPersonas(e.target.value)} placeholder="admin, rep, viewer — or all" />
+            <div className="form-hint">Salesforce agents: the test runs once per persona.</div>
+          </div>
+          <div className="form-group">
             <label className="form-label" htmlFor="tc-tags">Tags (comma separated)</label>
             <input id="tc-tags" className="form-control" value={tags} onChange={(e) => setTags(e.target.value)} placeholder="smoke, login" />
           </div>
@@ -129,8 +158,12 @@ export default function TestCaseEditor({ initial, onSaved, onCancel }: TestCaseE
           ))}
           <button type="button" className="btn btn-secondary btn-sm mt-2" onClick={() => setSteps((p) => [...p, { action: 'click', target: '', value: '' }])}>＋ Add step</button>
           <p className="form-hint mt-2">
-            Actions: navigate, click, fill, select, check, press, hover, wait, assert_visible, assert_text, assert_url, assert_title, screenshot.
+            Actions: navigate, click, fill, select, check, press, hover, wait, assert_visible, assert_not_visible, assert_text, assert_url, assert_title, screenshot.
             Targets can be CSS selectors (#id, .class), <code>text=Visible text</code>, or a plain label like “Sign in button”.
+            Salesforce: salesforce_login (target = persona), assert_object_access (target = Account, value <code>{'{"read": true, "delete": false}'}</code>),
+            assert_field_access (Account.AnnualRevenue), assert_record_access (record Id), assert_profile, assert_access_denied.
+            Per-persona expectations: <code>{'{"by_persona": {"admin": {"delete": true}, "rep": {"delete": false}}}'}</code>;
+            limit a step with <code>{'{"only_personas": ["rep"]}'}</code>.
           </p>
         </div>
 

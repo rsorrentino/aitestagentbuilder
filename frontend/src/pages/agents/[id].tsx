@@ -13,6 +13,7 @@ import {
 import { useRunsChanged } from '../../lib/useRunEvents';
 import { useSession } from '../../lib/session';
 import AgentSecretsCard from '../../components/AgentSecretsCard';
+import SalesforcePersonasCard from '../../components/SalesforcePersonasCard';
 
 export default function AgentDetailPage() {
   const router = useRouter();
@@ -205,6 +206,16 @@ export default function AgentDetailPage() {
       </div>
 
       <AgentSecretsCard agentId={agent.id} secrets={cfg.secrets ?? {}} canEdit={session.can('admin')} onSaved={setAgent} />
+
+      <SalesforcePersonasCard
+        key={agent.id}
+        agentId={agent.id}
+        baseUrl={cfg.base_url}
+        salesforce={cfg.salesforce}
+        canAdmin={session.can('admin')}
+        canVerify={canEdit}
+        onSaved={setAgent}
+      />
 
       <div className="card">
         <div className="card-header"><h3>Recent Runs</h3></div>

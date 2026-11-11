@@ -19,9 +19,14 @@ ai:
   provider: "copilot"                  # anthropic | openai | azure | copilot | (empty = automatic)
   self_healing: true                   # ask the AI for a new selector when one breaks
 retries: 1                             # re-run failed tests (0–3)
-salesforce:                            # only for Salesforce agents (salesforce_login step)
-  username: "${SF_USERNAME}"
-  password: "${SF_PASSWORD}"
+salesforce:                            # only for Salesforce agents — see docs/salesforce-guide.md
+  login_url: "https://acme--uat.sandbox.my.salesforce.com"
+  connected_app: { client_id: "${SF_CLIENT_ID}", private_key: "${SF_PRIVATE_KEY}" }
+  personas:
+    - { name: admin, auth_method: jwt, username: "qa.admin@acme.com.uat", expected_profile: "System Administrator" }
+    - { name: rep, auth_method: password_totp, username: "qa.rep@acme.com.uat",
+        password: "${SF_REP_PASSWORD}", totp_secret: "${SF_REP_TOTP}", expected_profile: "Standard User" }
+    - { name: viewer, auth_method: password, username: "qa.viewer@acme.com.uat", password: "${SF_VIEWER_PASSWORD}" }
 ```
 
 The UI form, the API (`POST /api/v1/agents` with `{ name, config }`) and the CLI all accept this shape. `${VAR}` placeholders in YAML files are replaced with environment variables by the CLI.
@@ -73,8 +78,17 @@ The agent page shows **Tests in the next run**: exactly what the planner will ex
 | `assert_url` | | substring of the URL |
 | `assert_title` | | substring of the title |
 | `screenshot` | | |
-| `salesforce_login` | optional login URL | uses `config.salesforce` |
+| `assert_not_visible` | selector | |
+| `salesforce_login` | persona name (default: the test's persona) | `data.persona`, `data.landing` |
+| `salesforce_logout` | | |
 | `wait_for_lightning` | | waits for Salesforce Lightning spinners |
+| `assert_profile` | expected profile | `data.permission_sets` |
+| `assert_object_access` | `Account` | `{"read": true, "create": false, "edit": true, "delete": false}` |
+| `assert_field_access` | `Account.AnnualRevenue` | `{"read": true, "edit": false}` |
+| `assert_record_access` | record Id | `{"read": true, "edit": false}` |
+| `assert_access_denied` | optional page to open | optional custom message |
+
+Persona matrix: `data.personas` on the test case (list or `"all"`) runs it once per persona; `data.by_persona` on a step gives per-persona values and `data.only_personas` / `data.skip_personas` limit a step. Details in [salesforce-guide.md](salesforce-guide.md).
 
 **Natural language works too.** "Navigate to the login page", "Enter username", "Click the Sign in button", "Verify the URL contains /dashboard" and "Check that the welcome message is displayed" map to the actions above. Steps with no recognisable action are marked **skipped** (not failed). A test with only skipped steps is reported as skipped.
 

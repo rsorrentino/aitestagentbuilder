@@ -156,3 +156,4 @@ describe('reporting', () => {
     assert.equal(latest.find((x) => x.testCaseId === 'A')!.status, 'passed');
   });
 });
+

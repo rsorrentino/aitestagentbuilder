@@ -30,6 +30,7 @@ import { audit } from '../../infra/audit/audit.js';
 import { rateLimiters } from '../../infra/rate-limit/rate-limiter.js';
 import { seedDemo } from '../../demo/seed-demo.js';
 import { registerAutomationRoutes } from './automation.js';
+import { AgentRepository } from '../../core/repositories/agent.repository.js';
 
 const router = Router();
 
@@ -123,13 +124,25 @@ scoped.delete('/ingestion/documents/:documentId', editor, audit('document.delete
 scoped.post('/agents', editor, audit('agent.create', 'agent'), (req, res) => agents.createAgent(req, res));
 scoped.get('/agents', viewer, (req, res) => agents.listAgents(req, res));
 scoped.get('/agents/:id', viewer, (req, res) => agents.getAgent(req, res));
-scoped.put('/agents/:id', editor, (req: AuthenticatedRequest, res, next) => {
+scoped.put('/agents/:id', editor, async (req: AuthenticatedRequest, res, next) => {
   // Changing secrets or credentials requires a project admin
   const cfg = req.body?.config;
   if (cfg && (cfg.secrets !== undefined || cfg.salesforce !== undefined)) return projectAdmin(req, res, next);
+  // So does moving the target URL of an agent with Salesforce credentials: logins and
+  // session ids may be sent there when the org URLs are not set explicitly.
+  const baseUrl = cfg?.base_url ?? cfg?.baseUrl;
+  if (baseUrl !== undefined) {
+    try {
+      const existing = await new AgentRepository().findById(req.params.id, req.project!.id);
+      if (existing?.config?.salesforce && String(baseUrl).trim() !== existing.config.base_url) return projectAdmin(req, res, next);
+    } catch (error) {
+      return next(error);
+    }
+  }
   next();
 }, audit('agent.update', 'agent'), (req, res) => agents.updateAgent(req, res));
 scoped.delete('/agents/:id', projectAdmin, audit('agent.delete', 'agent'), (req, res) => agents.deleteAgent(req, res));
+scoped.post('/agents/:id/salesforce/personas/:name/verify', editor, audit('salesforce.persona.verify', 'agent'), (req, res) => agents.verifyPersona(req, res));
 scoped.get('/agents/:id/plan', viewer, (req, res) => agents.getPlan(req, res));
 scoped.post('/agents/:id/generate-tests', editor, audit('agent.generate_tests', 'agent'), (req, res) => agents.generateTests(req, res));
 

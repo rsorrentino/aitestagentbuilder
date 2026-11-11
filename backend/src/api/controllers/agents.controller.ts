@@ -7,7 +7,11 @@ import { Response } from 'express';
 import { AgentRepository } from '../../core/repositories/agent.repository.js';
 import { TestCaseRepository } from '../../core/repositories/test-case.repository.js';
 import { Agent, AgentConfig } from '../../core/domain/agent.js';
-import { redactAgentConfig } from '../../core/domain/agent-secrets.js';
+import { decryptAgentConfig, redactAgentConfig, secretValues } from '../../core/domain/agent-secrets.js';
+import { maskSecrets } from '../../infra/security/secrets.js';
+import { salesforceSettings } from '../../modules/salesforce/personas.js';
+import { SalesforceSessions } from '../../modules/salesforce/session.js';
+import { launchBrowser } from '../../modules/execution/browser.js';
 import { AiTestGeneratorService } from '../../modules/agents/services/ai-test-generator.service.js';
 import { OrchestratorService, RunValidationError } from '../../modules/orchestration/services/orchestrator.service.js';
 import { NoLLMProviderError } from '../../infra/llm/router.js';
@@ -74,7 +78,7 @@ export function publicAgent(agent: Agent): Agent {
   return { ...agent, config: redactAgentConfig(agent.config) };
 }
 
-const badSecret = (e: any) => /Invalid secret name/.test(e?.message ?? '');
+const badSecret = (e: any) => /Invalid secret name|persona|salesforce\./i.test(e?.message ?? '');
 
 export class AgentsController {
   private agentRepo = new AgentRepository();
@@ -122,6 +126,59 @@ export class AgentsController {
       res.json(publicAgent(agent));
     } catch (error: any) {
       res.status(500).json({ error: error.message });
+    }
+  }
+
+  /**
+   * Log in as a Salesforce persona and report who Salesforce says it is
+   * (profile, permission sets) compared with what the persona expects.
+   */
+  async verifyPersona(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const agent = await this.agentRepo.findById(req.params.id, req.project!.id).catch(() => null);
+    if (!agent) {
+      res.status(404).json({ error: 'Agent not found' });
+      return;
+    }
+    const config = decryptAgentConfig(agent.config);
+    const settings = salesforceSettings(config);
+    const mask = (t: string) => maskSecrets(t, secretValues(config));
+    if (!settings || settings.personas.length === 0) {
+      res.status(400).json({ error: 'This agent has no Salesforce personas' });
+      return;
+    }
+    const sessions = new SalesforceSessions({ ...settings, reuseSessions: false });
+    const name = req.params.name;
+    let persona;
+    try {
+      persona = sessions.persona(name);
+    } catch (error: any) {
+      res.status(404).json({ error: error.message });
+      return;
+    }
+    res.locals.audit = { entityId: agent.id, details: { persona: persona.name, method: persona.auth_method } };
+
+    const started = Date.now();
+    const browser = await launchBrowser();
+    try {
+      const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, ignoreHTTPSErrors: true });
+      const page = await context.newPage();
+      const login = await sessions.login(page, persona.name);
+      const identity = await sessions.identity(page, persona.name).catch((e: any) => ({ error: mask(e.message) }));
+      const mismatches = 'error' in identity ? [] : SalesforceSessions.identityMismatches(persona, identity);
+      res.json({
+        ok: !('error' in identity) && mismatches.length === 0,
+        persona: persona.name,
+        authMethod: persona.auth_method,
+        message: mask(login.message),
+        landedUrl: page.url().split('?')[0],
+        identity,
+        mismatches,
+        durationMs: Date.now() - started,
+      });
+    } catch (error: any) {
+      res.status(200).json({ ok: false, persona: persona.name, authMethod: persona.auth_method, error: mask(String(error.message).split('\n')[0]), durationMs: Date.now() - started });
+    } finally {
+      await browser.close().catch(() => undefined);
     }
   }
 

@@ -8,11 +8,15 @@
 
 import type { Locator, Page } from 'playwright';
 import { TestStep } from '../../core/domain/test-case.js';
+import { SalesforceSessions } from '../salesforce/session.js';
 
 export type StepKind =
   | 'navigate' | 'click' | 'fill' | 'select' | 'check' | 'uncheck' | 'press' | 'hover' | 'wait'
   | 'assert_visible' | 'assert_text' | 'assert_url' | 'assert_title' | 'screenshot'
-  | 'salesforce_login' | 'wait_for_lightning' | 'manual';
+  | 'assert_not_visible' | 'assert_access_denied'
+  | 'salesforce_login' | 'salesforce_logout' | 'wait_for_lightning'
+  | 'assert_profile' | 'assert_object_access' | 'assert_field_access' | 'assert_record_access'
+  | 'manual';
 
 export interface StepOutcome {
   status: 'passed' | 'failed' | 'skipped';
@@ -25,14 +29,30 @@ export interface StepContext {
   baseUrl: string;
   stepTimeout: number;
   config: Record<string, any>;
+  /** Salesforce persona sessions for this run (when the agent has a salesforce section). */
+  salesforce?: SalesforceSessions;
+  /** Persona this test runs as (persona matrix), used when a step names none. */
+  persona?: string;
 }
+
+/** Default text of Salesforce's "no access" pages. */
+const ACCESS_DENIED_RE = /insufficient privileges|you don't have access|you do not have access|you don't have permission|you do not have permission|isn't available to you|not authorized|access denied/i;
 
 export function classifyAction(rawAction: string, step: Pick<TestStep, 'target' | 'data'>): StepKind {
   const a = rawAction.toLowerCase().trim().replace(/[_-]+/g, ' ');
 
-  if (a === 'salesforce login') return 'salesforce_login';
-  if (a === 'wait for lightning') return 'wait_for_lightning';
+  const exact: Record<string, StepKind> = {
+    'salesforce login': 'salesforce_login', 'login as': 'salesforce_login', 'log in as': 'salesforce_login',
+    'salesforce logout': 'salesforce_logout',
+    'wait for lightning': 'wait_for_lightning',
+    'assert profile': 'assert_profile', 'assert object access': 'assert_object_access',
+    'assert field access': 'assert_field_access', 'assert record access': 'assert_record_access',
+    'assert not visible': 'assert_not_visible', 'assert access denied': 'assert_access_denied',
+  };
+  if (exact[a]) return exact[a];
   if (/^(assert|verify|expect|validate|confirm|ensure|check that|should|observe|see)\b/.test(a)) {
+    if (/\b(access denied|insufficient privileges|no access|not authori[sz]ed|forbidden|cannot access|can't access)\b/.test(a)) return 'assert_access_denied';
+    if (step.target && /\b(not (be )?(visible|displayed|shown|present)|hidden|absent|isn't (visible|shown|displayed)|is not shown|does not (appear|exist))\b/.test(a)) return 'assert_not_visible';
     if (/\burl\b/.test(a)) return 'assert_url';
     if (/\btitle\b/.test(a)) return 'assert_title';
     if (/\b(visible|displayed|shown|present|appears|exists)\b/.test(a) && step.target) return 'assert_visible';
@@ -212,20 +232,68 @@ export async function executeStep(step: TestStep, ctx: StepContext, targetOverri
     }
     case 'screenshot':
       return { status: 'passed', message: 'Screenshot captured' };
+    case 'assert_not_visible': {
+      if (!target) need('a target');
+      const locator = looksLikeSelector(target) ? page.locator(target) : await resolveLocator(page, target);
+      const visible = await waitFor(() => locator.first().isVisible().catch(() => false), (v) => !v, Math.min(stepTimeout, 5000));
+      if (visible) throw new Error(`Expected ${target} not to be visible, but it is`);
+      return { status: 'passed', message: `${target} is not visible` };
+    }
+    case 'assert_access_denied': {
+      if (target) await page.goto(absoluteUrl(ctx.baseUrl, target), { waitUntil: 'domcontentloaded', timeout: Math.max(stepTimeout, 30000) });
+      await page.waitForLoadState('load', { timeout: 10000 }).catch(() => undefined);
+      const pattern = value ? new RegExp(value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') : ACCESS_DENIED_RE;
+      const text = await waitFor(() => page.locator('body').innerText().catch(() => ''), (t) => pattern.test(t), stepTimeout);
+      if (!pattern.test(text)) throw new Error(`Expected access to be denied${target ? ` for ${target}` : ''}, but the page shows no access-denied message (${page.url()})`);
+      return { status: 'passed', message: `Access denied${target ? ` to ${target}` : ''} as expected` };
+    }
     case 'salesforce_login': {
-      const sf = ctx.config.salesforce ?? {};
-      const username = step.data?.username ?? sf.username;
-      const password = step.data?.password ?? sf.password;
-      if (!username || !password) throw new Error('Salesforce username/password are not configured on this agent');
-      await page.goto(absoluteUrl(ctx.baseUrl, target || '/'), { waitUntil: 'domcontentloaded', timeout: 30000 });
-      await page.locator('#username').fill(username, { timeout: stepTimeout });
-      await page.locator('#password').fill(password, { timeout: stepTimeout });
-      await page.locator('#Login').click({ timeout: stepTimeout });
-      await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => undefined);
-      if (/login|verify/i.test(new URL(page.url()).pathname) && (await page.locator('#error').count()) > 0) {
-        throw new Error(`Salesforce login failed: ${(await page.locator('#error').innerText()).trim()}`);
+      const sessions = requireSalesforce(ctx);
+      const persona = step.data?.persona ?? (target && !/^(https?:|\/)/.test(target) ? target : undefined) ?? ctx.persona;
+      const landing = step.data?.landing ?? step.data?.url ?? (target && /^\//.test(target) ? target : undefined);
+      const result = await sessions.login(page, persona, { landing, fresh: step.data?.fresh === true });
+      if (step.data?.verify_identity !== false && (result.persona.expected_profile || result.persona.expected_permission_sets?.length)) {
+        const identity = await sessions.identity(page, result.persona.name);
+        const problems = SalesforceSessions.identityMismatches(result.persona, identity);
+        if (problems.length) throw new Error(`Persona "${result.persona.name}" is misconfigured in Salesforce: ${problems.join('; ')}`);
+        return { status: 'passed', message: `${result.message}; identity verified (${identity.profile})` };
       }
-      return { status: 'passed', message: `Logged in to Salesforce as ${username}` };
+      return { status: 'passed', message: result.message };
+    }
+    case 'salesforce_logout': {
+      await requireSalesforce(ctx).logout(page);
+      return { status: 'passed', message: 'Logged out of Salesforce' };
+    }
+    case 'assert_profile': {
+      const sessions = requireSalesforce(ctx);
+      const persona = step.data?.persona ?? sessions.currentPersona(page) ?? ctx.persona;
+      const identity = await sessions.identity(page, persona);
+      const expectedProfile = step.data?.profile ?? (target || undefined);
+      if (expectedProfile && identity.profile?.toLowerCase() !== String(expectedProfile).toLowerCase()) {
+        throw new Error(`Expected profile "${expectedProfile}" but ${identity.username} has "${identity.profile}"`);
+      }
+      const sets = toList(step.data?.permission_sets ?? step.data?.permission_set);
+      const missing = sets.filter((s) => !identity.permissionSets.some((x) => x.toLowerCase() === s.toLowerCase()));
+      if (missing.length) throw new Error(`${identity.username} is missing permission set(s): ${missing.join(', ')} (has: ${identity.permissionSets.join(', ') || 'none'})`);
+      const absent = toList(step.data?.not_permission_sets).filter((s) => identity.permissionSets.some((x) => x.toLowerCase() === s.toLowerCase()));
+      if (absent.length) throw new Error(`${identity.username} must not have permission set(s): ${absent.join(', ')}`);
+      return { status: 'passed', message: `${identity.username}: profile ${identity.profile}${identity.permissionSets.length ? `, permission sets ${identity.permissionSets.join(', ')}` : ''}` };
+    }
+    case 'assert_object_access':
+    case 'assert_field_access':
+    case 'assert_record_access': {
+      const sessions = requireSalesforce(ctx);
+      const subject = step.data?.object ?? step.data?.field ?? step.data?.record_id ?? target;
+      if (!subject) need(kind === 'assert_object_access' ? 'the object API name as target' : kind === 'assert_field_access' ? 'Object.Field as target' : 'the record Id as target');
+      const persona = step.data?.persona ?? sessions.currentPersona(page) ?? ctx.persona;
+      let actual: Record<string, any>;
+      if (kind === 'assert_object_access') actual = await sessions.objectAccess(page, persona, subject);
+      else if (kind === 'assert_field_access') {
+        const [object, field] = String(subject).split('.');
+        if (!object || !field) need('target in the form Object.Field');
+        actual = await sessions.fieldAccess(page, persona, object, field);
+      } else actual = await sessions.recordAccess(page, persona, subject);
+      return { status: 'passed', message: compareAccess(subject, actual, step.data ?? {}, persona) };
     }
     case 'wait_for_lightning': {
       await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => undefined);
@@ -236,6 +304,38 @@ export async function executeStep(step: TestStep, ctx: StepContext, targetOverri
     default:
       return { status: 'skipped', message: `Not automatable (no recognised action): "${step.action}"` };
   }
+}
+
+function requireSalesforce(ctx: StepContext): SalesforceSessions {
+  if (!ctx.salesforce) throw new Error('This agent has no Salesforce configuration (Agent → Salesforce personas)');
+  return ctx.salesforce;
+}
+
+function toList(v: unknown): string[] {
+  if (v === undefined || v === null || v === '') return [];
+  return (Array.isArray(v) ? v : String(v).split(',')).map((x) => String(x).trim()).filter(Boolean);
+}
+
+function toBool(v: unknown): boolean | undefined {
+  if (v === undefined || v === null || v === '') return undefined;
+  if (typeof v === 'boolean') return v;
+  const s = String(v).toLowerCase().trim();
+  if (['true', 'yes', 'y', '1', 'allowed', 'granted'].includes(s)) return true;
+  if (['false', 'no', 'n', '0', 'denied', 'none'].includes(s)) return false;
+  throw new Error(`Expected true/false but got "${v}"`);
+}
+
+/** Compare expected permissions (only the keys given) with actual ones; throws on mismatch. */
+export function compareAccess(subject: string, actual: Record<string, any>, expected: Record<string, any>, persona?: string): string {
+  const keys = ['read', 'create', 'edit', 'delete'].filter((k) => k in actual && toBool(expected[k]) !== undefined);
+  if (keys.length === 0) throw new Error('Give the expected access in data, e.g. {"read": true, "edit": false}');
+  const wrong = keys.filter((k) => toBool(expected[k]) !== !!actual[k]);
+  const who = persona ? ` for ${persona}` : '';
+  const describe = (k: string) => `${k}=${actual[k] ? 'yes' : 'no'}`;
+  if (wrong.length) {
+    throw new Error(`Unexpected access to ${subject}${who}: ${wrong.map((k) => `${k} is ${actual[k] ? 'allowed' : 'denied'} (expected ${toBool(expected[k]) ? 'allowed' : 'denied'})`).join(', ')}`);
+  }
+  return `Access to ${subject}${who} as expected (${keys.map(describe).join(', ')}${actual.via === 'admin' ? ', checked via admin API' : ''})`;
 }
 
 /** Whether a failure looks like a selector problem that self-healing could fix. */

@@ -42,7 +42,17 @@
 | **Chat assistant** | Write tests conversationally and save the JSON it returns as test cases |
 | **Auth** | Off by default for local use; with `AUTH_ENABLED=true`: login page, JWT, API keys, roles |
 | **CLI / CI** | `npm run cli -- run -c agent.yml` waits for the run, writes reports and exits non-zero on failure |
+| **Salesforce personas** | Test as administrators, sales reps and read-only users: UI password, password + authenticator code (TOTP), OAuth JWT bearer → frontdoor, OAuth password, or "Log in as". Identity checks (profile, permission sets), one test run as many personas with per-persona expectations, object/field/record access and access-denied assertions. Built-in Salesforce simulator at `/demo/salesforce` |
 | **Demo** | Built-in demo shop at `/demo` with ready-made tests: one click on the dashboard |
+
+## 🏢 Enterprise features
+
+Turn on authentication (`AUTH_ENABLED=true`) to get projects with role-based access, user
+administration with password policy and lockout, project-scoped API keys, an audit log, encrypted
+secrets, cron schedules, CI runs that wait for the result, notifications (webhooks, Slack, Teams,
+email), analytics (pass-rate trends, flaky tests), data retention, an OpenAPI reference at
+`/api/docs` and Docker images (`docker compose --profile full up -d --build`).
+See [docs/enterprise-roadmap.md](docs/enterprise-roadmap.md) for the full list and what comes next.
 
 ## 🚀 Quick start
 
@@ -104,8 +114,14 @@ A test case is a list of steps. Each step has an **action**, an optional **targe
 | `assert_text` | element (optional; whole page if empty) | expected text |
 | `assert_url`, `assert_title` | | expected substring |
 | `screenshot` | | |
+| `assert_not_visible` | selector | |
+| `salesforce_login`, `salesforce_logout` | persona name | |
+| `assert_object_access`, `assert_field_access`, `assert_record_access` | `Account`, `Account.AnnualRevenue`, record Id | `{"read": true, "delete": false}` |
+| `assert_profile`, `assert_access_denied` | expected profile / page to open | |
 
 Targets can be CSS selectors (`#id`, `.class`, `input[name=q]`), Playwright selectors (`text=Sign in`), or **plain labels** like `Sign in button` or `Username`. Plain labels resolve in priority order: label, placeholder, button, link, then text. Natural phrasing from extracted documents ("Enter username", "Verify the welcome message is displayed") is understood too. Steps that cannot be automated are reported as skipped rather than failing.
+
+For Salesforce, mark a test with the personas it must run as (`data.personas`) and give per-persona expectations with `by_persona` — see the [Salesforce guide](docs/salesforce-guide.md#1-authentication-and-personas).
 
 ## 🏗️ Project layout
 
@@ -123,7 +139,7 @@ docs/       Documentation
 
 ```bash
 cd backend && npm test                  # unit tests
-cd backend && npm run test:integration  # API + real Postgres + real browser (needs TEST_DATABASE_URL or a local DB)
+cd backend && npm run test:integration  # API, enterprise, Salesforce personas: real Postgres + real browser (needs TEST_DATABASE_URL or a local DB)
 cd e2e && npm test                      # UI end-to-end; start backend + frontend first
 ```
 
@@ -137,7 +153,8 @@ The integration suite also exercises the Copilot **CLI** and **API** transports 
 - [docs/architecture.md](docs/architecture.md): how the pieces fit together
 - [docs/agents.md](docs/agents.md): agent configuration, CLI and CI usage
 - [docs/mvp-demo.md](docs/mvp-demo.md): 10-minute guided demo
-- [docs/salesforce-guide.md](docs/salesforce-guide.md): testing Salesforce orgs
+- [docs/enterprise-roadmap.md](docs/enterprise-roadmap.md): enterprise features and roadmap
+- [docs/salesforce-guide.md](docs/salesforce-guide.md): testing Salesforce orgs as many users (personas, MFA, JWT, Log in as, permission assertions)
 - [docs/mcp-server.md](docs/mcp-server.md): MCP server
 - [docs/production-readiness.md](docs/production-readiness.md): deployment notes
 

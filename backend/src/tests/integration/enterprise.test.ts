@@ -236,6 +236,19 @@ describe('enterprise (AUTH_ENABLED=true)', () => {
     const after = (await db.query('SELECT config FROM agents WHERE id = $1', [agentId])).rows[0].config;
     assert.equal(after.secrets.DEMO_PASSWORD, raw.secrets.DEMO_PASSWORD);
 
+    // Salesforce personas: editors may verify them but not change them or move the agent's URL
+    const sfAgent = await call('POST', '/api/v1/agents', {
+      name: 'SF guard', config: { base_url: 'https://acme.my.salesforce.com', salesforce: { personas: [{ name: 'rep', auth_method: 'password', username: 'rep@acme.com', password: 'Rep-Secret-1!' }] } },
+    }, { token: adminToken, project: alphaId });
+    assert.equal(sfAgent.status, 201, sfAgent.text);
+    const sfPath = `/api/v1/agents/${sfAgent.data.id}`;
+    assert.equal((await call('PUT', sfPath, { config: { salesforce: { personas: [] } } }, { token: userToken, project: alphaId })).status, 403, 'editors cannot change personas');
+    assert.equal((await call('PUT', sfPath, { config: { base_url: 'https://attacker.example' } }, { token: userToken, project: alphaId })).status, 403, 'editors cannot move a Salesforce agent');
+    assert.equal((await call('PUT', sfPath, { config: { base_url: 'https://acme.my.salesforce.com', retries: 1 } }, { token: userToken, project: alphaId })).status, 200);
+    assert.equal((await call('PUT', sfPath, { config: { base_url: 'https://acme2.my.salesforce.com' } }, { token: adminToken, project: alphaId })).status, 200);
+    const sfGet = await call('GET', sfPath, undefined, { token: userToken, project: alphaId });
+    assert.ok(!sfGet.text.includes('Rep-Secret-1!'));
+
     // Use the secret in a test step
     const tc = await call('POST', '/api/v1/testcases', {
       title: 'Login with a secret password', module: 'Secrets', priority: 'Critical', tags: ['demo'],

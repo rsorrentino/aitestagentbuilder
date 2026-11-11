@@ -117,6 +117,13 @@ export default function TestCasesPage() {
                     <tr>
                       <td style={{ cursor: 'pointer' }} onClick={() => setExpanded(expanded === tc.id ? null : tc.id)}>
                         <div className="fw-600" style={{ fontSize: 14 }}>{expanded === tc.id ? '▾' : '▸'} {tc.title}</div>
+                        {tc.data?.personas && (
+                          <div className="text-sm mt-1" aria-label="Runs as personas">
+                            {(Array.isArray(tc.data.personas) ? tc.data.personas : [tc.data.personas]).map((p: string) => (
+                              <span key={p} className="badge badge-info" style={{ marginRight: 4 }}>👤 {p}</span>
+                            ))}
+                          </div>
+                        )}
                         {tc.description && <div className="text-sm text-muted">{tc.description.slice(0, 100)}{tc.description.length > 100 ? '…' : ''}</div>}
                       </td>
                       <td className="text-sm">{tc.module}</td>
@@ -141,6 +148,7 @@ export default function TestCasesPage() {
                                 <strong>{s.action}</strong>
                                 {s.target && <> → <span className="code">{s.target}</span></>}
                                 {s.data?.value !== undefined && <> = “{String(s.data.value)}”</>}
+                                {s.data && s.data.value === undefined && <> <span className="code">{JSON.stringify(s.data)}</span></>}
                               </li>
                             ))}
                           </ol>

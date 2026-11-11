@@ -94,10 +94,10 @@ export class RunRepository {
   async updateRunStats(id: string): Promise<void> {
     const statsQuery = `
       WITH latest AS (
-        SELECT DISTINCT ON (test_case_id) status
+        SELECT DISTINCT ON (test_case_id, COALESCE(metadata->>'persona', '')) status
         FROM results
         WHERE run_id = $1
-        ORDER BY test_case_id, started_at DESC
+        ORDER BY test_case_id, COALESCE(metadata->>'persona', ''), started_at DESC
       )
       SELECT
         COUNT(*) as total_tests,

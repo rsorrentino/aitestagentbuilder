@@ -143,7 +143,9 @@ export const PRIORITIES = ['Critical', 'High', 'Medium', 'Low'];
 export const TEST_TYPES = ['Functional', 'Regression', 'Integration', 'Smoke', 'E2E'];
 export const STEP_ACTIONS = [
   'navigate', 'click', 'fill', 'select', 'check', 'uncheck', 'press', 'hover', 'wait',
-  'assert_visible', 'assert_text', 'assert_url', 'assert_title', 'screenshot',
+  'assert_visible', 'assert_not_visible', 'assert_text', 'assert_url', 'assert_title', 'screenshot',
+  'salesforce_login', 'salesforce_logout', 'wait_for_lightning', 'assert_access_denied',
+  'assert_profile', 'assert_object_access', 'assert_field_access', 'assert_record_access',
 ];
 export const AI_PROVIDERS = [
   { value: '', label: 'Automatic (best available)' },

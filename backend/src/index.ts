@@ -15,7 +15,8 @@ import { OrchestratorService } from './modules/orchestration/services/orchestrat
 import { getLLMRouter } from './infra/llm/router.js';
 import { CopilotClient } from './infra/llm/copilot.js';
 import { isAuthEnabled } from './infra/config/env.js';
-import { assertSecretsKey, isEncrypted } from './infra/security/secrets.js';
+import { assertSecretsKey } from './infra/security/secrets.js';
+import { hasPlaintextSecrets } from './core/domain/agent-secrets.js';
 import { AgentRepository } from './core/repositories/agent.repository.js';
 import { startBackgroundJobs, stopBackgroundJobs } from './modules/automation/background-jobs.js';
 
@@ -25,9 +26,7 @@ async function encryptLegacySecrets(): Promise<number> {
   let count = 0;
   for (const agent of await repo.findAllUnscoped()) {
     const cfg: any = agent.config ?? {};
-    const plain = Object.values(cfg.secrets ?? {}).some((v) => !isEncrypted(v))
-      || ['password', 'security_token'].some((f) => cfg.salesforce?.[f] && !isEncrypted(cfg.salesforce[f]));
-    if (plain) {
+    if (hasPlaintextSecrets(cfg)) {
       await repo.update(agent.id, { config: cfg });
       count++;
     }

@@ -105,6 +105,25 @@ cd frontend && npm run build && npm start         # next start -p 4000
 
 Set `NEXT_PUBLIC_API_URL` at frontend build time when the API is not at `http://localhost:3000/api/v1`.
 
+## Docker (whole stack)
+
+```bash
+cat > .env <<'ENV'
+JWT_SECRET=change-me-to-a-long-random-string
+SECRETS_ENCRYPTION_KEY=change-me-openssl-rand-base64-32
+ADMIN_EMAIL=admin@example.com
+ADMIN_PASSWORD=Choose-A-Str0ng-Passw0rd
+ENV
+docker compose --profile full up -d --build
+```
+
+The UI is on http://localhost:4000, the API on http://localhost:3000 (`/api/docs` for the
+interactive API reference). The backend image is based on the official Playwright image (Chromium
+included), runs migrations at start-up and keeps screenshots and the data directory in the
+`appdata` volume. For another host name, set `PUBLIC_API_URL`, `PUBLIC_WS_URL` (compiled into the
+UI at build time) and `PUBLIC_UI_URL` (CORS). Back up the database **and** keep
+`SECRETS_ENCRYPTION_KEY`: without it stored credentials cannot be decrypted.
+
 ## Authentication
 
 Local mode (default) has no login. For a shared deployment:
@@ -117,6 +136,15 @@ ADMIN_PASSWORD=choose-a-strong-password
 ```
 
 The admin user is created on start. The UI then shows a login page. API clients use `Authorization: Bearer <jwt>` (from `POST /api/v1/auth/login`) or `Authorization: ApiKey <key>` (from `POST /api/v1/auth/api-keys`).
+
+With authentication on you also get:
+
+- **Projects** with members and roles (viewer < editor < admin < owner); every agent, test case, document, run, schedule and notification belongs to a project. API keys are scoped to one project and a maximum role.
+- **User administration** (system admins): create users with a temporary password that must be changed at first login, deactivate, reset passwords. Password policy (`PASSWORD_MIN_LENGTH`, 3 of 4 character classes) and lockout after `MAX_FAILED_LOGINS` attempts for `LOCKOUT_MINUTES`.
+- **Audit log** of every change and sign-in, filterable and exportable as CSV.
+- **Encrypted secrets** (agent secrets, Salesforce persona credentials): AES-256-GCM with `SECRETS_ENCRYPTION_KEY`, write-only in the API, masked in logs.
+- **Signed screenshot URLs** and authenticated WebSockets.
+
 
 ## CLI / CI usage
 
@@ -161,6 +189,16 @@ cd e2e && npm install && npm test         # UI end-to-end (start backend + front
 | `CORS_ORIGIN` | any | Allowed UI origins (comma separated) |
 | `REDIS_URL` | — | Distributed rate limiting (falls back to memory) |
 | `LOG_LEVEL` / `LOG_FORMAT` / `LOG_TO_FILE` | `info` / `pretty` / `true` | Logging |
+| `SECRETS_ENCRYPTION_KEY` | dev: key file in `DATA_DIR` | Encryption key for stored secrets — **required in production** |
+| `DATA_DIR` | `backend/.data` | Local data (development secrets key) |
+| `PASSWORD_MIN_LENGTH` / `MAX_FAILED_LOGINS` / `LOCKOUT_MINUTES` | `12` / `5` / `15` | Password policy and lockout |
+| `ARTIFACT_SIGNING_KEY` / `ARTIFACT_URL_TTL_SECONDS` | derived / `86400` | Signed screenshot URLs (auth mode) |
+| `SCHEDULER_ENABLED` / `SCHEDULER_INTERVAL_SECONDS` / `MIN_SCHEDULE_INTERVAL_MINUTES` | `true` / `30` / `5` | Scheduled runs |
+| `SMTP_URL` / `SMTP_FROM` | — | Email notifications (`smtp://user:pass@host:587`) |
+| `NOTIFICATIONS_ALLOW_PRIVATE_URLS` | `false` | Allow webhooks to private/internal addresses |
+| `RUN_RETENTION_DAYS` / `AUDIT_RETENTION_DAYS` | `90` / `365` | Data retention (0 = keep forever) |
+| `STEP_ENV_ALLOWLIST` | — | Environment variables steps may read as `{{env.NAME}}` |
+| `SALESFORCE_SIMULATOR` | on outside production | Serve the Salesforce simulator at `/demo/salesforce` |
 
 ## Troubleshooting
 

@@ -34,10 +34,12 @@ const titleOf = (r: TestResult) => (r.metadata?.title as string) || r.testCaseId
 
 /** Keep only the latest attempt per test case (retries create several rows). */
 export function latestAttempts(results: TestResult[]): TestResult[] {
+  // One entry per test and persona (persona matrix runs execute a test once per persona).
   const byTest = new Map<string, TestResult>();
   for (const r of results) {
-    const prev = byTest.get(r.testCaseId);
-    if (!prev || new Date(r.startedAt) >= new Date(prev.startedAt)) byTest.set(r.testCaseId, r);
+    const key = `${r.testCaseId}@${(r.metadata as any)?.persona ?? ''}`;
+    const prev = byTest.get(key);
+    if (!prev || new Date(r.startedAt) >= new Date(prev.startedAt)) byTest.set(key, r);
   }
   return [...byTest.values()];
 }
