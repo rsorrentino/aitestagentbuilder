@@ -41,7 +41,7 @@ export function buildOpenApi(serverUrl: string) {
     },
     servers: [{ url: serverUrl }],
     security: [{ bearer: [] }, { apiKey: [] }],
-    tags: ['Auth', 'Projects', 'Admin', 'Agents', 'Test cases', 'Documents', 'Runs', 'Schedules', 'Notifications', 'Analytics', 'Audit', 'AI']
+    tags: ['Auth', 'Projects', 'Admin', 'Agents', 'Test cases', 'Documents', 'Runs', 'Quality', 'Schedules', 'Notifications', 'Analytics', 'Audit', 'AI']
       .map((name) => ({ name })),
     paths: {
       // ── Auth ─────────────────────────────────────────────────────────────
@@ -107,6 +107,14 @@ export function buildOpenApi(serverUrl: string) {
         delete: op('Agents', 'Delete an agent (admin)', { parameters: [id()], responses: { 204: { description: 'Deleted' } } }),
       },
       '/agents/{id}/plan': { get: op('Agents', 'Tests the next run would execute', { parameters: [id()] }) },
+      '/visual/baselines': { get: op('Quality', 'Visual baselines of the project', { parameters: [{ name: 'agentId', in: 'query', schema: { type: 'string' } }] }) },
+      '/visual/baselines/{id}': { delete: op('Quality', 'Delete a visual baseline', { parameters: [id()] }) },
+      '/runs/{runId}/results/{resultId}/visual/approve': {
+        post: op('Quality', 'Approve the screenshot of a failed visual check as the new baseline', { parameters: [id('runId'), id('resultId')] }),
+      },
+      '/runs/{runId}/results/{resultId}/apply-healing': {
+        post: op('Quality', 'Write AI-repaired selectors of a result back into its test case', { parameters: [id('runId'), id('resultId')] }),
+      },
       '/agents/{id}/salesforce/personas/{name}/verify': {
         post: op('Agents', 'Log in as a Salesforce persona and report its profile and permission sets', { parameters: [id(), id('name', 'Persona name')] }),
       },

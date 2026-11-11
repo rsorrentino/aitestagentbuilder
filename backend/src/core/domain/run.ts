@@ -20,6 +20,8 @@ export interface TestResult {
     networkLogs?: any[];
     consoleLogs?: string[];
     video?: string;
+    /** Playwright trace (zip), secrets redacted */
+    trace?: string;
   };
   validationResults?: ValidationResult[];
   metadata?: Record<string, any>;

@@ -34,6 +34,8 @@ jobs:
           cache-dependency-path: backend/package-lock.json
       - run: npm ci
       - run: npx playwright install --with-deps chromium
+      - name: MCP server (dependencies for its integration test, typecheck)
+        run: npm --prefix ../mcp-server ci && npm --prefix ../mcp-server run build
       - run: npm run typecheck
       - run: npm run build
       - run: npm run test:all
@@ -118,6 +120,7 @@ jobs:
         shell: pwsh
         run: |
           npm --prefix backend ci --no-audit --no-fund; if ($LASTEXITCODE) { exit 1 }
+          npm --prefix mcp-server ci --no-audit --no-fund; if ($LASTEXITCODE) { exit 1 }
           npm --prefix backend exec -- playwright install chromium; if ($LASTEXITCODE) { exit 1 }
           npm --prefix backend run typecheck; if ($LASTEXITCODE) { exit 1 }   # the UI is typechecked by its build in "npm run setup"
           npm run test:all; if ($LASTEXITCODE) { exit 1 }

@@ -1,217 +1,97 @@
-# MCP Server Documentation
+# MCP server
 
-## Overview
+The MCP server lets AI assistants and coding agents use AI Test Agent Builder:
+- **Who can use it:** Claude Code, GitHub Copilot (agent mode), Cursor, VS Code, or any client that speaks the
+  [Model Context Protocol](https://modelcontextprotocol.io).
+- **What they can do:** write test cases, run them in a real browser, wait for the verdict, and read the evidence
+  of failures.
+- **Typical use:** a coding agent checks its own change before calling it done.
 
-The MCP (Model Context Protocol) server exposes AI Test Agent Builder functionality to Cursor, allowing you to interact with the testing platform directly from your IDE.
+## Setup
 
-## Installation
-
-1. Install dependencies:
 ```bash
-cd mcp-server
-npm install
-npm run build
+npm --prefix mcp-server ci
 ```
 
-2. Configure API URL (if different from default):
-```bash
-export API_URL=http://localhost:3000/api/v1
-```
+Create an API key in the UI (**Account → API keys**). Pick the project and the **editor** role: the agent can
+create tests and run them, but not change secrets or members.
 
-## Cursor Configuration
-
-Add to `.cursor/mcp.json`:
+Configure your client to start the server with that key. Claude Code example (`.mcp.json` in your project):
 
 ```json
 {
   "mcpServers": {
-    "ai-test-agent": {
-      "command": "node",
-      "args": ["/absolute/path/to/aitestagentbuilder/mcp-server/dist/index.js"],
+    "ai-test-agent-builder": {
+      "command": "npx",
+      "args": ["tsx", "/path/to/aitestagentbuilder/mcp-server/src/index.ts"],
       "env": {
-        "API_URL": "http://localhost:3000/api/v1"
+        "ATAB_API_URL": "http://atab.contoso.local:3000/api/v1",
+        "ATAB_API_KEY": "ak_..."
       }
     }
   }
 }
 ```
 
-Restart Cursor after configuration.
+The same `command` / `args` / `env` block works for Cursor (`.cursor/mcp.json`) and VS Code (`.vscode/mcp.json`, under `servers`).
+After `npm --prefix mcp-server run build` you can use `node /path/to/mcp-server/dist/index.js` instead of `npx tsx …`.
 
-## Available Tools
+| Variable | |
+|---|---|
+| `ATAB_API_URL` | API address (default `http://localhost:3000/api/v1`; `API_URL` also works) |
+| `ATAB_API_KEY` | project API key, sent as `Authorization: ApiKey …`. Required when login is on |
+| `ATAB_TOKEN` | alternatively a JWT from `POST /auth/login` |
+| `ATAB_PROJECT` | project id, when the credential is not tied to one |
 
-### 1. ingest_test_book
+Without credentials against a server with login on, every tool answers with an error that says to set `ATAB_API_KEY`.
 
-Upload and parse a test book document.
+## Tools
 
-**Parameters:**
-- `filePath` (required): Path to the document file
-- `sourceType` (required): Type of document (`pdf`, `word`, `excel`, `markdown`, `html`, `text`)
-- `extractTestCases` (optional): Whether to extract test cases immediately (default: `true`)
-- `module` (optional): Filter by module during extraction
-- `priority` (optional): Filter by priority (`Low`, `Medium`, `High`, `Critical`)
+| Tool | What it does |
+|---|---|
+| `list_agents` | Agents (applications under test) of the project, with their base URL |
+| `plan_tests` | Test cases the next run of an agent would execute, or a search by module / priority / tags |
+| `create_test_case` | Create a test case from steps, e.g. `navigate`, `fill`, `click`, `assert_text`, `assert_accessible`, `assert_screenshot`. Optional Salesforce `personas` |
+| `run_tests` | Run an agent's tests (or chosen `testIds`) in a real browser; by default **waits** and returns pass/fail with the failures |
+| `start_test_run` | Start a run without waiting |
+| `get_run_status` | Status, counts and failed test titles of a run |
+| `get_failures` | For each failed test: the failed step and error, screenshots, trace and video links, accessibility violations, visual differences, and selectors repaired by the AI |
+| `apply_healing` | Write the selectors the AI repaired during a run back into the test case |
+| `ingest_test_book` | Upload a test specification and let the AI extract test cases |
+| `run_api_check` | Send one HTTP request from this machine and compare the status and body |
+| `generate_report` | HTML / JUnit / JSON reports of a run |
 
-**Example:**
+Evidence links are signed and expire (24 h by default), so the agent or a browser can open them without logging in.
+
+Approving a changed screenshot as the new visual baseline is deliberately not a tool: a person approves it on the run page.
+
+### Example: an agent checking its own change
+
+> Add a test that signs in to the demo shop as `demo` / `demo123` and expects "Welcome, demo!", run it with the other tests of
+> the Demo Shop agent, and tell me what failed.
+
+The agent calls `list_agents`, `create_test_case`, then `run_tests` with the agent id. The answer looks like this:
+
+```json
+{
+  "runId": "RUN-…",
+  "status": "failed",
+  "passed": false,
+  "totals": { "tests": 4, "passed": 3, "failed": 1, "skipped": 0 },
+  "failures": [{
+    "title": "Login shows a wrong greeting",
+    "failedStep": { "stepId": 5, "action": "assert_text", "target": "#welcome", "message": "Expected #welcome to contain …" },
+    "evidence": { "screenshots": ["http://…/artifacts/RUN-…/…-failure.png?exp=…&sig=…"], "trace": "http://…-trace.zip?…", "video": "http://…-video.webm?…" },
+    "accessibility": [], "visual": []
+  }]
+}
 ```
-Ingest the test book at /path/to/test-book.pdf and extract test cases for the Authentication module
-```
-
-### 2. plan_tests
-
-Plan which test cases to run.
-
-**Parameters:**
-- `agentId` (optional): Use agent configuration for planning
-- `module` (optional): Filter by module
-- `priority` (optional): Filter by priority
-- `tags` (optional): Filter by tags (array)
-- `testIds` (optional): Specific test case IDs (array)
-
-**Example:**
-```
-Plan tests for module Authentication with High priority
-```
-
-### 3. run_api_check
-
-Execute an API test check.
-
-**Parameters:**
-- `method` (required): HTTP method (`GET`, `POST`, `PUT`, `DELETE`, `PATCH`)
-- `url` (required): Full URL or endpoint path
-- `baseUrl` (optional): Base URL if url is relative
-- `headers` (optional): HTTP headers object
-- `body` (optional): Request body (for POST/PUT)
-- `expectedStatus` (optional): Expected HTTP status code
-- `expectedBody` (optional): Expected response body structure
-
-**Example:**
-```
-Run an API check: GET /api/users with expected status 200
-```
-
-### 4. run_ui_step
-
-Execute a UI test step (requires agent configuration).
-
-**Parameters:**
-- `action` (required): Action to perform (`navigate`, `click`, `fill`, `select`, `get_text`, `wait`, `screenshot`)
-- `target` (required): Selector or URL
-- `data` (optional): Additional data
-- `baseUrl` (optional): Base URL for navigation
-- `headless` (optional): Run in headless mode (default: `true`)
-
-**Example:**
-```
-Run UI step: click on #login-button
-```
-
-### 5. start_test_run
-
-Start a test run with an agent.
-
-**Parameters:**
-- `agentId` (required): Agent ID to use
-- `environment` (optional): Environment name
-- `metadata` (optional): Additional metadata object
-
-**Example:**
-```
-Start a test run with agent AGENT-123 in staging environment
-```
-
-### 6. get_run_status
-
-Get the status of a test run.
-
-**Parameters:**
-- `runId` (required): Test run ID
-
-**Example:**
-```
-Get status of run RUN-456
-```
-
-### 7. generate_report
-
-Generate test reports for a completed run.
-
-**Parameters:**
-- `runId` (required): Test run ID
-- `formats` (optional): Report formats array (`json`, `html`, `junit`) - default: `['json', 'html']`
-
-**Example:**
-```
-Generate HTML and JSON reports for run RUN-456
-```
-
-## Usage Examples
-
-### Complete Workflow
-
-1. **Ingest test book:**
-   ```
-   Ingest the test book at ./test-books/login-tests.pdf
-   ```
-
-2. **Plan tests:**
-   ```
-   Plan tests for module Authentication with High priority
-   ```
-
-3. **Start test run:**
-   ```
-   Start a test run with agent AGENT-123
-   ```
-
-4. **Check status:**
-   ```
-   Get status of run RUN-456
-   ```
-
-5. **Generate report:**
-   ```
-   Generate HTML report for run RUN-456
-   ```
 
 ## Troubleshooting
 
-### Server not starting
-- Check that the backend API is running on the configured URL
-- Verify Node.js version (18+)
-- Check logs in Cursor's MCP server output
-
-### Tools not appearing
-- Restart Cursor after configuration changes
-- Verify the path in `mcp.json` is absolute
-- Check that the server built successfully (`npm run build`)
-
-### API connection errors
-- Ensure backend is running: `cd backend && npm run dev`
-- Verify `API_URL` environment variable
-- Check network connectivity
-
-## Architecture
-
-The MCP server acts as a bridge between Cursor and the AI Test Agent Builder backend:
-
-```
-Cursor → MCP Server → Backend API → Services → Database/Executor
-```
-
-The server:
-- Validates tool inputs using Zod schemas
-- Calls backend REST API endpoints
-- Formats responses for Cursor
-- Handles errors gracefully
-
-## Development
-
-To extend the MCP server:
-
-1. Add tool definition in `setupHandlers()`
-2. Implement handler method
-3. Update tool schema
-4. Rebuild: `npm run build`
-5. Restart Cursor
-
+| Symptom | Fix |
+|---|---|
+| `HTTP 401 … set ATAB_API_KEY` | Create an API key and put it in the client's `env` |
+| `HTTP 403` | The key's role is too low (use editor) or belongs to another project |
+| The client shows no tools | Check the `command` path; run it in a terminal: it should print `MCP server running on stdio` on stderr |
+| Runs time out | `run_tests` waits up to `timeoutSeconds` (default 600); long suites can use `start_test_run` + `get_failures` |

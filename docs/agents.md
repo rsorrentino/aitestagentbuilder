@@ -19,6 +19,14 @@ ai:
   provider: "copilot"                  # anthropic | openai | azure | copilot | (empty = automatic)
   self_healing: true                   # ask the AI for a new selector when one breaks
 retries: 1                             # re-run failed tests (0–3)
+ai:
+  auto_apply_healing: false            # write AI-repaired selectors back into the test cases
+checks:
+  accessibility: report                # off | report | fail — axe-core scan of the page each test ends on
+  accessibility_options: { level: wcag21aa, minImpact: serious }
+evidence:
+  trace: on_failure                    # off | on_failure | always — Playwright trace, secrets masked
+  video: on_failure                    # off | on_failure | always
 salesforce:                            # only for Salesforce agents — see docs/salesforce-guide.md
   login_url: "https://acme--uat.sandbox.my.salesforce.com"
   connected_app: { client_id: "${SF_CLIENT_ID}", private_key: "${SF_PRIVATE_KEY}" }
@@ -87,6 +95,8 @@ The agent page shows **Tests in the next run**: exactly what the planner will ex
 | `assert_field_access` | `Account.AnnualRevenue` | `{"read": true, "edit": false}` |
 | `assert_record_access` | record Id | `{"read": true, "edit": false}` |
 | `assert_access_denied` | optional page to open | optional custom message |
+| `assert_accessible` | optional element to scan | `{"level": "wcag21aa", "min_impact": "serious", "ignore": ["color-contrast"], "exclude": [".chat-widget"], "report_only": false}` |
+| `assert_screenshot` | optional element (whole viewport if empty) | `{"name": "cart", "max_diff_ratio": 0.001, "threshold": 0.1, "mask": [".clock"], "full_page": false, "on_missing": "create"}` |
 
 Persona matrix: `data.personas` on the test case (list or `"all"`) runs it once per persona; `data.by_persona` on a step gives per-persona values and `data.only_personas` / `data.skip_personas` limit a step. Details in [salesforce-guide.md](salesforce-guide.md).
 
@@ -127,3 +137,35 @@ A healed step passes with the note `(self-healed from "<old selector>")`. The ru
 - End every test with at least one `assert_*` step. A test without assertions only proves the page did not crash.
 - Keep tests independent: each one gets a fresh browser context, with no cookies or storage carried over.
 - Use modules and tags to build focused agents (smoke vs regression).
+
+
+## Quality checks
+
+**Accessibility.** `assert_accessible` runs [axe-core](https://github.com/dequelabs/axe-core) on the page.
+- **What fails the step:** violations at or above `min_impact` (default `serious`).
+- **What's only reported:** lower-impact violations.
+- **Agent-wide scan:** `checks.accessibility` scans the page every test ends on, reporting violations (`report`) or
+  failing the test (`fail`).
+- **Where results show:** the run page and the HTML report list each rule, impact, explanation link and the elements
+  concerned.
+
+**Visual regression.** `assert_screenshot` compares a screenshot of the page or of an element with its approved baseline.
+- **How baselines are kept:** per agent, `name`, persona and viewport.
+- **First run:** records the baseline (`on_missing: "fail"` to require one).
+- **When it fails:** more than `max_diff_ratio` of the pixels differ (default 0.1 %). Anti-aliasing is ignored and
+  `threshold` sets the per-pixel colour tolerance.
+- **Hiding dynamic content:** mask clocks, ads and similar with `mask`.
+- **Reviewing a failure:** the run page shows baseline / this run / difference. A project editor can
+  **Approve as new baseline**. Baselines are listed (and can be deleted) on the agent page.
+
+**Evidence.** For failed tests (or always, see `evidence`), the run keeps a Playwright trace and a video.
+- **What a trace contains:** every action, DOM snapshot, network request and console message.
+- **Opening it:** at [trace.playwright.dev](https://trace.playwright.dev) (in your browser), or with `npx playwright show-trace`.
+- **Secrets:** before a trace is stored, every secret of the run is replaced with `••••` everywhere in the file. That covers
+  agent secrets, persona passwords and TOTP secrets, OAuth tokens, session ids and cookie values.
+
+**Kept self-healing.** With `ai.self_healing`, a broken selector is repaired by the AI from the live page.
+- **Within a run:** the repair is reused for the rest of the run without another AI call.
+- **After the run:** it is recorded in the result. The run page's **Save to the test case** writes it into the test case,
+  or `ai.auto_apply_healing: true` does that automatically after a passing test.
+- **Safety check:** a step is only changed while it still has the broken selector.

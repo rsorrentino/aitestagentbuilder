@@ -30,6 +30,10 @@ Authorization: ApiKey <apiKey>          # from POST /auth/api-keys
 | GET | `/agents/:id` | Get |
 | PUT | `/agents/:id` | Update `{ name?, config?, status? }` (config is merged and re-validated) |
 | DELETE | `/agents/:id` | Delete (also deletes its runs) |
+| GET | `/visual/baselines?agentId=` | Visual baselines of the project (signed `image` URL) |
+| DELETE | `/visual/baselines/:id` | Delete a baseline (editor); the next run records a new one |
+| POST | `/runs/:runId/results/:resultId/visual/approve` | `{ name, persona?, viewport? }`: the screenshot of a failed visual check becomes the baseline (editor) |
+| POST | `/runs/:runId/results/:resultId/apply-healing` | `{ stepIds? }`: write AI-repaired selectors of this result into the test case (editor) → `{ applied, skipped }` |
 | POST | `/agents/:id/salesforce/personas/:name/verify` | Log in as the persona and return `{ ok, message, identity: { username, profile, permissionSets, via }, mismatches[] }` (editor) |
 | GET | `/agents/:id/plan` | Tests the next run would execute: `{ strategy, count, testCases[] }` |
 | POST | `/agents/:id/generate-tests` | `{ description?, count?, modules?, save? = true }`: AI reads the live page and writes tests (tagged `agent:<id>`, `ai-generated`). `503` without an AI provider |

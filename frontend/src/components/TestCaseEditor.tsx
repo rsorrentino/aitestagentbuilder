@@ -159,6 +159,8 @@ export default function TestCaseEditor({ initial, onSaved, onCancel }: TestCaseE
           <button type="button" className="btn btn-secondary btn-sm mt-2" onClick={() => setSteps((p) => [...p, { action: 'click', target: '', value: '' }])}>＋ Add step</button>
           <p className="form-hint mt-2">
             Actions: navigate, click, fill, select, check, press, hover, wait, assert_visible, assert_not_visible, assert_text, assert_url, assert_title, screenshot.
+            Quality: assert_accessible (axe-core WCAG scan; value <code>{'{"level": "wcag21aa", "ignore": ["color-contrast"]}'}</code>),
+            assert_screenshot (visual regression against a baseline; target an element or leave empty for the page; value <code>{'{"name": "home", "mask": [".clock"]}'}</code>).
             Targets can be CSS selectors (#id, .class), <code>text=Visible text</code>, or a plain label like “Sign in button”.
             Salesforce: salesforce_login (target = persona), assert_object_access (target = Account, value <code>{'{"read": true, "delete": false}'}</code>),
             assert_field_access (Account.AnnualRevenue), assert_record_access (record Id), assert_profile, assert_access_denied.

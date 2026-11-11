@@ -10,6 +10,8 @@ import {
   api, artifactUrl, errorMessage, formatDuration, reportUrl, shortId, statusBadge,
 } from '../../lib/api';
 import { useRunEvents } from '../../lib/useRunEvents';
+import { useSession } from '../../lib/session';
+import ResultQuality from '../../components/ResultQuality';
 
 /** Latest attempt per test case and persona (retries create several results) */
 function latest(results: any[]): any[] {
@@ -30,6 +32,7 @@ export default function RunDetail() {
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState(false);
+  const session = useSession();
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -176,6 +179,7 @@ export default function RunDetail() {
                               <img src={artifactUrl(s)} alt="Screenshot" style={{ maxWidth: 360, marginTop: 10, border: '1px solid var(--gray-200)', borderRadius: 6 }} />
                             </a>
                           ))}
+                          <ResultQuality runId={run.id} result={r} canEdit={session.can('editor')} onChanged={load} />
                         </td>
                       </tr>
                     )}
