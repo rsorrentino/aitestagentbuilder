@@ -9,6 +9,23 @@ export const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000
 export const BACKEND_URL = process.env.NEXT_PUBLIC_WS_URL || API_URL.replace(/\/api\/v\d+\/?$/, '');
 
 const TOKEN_KEY = 'atab_token';
+const PROJECT_KEY = 'atab_project';
+
+export function getProjectId(): string {
+  try {
+    return (typeof window !== 'undefined' && window.localStorage.getItem(PROJECT_KEY)) || 'default';
+  } catch {
+    return 'default';
+  }
+}
+
+export function setProjectId(id: string): void {
+  try {
+    window.localStorage.setItem(PROJECT_KEY, id);
+  } catch {
+    // storage unavailable
+  }
+}
 
 export function getToken(): string | null {
   try {
@@ -32,15 +49,24 @@ export const api = axios.create({ baseURL: API_URL, timeout: 300000 });
 api.interceptors.request.use((config) => {
   const token = getToken();
   if (token) config.headers.Authorization = `Bearer ${token}`;
+  if (!config.headers['X-Project-Id']) config.headers['X-Project-Id'] = getProjectId();
   return config;
 });
 
 api.interceptors.response.use(
   (res) => res,
   (error: AxiosError) => {
-    if (error.response?.status === 401 && typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
-      setToken(null);
-      window.location.href = `/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`;
+    if (typeof window !== 'undefined') {
+      const data: any = error.response?.data;
+      if (error.response?.status === 401 && !window.location.pathname.startsWith('/login')) {
+        setToken(null);
+        window.location.href = `/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`;
+      } else if (error.response?.status === 403 && data?.code === 'PASSWORD_CHANGE_REQUIRED' && !window.location.pathname.startsWith('/account')) {
+        window.location.href = '/account?mustChange=1';
+      } else if (error.response?.status === 403 && /not a member of project/.test(data?.error ?? '') && getProjectId() !== 'default') {
+        // The remembered project is no longer accessible: fall back
+        setProjectId('default');
+      }
     }
     return Promise.reject(error);
   },
@@ -102,6 +128,15 @@ export function shortId(id?: string): string {
   if (!id) return '—';
   const parts = id.split('-');
   return parts.length >= 3 ? `${parts[0]}-…${parts[parts.length - 1]}` : id;
+}
+
+export type ProjectRole = 'viewer' | 'editor' | 'admin' | 'owner';
+export const ROLE_RANK: Record<ProjectRole, number> = { viewer: 1, editor: 2, admin: 3, owner: 4 };
+export const REDACTED = '••••••••';
+export const PROJECT_ROLES_LIST: ProjectRole[] = ['viewer', 'editor', 'admin', 'owner'];
+
+export function formatDate(value?: string | Date | null): string {
+  return value ? new Date(value).toLocaleString() : '—';
 }
 
 export const PRIORITIES = ['Critical', 'High', 'Medium', 'Low'];
