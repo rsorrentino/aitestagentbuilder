@@ -104,6 +104,12 @@ The agent page shows **Tests in the next run**: exactly what the planner will ex
 | `assert_access_denied` | optional page to open | optional custom message |
 | `assert_accessible` | optional element to scan | `{"level": "wcag21aa", "min_impact": "serious", "ignore": ["color-contrast"], "exclude": [".chat-widget"], "report_only": false}` |
 | `assert_screenshot` | optional element (whole viewport if empty) | `{"name": "cart", "max_diff_ratio": 0.001, "threshold": 0.1, "mask": [".clock"], "full_page": false, "on_missing": "create"}` |
+| `http_request` | path (relative to `api_base_url`, else `base_url`) or URL; also `"GET orders"` as the action | `{"method": "POST", "json": {...}, "query": {...}, "headers": {...}, "extract": {"orderId": "$.id"}, "status": 201}` |
+| `assert_status` | | `201`, `"2xx"` or `[200, 204]` (or in the sentence: "Verify the status code is 201") |
+| `assert_json` | JSON path | `{"path": "$.items[0].name", "equals": "Lamp"}` — or `contains`, `matches`, `type`, `length`, `exists: false` |
+| `assert_header` | header name | text it contains |
+| `assert_response_time` | | maximum ms (or "… under 500 ms") |
+| `mock_route` / `block_route` | URL pattern, e.g. `**/api/payments/**` | `{"status": 200, "json": {...}, "delay": 2000, "times": 1, "method": "POST"}` |
 
 Persona matrix: `data.personas` on the test case (list or `"all"`) runs it once per persona; `data.by_persona` on a step gives per-persona values and `data.only_personas` / `data.skip_personas` limit a step. Details in [salesforce-guide.md](salesforce-guide.md).
 
@@ -198,3 +204,18 @@ error, without run-specific details such as ids, numbers and URLs).
   never quarantined automatically.
 - **Release:** an automatically quarantined test is released after `release_after` consecutive first-attempt passes;
   hand-quarantined tests stay until released by hand.
+
+**API testing.** API steps run in the test's browser context, so requests share its cookies: an API call made after a UI
+login is authenticated as that user.
+- **Variables:** `extract` saves values from a JSON response, used later as `{{vars.name}}` (per test).
+- **Mocking in UI tests:** `mock_route` answers matching browser requests with a fixed response (or a delay), and
+  `block_route` makes them fail as if the network were down. Use them to test error handling, or to stub third-party
+  services in UI tests.
+- **Tests from OpenAPI.** The **API tests** card on the agent page (or `POST /agents/:id/generate-api-tests`) reads an
+  OpenAPI 3 / Swagger 2 description, from a URL or pasted.
+  - Without AI, every operation that can be called with the description's examples, defaults or enums gets a smoke
+    test: request, then expected success status, then required response fields.
+  - Operations needing values the description does not give are listed as skipped.
+  - With AI, it also writes negative and edge cases.
+  - Paths are prefixed with a relative server URL (`/api/v1`) or Swagger `basePath`. For an absolute server URL, set the
+    agent's **API base URL** to it.

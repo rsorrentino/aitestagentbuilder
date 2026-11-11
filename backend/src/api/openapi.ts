@@ -112,6 +112,9 @@ export function buildOpenApi(serverUrl: string) {
       '/runs/{runId}/results/{resultId}/visual/approve': {
         post: op('Quality', 'Approve the screenshot of a failed visual check as the new baseline', { parameters: [id('runId'), id('resultId')] }),
       },
+      '/agents/{id}/generate-api-tests': {
+        post: op('Quality', 'Generate API test cases from an OpenAPI / Swagger description (smoke tests, or AI-written edge cases)', { parameters: [id()] }),
+      },
       '/quarantine': { get: op('Quality', 'Quarantined (flaky) test cases of the project') },
       '/testcases/{id}/quarantine': {
         post: op('Quality', 'Quarantine a test case: it runs, but its failures do not fail runs', { parameters: [id()] }),

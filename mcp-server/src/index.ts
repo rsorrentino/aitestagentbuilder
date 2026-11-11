@@ -129,7 +129,9 @@ export const TOOLS = [
     name: 'create_test_case',
     description:
       'Create a test case. Steps use actions such as navigate, click, fill, select, assert_text, assert_visible, assert_url, ' +
-      'assert_accessible (axe-core WCAG scan), assert_screenshot (visual regression), salesforce_login. ' +
+      'assert_accessible (axe-core WCAG scan), assert_screenshot (visual regression), salesforce_login, and API steps: ' +
+      'http_request (target path, data { method, json, extract: { id: "$.id" } } → later {{vars.id}}), assert_status, assert_json ' +
+      '({ path, equals | contains | exists }), mock_route / block_route (stub calls during UI tests). ' +
       'Targets are CSS selectors, text=…, or plain labels ("Sign in button"); data.value holds text to type or expect.',
     inputSchema: {
       type: 'object',

@@ -128,12 +128,19 @@ export function secretValues(decrypted: any): string[] {
   return values.filter(Boolean);
 }
 
-/** Replace {{secrets.NAME}} and {{env.NAME}} placeholders. Unknown secrets throw. */
-export function resolvePlaceholders(text: string, secrets: Record<string, string>): string {
-  return text.replace(/\{\{\s*(secrets|env)\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g, (_m, kind, name) => {
+/**
+ * Replace {{secrets.NAME}}, {{env.NAME}} and {{vars.NAME}} placeholders. Unknown secrets
+ * and variables throw. Variables come from earlier steps of the test (http_request extract).
+ */
+export function resolvePlaceholders(text: string, secrets: Record<string, string>, vars?: Record<string, string>): string {
+  return text.replace(/\{\{\s*(secrets|env|vars)\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g, (_m, kind, name) => {
     if (kind === 'secrets') {
       if (!(name in secrets)) throw new Error(`Unknown secret "${name}" — define it in the agent's secrets`);
       return secrets[name];
+    }
+    if (kind === 'vars') {
+      if (!vars || !(name in vars)) throw new Error(`Unknown variable "${name}" — capture it first with http_request data.extract`);
+      return vars[name];
     }
     const allowed = (process.env.STEP_ENV_ALLOWLIST || '').split(',').map((s) => s.trim()).filter(Boolean);
     if (!allowed.includes(name)) throw new Error(`Environment variable "${name}" is not in STEP_ENV_ALLOWLIST`);

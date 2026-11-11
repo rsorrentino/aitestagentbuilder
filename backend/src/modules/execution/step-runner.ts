@@ -11,6 +11,7 @@ import { TestStep } from '../../core/domain/test-case.js';
 import { SalesforceSessions } from '../salesforce/session.js';
 import { A11yReport, describeA11y, scanAccessibility } from '../quality/accessibility.js';
 import { checkScreenshot, describeVisual, VisualEntry } from '../quality/visual.js';
+import { ApiState, checkJson, describeResponse, extractVars, mockRoute, sendRequest, statusMatches } from '../quality/api-testing.js';
 
 export type StepKind =
   | 'navigate' | 'click' | 'fill' | 'select' | 'check' | 'uncheck' | 'press' | 'hover' | 'wait'
@@ -19,6 +20,7 @@ export type StepKind =
   | 'salesforce_login' | 'salesforce_logout' | 'wait_for_lightning'
   | 'assert_profile' | 'assert_object_access' | 'assert_field_access' | 'assert_record_access'
   | 'assert_accessible' | 'assert_screenshot'
+  | 'http_request' | 'assert_status' | 'assert_json' | 'assert_header' | 'assert_response_time' | 'mock_route' | 'block_route'
   | 'manual';
 
 export interface StepOutcome {
@@ -38,6 +40,8 @@ export interface StepContext {
   persona?: string;
   /** Where quality checks (accessibility, visual) store baselines and report their findings. */
   quality?: QualityContext;
+  /** Last API response and variables captured by http_request steps of this test. */
+  api?: ApiState;
 }
 
 export interface QualityContext {
@@ -66,10 +70,23 @@ export function classifyAction(rawAction: string, step: Pick<TestStep, 'target' 
     'assert accessible': 'assert_accessible', 'assert accessibility': 'assert_accessible', 'check accessibility': 'assert_accessible',
     'accessibility check': 'assert_accessible', 'assert screenshot': 'assert_screenshot', 'compare screenshot': 'assert_screenshot',
     'visual check': 'assert_screenshot', 'assert visual': 'assert_screenshot',
+    'http request': 'http_request', 'api request': 'http_request', 'request': 'http_request',
+    'assert status': 'assert_status', 'assert json': 'assert_json', 'assert header': 'assert_header',
+    'assert response time': 'assert_response_time', 'mock route': 'mock_route', 'mock api': 'mock_route', 'block route': 'block_route',
   };
   if (exact[a]) return exact[a];
+  // "GET /api/orders", "POST https://…"
+  // The method alone with a target, or followed by a path / URL (not "Get started")
+  const verb = rawAction.trim().match(/^(get|post|put|patch|delete|head|options)(?:\s+(\S+))?\s*$/i);
+  if (verb && (verb[2] ? /^(\/|https?:\/\/|[\w.{}-]+\/)/.test(verb[2]) : !!step.target)) return 'http_request';
+  if (/^(send|make|call|invoke)\b.*\b(request|api|endpoint)\b/.test(a)) return 'http_request';
+  if (/^(mock|stub|fake)\b/.test(a)) return 'mock_route';
   if (/^(assert|verify|expect|validate|confirm|ensure|check that|should|observe|see)\b/.test(a)) {
     if (/\b(access denied|insufficient privileges|no access|not authori[sz]ed|forbidden|cannot access|can't access)\b/.test(a)) return 'assert_access_denied';
+    if (/\b(status code|http status|response status)\b/.test(a)) return 'assert_status';
+    if (/\bresponse time\b|\bresponds? (with)?in\b/.test(a)) return 'assert_response_time';
+    if (/\b(response|http) headers?\b/.test(a)) return 'assert_header';
+    if (/\bjson\b|\bresponse (body|field|contains)\b/.test(a)) return 'assert_json';
     if (/\b(accessib\w*|a11y|wcag)\b/.test(a)) return 'assert_accessible';
     if (/\b(visual(ly)?|pixel|baseline|looks the same|screenshot match\w*|matches the screenshot)\b/.test(a)) return 'assert_screenshot';
     if (step.target && /\b(not (be )?(visible|displayed|shown|present)|hidden|absent|isn't (visible|shown|displayed)|is not shown|does not (appear|exist))\b/.test(a)) return 'assert_not_visible';
@@ -297,6 +314,56 @@ export async function executeStep(step: TestStep, ctx: StepContext, targetOverri
       if (entry.status === 'failed') throw new Error(describeVisual(entry));
       return { status: 'passed', message: describeVisual(entry) };
     }
+    case 'http_request': {
+      if (!ctx.api) throw new Error('API steps need a run context');
+      const data = { ...(step.data ?? {}) };
+      const first = step.action.trim().split(/\s+/);
+      if (!data.method && /^(get|post|put|patch|delete|head|options)$/i.test(first[0])) data.method = first[0];
+      const url = target || (first.length > 1 ? first.slice(1).join(' ') : '') || String(data.url ?? '');
+      if (!url) need('the URL or path as target');
+      const response = await sendRequest(page, ctx.config, url, data, stepTimeout);
+      ctx.api.last = response;
+      const extracted = extractVars(response, data.extract, ctx.api.vars);
+      // Expected status given on the request itself
+      if (data.status !== undefined && !statusMatches(response.status, data.status)) {
+        throw new Error(`Expected status ${JSON.stringify(data.status)} but got ${describeResponse(response)}`);
+      }
+      return { status: 'passed', message: `${describeResponse(response)}${extracted.length ? ` · saved ${extracted.map((n) => `{{vars.${n}}}`).join(', ')}` : ''}` };
+    }
+    case 'assert_status': {
+      const r = lastResponse(ctx);
+      // "Verify the status code is 201" carries the expectation in the sentence
+      const expected = step.data?.status ?? step.data?.value ?? (target || step.action.match(/\b([1-5]\d\d|[1-5]xx)\b/i)?.[1]);
+      if (expected === undefined || expected === '') need('the expected status in data.value, e.g. 200 or "2xx"');
+      if (!statusMatches(r.status, expected)) throw new Error(`Expected status ${JSON.stringify(expected)} but got ${r.status} (${r.method} ${r.url})`);
+      return { status: 'passed', message: `Status ${r.status}` };
+    }
+    case 'assert_json': {
+      const r = lastResponse(ctx);
+      return { status: 'passed', message: checkJson(r.json, { ...(target && !step.data?.path ? { path: target } : {}), ...(step.data ?? {}) }) };
+    }
+    case 'assert_header': {
+      const r = lastResponse(ctx);
+      const name = String(target || step.data?.name || '').toLowerCase();
+      if (!name) need('the header name as target');
+      const actual = r.headers[name];
+      if (actual === undefined) throw new Error(`The response has no "${name}" header`);
+      const expected = step.data?.value ?? step.data?.contains;
+      if (expected !== undefined && !actual.toLowerCase().includes(String(expected).toLowerCase())) {
+        throw new Error(`Expected header ${name} to contain "${expected}" but it is "${actual}"`);
+      }
+      return { status: 'passed', message: `${name}: ${actual.slice(0, 120)}` };
+    }
+    case 'assert_response_time': {
+      const r = lastResponse(ctx);
+      const max = Number(step.data?.max_ms ?? step.data?.value ?? (target || step.action.match(/(\d+)\s*ms\b/i)?.[1]));
+      if (!Number.isFinite(max) || max <= 0) need('the maximum in milliseconds in data.value');
+      if (r.durationMs > max) throw new Error(`Response took ${r.durationMs} ms, more than ${max} ms (${r.method} ${r.url})`);
+      return { status: 'passed', message: `Responded in ${r.durationMs} ms (max ${max} ms)` };
+    }
+    case 'mock_route':
+    case 'block_route':
+      return { status: 'passed', message: await mockRoute(page, target || String(step.data?.url ?? ''), step.data ?? {}, kind === 'block_route') };
     case 'salesforce_login': {
       const sessions = requireSalesforce(ctx);
       const persona = step.data?.persona ?? (target && !/^(https?:|\/)/.test(target) ? target : undefined) ?? ctx.persona;
@@ -354,6 +421,11 @@ export async function executeStep(step: TestStep, ctx: StepContext, targetOverri
     default:
       return { status: 'skipped', message: `Not automatable (no recognised action): "${step.action}"` };
   }
+}
+
+function lastResponse(ctx: StepContext) {
+  if (!ctx.api?.last) throw new Error('No API response yet: send one with an http_request step first');
+  return ctx.api.last;
 }
 
 function requireSalesforce(ctx: StepContext): SalesforceSessions {

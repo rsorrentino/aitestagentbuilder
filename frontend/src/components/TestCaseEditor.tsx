@@ -161,6 +161,9 @@ export default function TestCaseEditor({ initial, onSaved, onCancel }: TestCaseE
             Actions: navigate, click, fill, select, check, press, hover, wait, assert_visible, assert_not_visible, assert_text, assert_url, assert_title, screenshot.
             Quality: assert_accessible (axe-core WCAG scan; value <code>{'{"level": "wcag21aa", "ignore": ["color-contrast"]}'}</code>),
             assert_screenshot (visual regression against a baseline; target an element or leave empty for the page; value <code>{'{"name": "home", "mask": [".clock"]}'}</code>).
+            API: http_request (target: path or URL; value <code>{'{"method": "POST", "json": {...}, "extract": {"id": "$.id"}}'}</code>, later <code>{'{{vars.id}}'}</code>),
+            assert_status (<code>201</code> or <code>2xx</code>), assert_json (<code>{'{"path": "$.items[0].name", "equals": "Lamp"}'}</code>), assert_header, assert_response_time,
+            mock_route / block_route (target: URL pattern, e.g. <code>**/api/payments/**</code>; value <code>{'{"status": 500}'}</code>) to stub calls in UI tests.
             Targets can be CSS selectors (#id, .class), <code>text=Visible text</code>, or a plain label like “Sign in button”.
             Salesforce: salesforce_login (target = persona), assert_object_access (target = Account, value <code>{'{"read": true, "delete": false}'}</code>),
             assert_field_access (Account.AnnualRevenue), assert_record_access (record Id), assert_profile, assert_access_denied.

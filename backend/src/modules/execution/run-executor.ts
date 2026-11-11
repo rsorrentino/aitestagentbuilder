@@ -86,9 +86,9 @@ export class RunExecutor {
    * Resolve {{secrets.NAME}} / {{env.NAME}} in a step's target and data values,
    * and apply per-persona overrides: data.by_persona = { rep: { edit: false }, admin: { edit: true } }.
    */
-  private resolveStep(step: TestStep, persona?: string): TestStep {
+  private resolveStep(step: TestStep, persona?: string, vars?: Record<string, string>): TestStep {
     const resolve = (v: any): any => {
-      if (typeof v === 'string') return resolvePlaceholders(v, this.secrets);
+      if (typeof v === 'string') return resolvePlaceholders(v, this.secrets, vars);
       if (Array.isArray(v)) return v.map(resolve);
       if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, resolve(x)]));
       return v;
@@ -238,6 +238,7 @@ export class RunExecutor {
         salesforce: this.salesforce,
         persona,
         quality,
+        api: { vars: {} },
       };
 
       const steps: TestStep[] = testCase.steps ?? [];
@@ -353,7 +354,7 @@ export class RunExecutor {
     this.log(`  Step ${step.stepId}: ${step.action}${step.target ? ` → ${step.target}` : ''}`, { testId: testCase.id, stepId: step.stepId });
 
     try {
-      const outcome = await executeStep(this.resolveStep(step, persona), ctx);
+      const outcome = await executeStep(this.resolveStep(step, persona, ctx.api?.vars), ctx);
       return { ...base, ...outcome, message: this.mask(outcome.message), durationMs: Date.now() - started };
     } catch (e: any) {
       let message = this.mask(String(e.message || e).split('\n')[0]);
@@ -375,7 +376,7 @@ export class RunExecutor {
     const cached = this.healingCache.get(step.target, ctx.page.url());
     if (cached) {
       try {
-        const outcome = await executeStep(this.resolveStep(step, persona), ctx, cached);
+        const outcome = await executeStep(this.resolveStep(step, persona, ctx.api?.vars), ctx, cached);
         this.log(`  🩹 Reused healed selector "${cached}" for "${step.target}"`, { testId: testCase.id, stepId: step.stepId });
         return { ...outcome, message: `${outcome.message} (healed selector reused: "${step.target}" → "${cached}")`, healedSelector: cached };
       } catch {
@@ -405,7 +406,7 @@ export class RunExecutor {
       if (!selector || selector === step.target) return null;
 
       const failedUrl = ctx.page.url();
-      const outcome = await executeStep(this.resolveStep(step, persona), ctx, selector);
+      const outcome = await executeStep(this.resolveStep(step, persona, ctx.api?.vars), ctx, selector);
       this.healingCache.set(step.target, failedUrl, selector);
       this.log(`  🩹 Healed: "${step.target}" → "${selector}"`, { testId: testCase.id, stepId: step.stepId });
       return { ...outcome, message: `${outcome.message} (self-healed from "${step.target}")`, healedSelector: selector };

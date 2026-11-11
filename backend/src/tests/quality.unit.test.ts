@@ -288,3 +288,95 @@ describe('flaky-test quarantine', () => {
     assert.match(xml, /<skipped message="quarantined \(flaky\): Expected &quot;OK&quot;"\/>/);
   });
 });
+
+describe('API testing', () => {
+  it('reads JSON paths', async () => {
+    const { jsonPath } = await import('../modules/quality/api-testing.js');
+    const doc = { items: [{ name: 'A', tags: ['x'] }, { name: 'B' }], 'odd key': 1, total: 0 };
+    assert.deepEqual(jsonPath(doc, '$.items[1].name'), { found: true, value: 'B' });
+    assert.deepEqual(jsonPath(doc, 'items[0].tags[0]'), { found: true, value: 'x' });
+    assert.deepEqual(jsonPath(doc, '$.items.length'), { found: true, value: 2 });
+    assert.deepEqual(jsonPath(doc, "$['odd key']"), { found: true, value: 1 });
+    assert.deepEqual(jsonPath(doc, '$.total'), { found: true, value: 0 }, 'falsy values are found');
+    assert.deepEqual(jsonPath(doc, '$.items[5].name'), { found: false, value: undefined });
+    assert.deepEqual(jsonPath([1, 2], '$[1]'), { found: true, value: 2 });
+    assert.throws(() => jsonPath(doc, '$..name'), /Unsupported JSON path/);
+  });
+
+  it('matches statuses and checks JSON expectations', async () => {
+    const { statusMatches, checkJson } = await import('../modules/quality/api-testing.js');
+    assert.ok(statusMatches(201, '2xx') && statusMatches(404, 404) && statusMatches(204, [200, 204]) && !statusMatches(500, '4xx'));
+    const body = { id: 7, name: 'Lamp', tags: ['new', 'sale'], price: null };
+    assert.equal(checkJson(body, { path: '$.id', equals: 7 }), '$.id = 7');
+    assert.equal(checkJson(body, { path: '$.id', equals: '7' }), '$.id = 7', 'loose comparison for scalars');
+    assert.match(checkJson(body, { path: '$.tags', contains: 'sale' }), /contains/);
+    assert.match(checkJson(body, { path: '$.price', type: 'null' }), /is null/);
+    assert.match(checkJson(body, { path: '$.missing', exists: false }), /does not exist/);
+    assert.throws(() => checkJson(body, { path: '$.name', equals: 'Desk' }), /Expected \$\.name to equal "Desk" but it is "Lamp"/);
+    assert.throws(() => checkJson(body, { path: '$.tags', length: 3 }), /have length 3 but it has 2/);
+    assert.throws(() => checkJson(undefined, { path: '$.id' }), /not JSON/);
+  });
+
+  it('captures variables from responses', async () => {
+    const { extractVars } = await import('../modules/quality/api-testing.js');
+    const vars: Record<string, string> = {};
+    const res: any = { json: { id: 42, owner: { email: 'a@b.c' } } };
+    assert.deepEqual(extractVars(res, { orderId: '$.id', owner: '$.owner' }, vars), ['orderId', 'owner']);
+    assert.deepEqual(vars, { orderId: '42', owner: '{"email":"a@b.c"}' });
+    assert.throws(() => extractVars(res, { x: '$.nope' }, vars), /not in the response/);
+    assert.throws(() => extractVars(res, { 'bad name': '$.id' }, vars), /Invalid variable name/);
+    const { resolvePlaceholders } = await import('../core/domain/agent-secrets.js');
+    assert.equal(resolvePlaceholders('orders/{{vars.orderId}}', {}, vars), 'orders/42');
+    assert.throws(() => resolvePlaceholders('{{vars.nope}}', {}, vars), /Unknown variable "nope"/);
+  });
+
+  it('builds smoke tests from an OpenAPI description', async () => {
+    const { listOperations, parseSpec, smokeTest, sampleFor } = await import('../modules/quality/openapi-tests.js');
+    const spec = parseSpec(`openapi: 3.0.3
+info: { title: Shop, version: '1' }
+paths:
+  /items/{id}:
+    get:
+      parameters: [{ name: id, in: path, required: true, schema: { type: integer, example: 5 } }]
+      responses: { '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Item' } } } } }
+  /items:
+    post:
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/Item' } } } }
+      responses: { '201': { description: created } }
+components:
+  schemas:
+    Item:
+      type: object
+      required: [name, price]
+      properties: { name: { type: string }, price: { type: number, minimum: 0 }, email: { type: string, format: email, example: x@y.z }, note: { type: string } }
+`);
+    const ops = listOperations(spec);
+    assert.deepEqual(ops.map((o) => `${o.method} ${o.path}`), ['GET /items/{id}', 'POST /items']);
+    assert.deepEqual(sampleFor(spec, { $ref: '#/components/schemas/Item' }), { name: 'test', price: 0, email: 'x@y.z' });
+    const get = smokeTest(ops[0]).test!;
+    assert.deepEqual(get.steps.map((s) => [s.action, s.target, s.data]), [
+      ['http_request', 'items/5', { method: 'GET' }],
+      ['assert_status', undefined, { value: '200' }],
+      ['assert_json', undefined, { path: '$.name' }],
+      ['assert_json', undefined, { path: '$.price' }],
+    ]);
+    assert.equal(smokeTest(ops[1]).test!.steps[0].data!.json.name, 'test');
+    assert.throws(() => parseSpec('{"openapi":"3.0.0"}'), /no "paths"/);
+    const { basePathOf } = await import('../modules/quality/openapi-tests.js');
+    assert.equal(basePathOf({ openapi: '3.0.0', servers: [{ url: '/api/v1/' }] }), '/api/v1');
+    assert.equal(basePathOf({ openapi: '3.0.0', servers: [{ url: 'https://api.example.com/v1' }] }), '', 'absolute: set the API base URL instead');
+    assert.equal(basePathOf({ swagger: '2.0', basePath: '/v2' }), '/v2');
+    assert.equal(smokeTest(ops[0], '/v1').test!.steps[0].target, 'v1/items/5');
+  });
+
+  it('classifies API steps, including natural phrasing', () => {
+    for (const [action, step, kind] of [
+      ['http_request', {}, 'http_request'], ['GET /api/users', {}, 'http_request'], ['POST', { target: '/orders' }, 'http_request'],
+      ['Send a request to the orders endpoint', {}, 'http_request'],
+      ['Verify the status code is 201', {}, 'assert_status'], ['Verify the response time is under 500 ms', {}, 'assert_response_time'],
+      ['Verify the response header content-type', {}, 'assert_header'], ['Verify the JSON contains the order id', {}, 'assert_json'],
+      ['Mock the payments API', { target: '**/payments' }, 'mock_route'], ['block_route', {}, 'block_route'],
+      ['Get started', {}, 'manual'], ['Verify the page header is shown', { target: 'h1' }, 'assert_visible'],
+    ] as Array<[string, any, string]>) assert.equal(classifyAction(action, step), kind, action);
+  });
+});

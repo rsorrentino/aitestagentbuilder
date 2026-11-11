@@ -29,6 +29,8 @@ const fs = require('fs');
 fs.appendFileSync(${JSON.stringify(callsFile)}, 'call\\n');
 const prompt = process.argv[process.argv.indexOf('-p') + 1] || '';
 if (prompt.includes('fix broken UI test selectors')) console.log('[{"selector": "#new-id"}]');
+else if (prompt.includes('senior API test engineer')) console.log(JSON.stringify([{ title: 'Unknown order is 404', module: 'Orders', priority: 'High',
+  steps: [{ action: 'http_request', target: 'api/orders/999' }, { action: 'assert_status', data: { value: 404 } }], expectedResults: ['404'] }]));
 else if (prompt.includes('You triage failed UI test runs')) console.log('[{"group": 1, "category": "app_bug", "cause": "The page no longer shows the expected text", "suggestion": "Check the release notes of the last deploy"}]');
 else console.log('[]');
 `);
@@ -53,6 +55,69 @@ for (const k of ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'AZURE_OPENAI_API_KEY', 
 // ---- application under test ----
 const page = (title: string, body: string) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${title}</title>
 <style>body{font-family:sans-serif;margin:0}main{padding:20px}</style></head><body><main><h1>${title}</h1>${body}</main></body></html>`;
+// ---- a small JSON API with an OpenAPI description ----
+const ORDERS: any[] = [{ id: 1, item: 'Book', total: 12.5, status: 'open' }];
+const OPENAPI = {
+  openapi: '3.0.3',
+  info: { title: 'Orders', version: '1.0' },
+  servers: [{ url: '/api' }],
+  paths: {
+    '/orders': {
+      get: { tags: ['Orders'], summary: 'List orders', responses: { 200: { description: 'ok', content: { 'application/json': { schema: { type: 'array', items: { $ref: '#/components/schemas/Order' } } } } } } },
+      post: {
+        tags: ['Orders'], summary: 'Create an order',
+        requestBody: { required: true, content: { 'application/json': { schema: { $ref: '#/components/schemas/NewOrder' } } } },
+        responses: { 201: { description: 'created', content: { 'application/json': { schema: { $ref: '#/components/schemas/Order' } } } }, 400: { description: 'invalid' } },
+      },
+    },
+    '/orders/{id}': {
+      get: {
+        tags: ['Orders'], summary: 'Get an order',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer', example: 1 } }],
+        responses: { 200: { description: 'ok', content: { 'application/json': { schema: { $ref: '#/components/schemas/Order' } } } }, 404: { description: 'not found' } },
+      },
+    },
+    '/customers/{customerId}': {
+      get: { summary: 'No example for the id', parameters: [{ name: 'customerId', in: 'path', required: true, schema: { type: 'string' } }], responses: { 200: { description: 'ok' } } },
+    },
+  },
+  components: {
+    schemas: {
+      NewOrder: { type: 'object', required: ['item'], properties: { item: { type: 'string', example: 'Pen' }, quantity: { type: 'integer', example: 2 } } },
+      Order: { type: 'object', required: ['id', 'item', 'status'], properties: { id: { type: 'integer' }, item: { type: 'string' }, status: { type: 'string' }, total: { type: 'number' } } },
+    },
+  },
+};
+
+function handleApi(req: http.IncomingMessage, res: http.ServerResponse, url: URL) {
+  const send = (status: number, body: unknown, headers: Record<string, string> = {}) => {
+    res.writeHead(status, { 'Content-Type': 'application/json', 'X-Request-Id': 'req-123', ...headers });
+    res.end(JSON.stringify(body));
+  };
+  if (url.pathname === '/openapi.json') return send(200, OPENAPI);
+  if (url.pathname === '/api/price') return send(200, { price: '19.99' });
+  if (url.pathname === '/api/slow') return void setTimeout(() => send(200, { ok: true }), 400);
+  if (url.pathname === '/api/orders' && req.method === 'GET') return send(200, ORDERS);
+  if (url.pathname === '/api/orders' && req.method === 'POST') {
+    let raw = '';
+    req.on('data', (c) => { raw += c; });
+    req.on('end', () => {
+      const body = raw ? JSON.parse(raw) : {};
+      if (!body.item) return send(400, { error: 'item is required' });
+      const order = { id: ORDERS.length + 1, item: body.item, total: (body.quantity ?? 1) * 5, status: 'open' };
+      ORDERS.push(order);
+      send(201, order);
+    });
+    return;
+  }
+  const m = url.pathname.match(/^\/api\/orders\/(\d+)$/);
+  if (m) {
+    const order = ORDERS.find((o) => o.id === Number(m[1]));
+    return order ? send(200, order) : send(404, { error: 'not found' });
+  }
+  send(404, { error: 'not found' });
+}
+
 let flakyVisits = 0;
 let flakyMode: 'flaky' | 'stable' = 'flaky';
 const PAGES: Record<string, (q: URLSearchParams) => string> = {
@@ -69,6 +134,12 @@ const PAGES: Record<string, (q: URLSearchParams) => string> = {
     const ok = flakyMode === 'stable' || flakyVisits % 2 === 1;
     return page('Flaky', ok ? '<p id="state">OK</p>' : '<p id="state">Oops</p>');
   },
+  // Shows the price from the API, or a message when the API fails
+  '/checkout': () => page('Checkout', `<p id="price">…</p><script>
+    fetch('/api/price').then((r) => r.ok ? r.json() : Promise.reject(r.status))
+      .then((d) => { document.getElementById('price').textContent = 'Price: ' + d.price; })
+      .catch(() => { document.getElementById('price').textContent = 'Price unavailable'; });
+  </script>`),
   '/heal': () => page('Heal', '<button id="new-id" type="button" onclick="document.getElementById(\'out\').textContent=\'clicked\'">Continue</button><p id="out"></p>'),
 };
 
@@ -127,6 +198,7 @@ before(async () => {
 
   fixture = http.createServer((req, res) => {
     const url = new URL(req.url || '/', 'http://x');
+    if (url.pathname.startsWith('/api/') || url.pathname === '/openapi.json') return void handleApi(req, res, url);
     const render = PAGES[url.pathname];
     res.writeHead(render ? 200 : 404, { 'Content-Type': 'text/html' });
     res.end(render ? render(url.searchParams) : 'not found');
@@ -393,5 +465,74 @@ describe('quality extensions (integration)', () => {
     assert.equal((await call('GET', '/api/v1/quarantine')).data[0].reason, 'Depends on a third-party sandbox');
     assert.equal((await call('DELETE', `/api/v1/testcases/${steady}/quarantine`)).status, 204);
     assert.equal((await call('DELETE', `/api/v1/testcases/${steady}/quarantine`)).status, 404);
+  });
+
+  it('tests APIs: requests, assertions, captured variables, mocks in UI tests', async (t) => {
+    if (!dbAvailable) return t.skip('database not available');
+    const agent = await newAgent('API', { evidence: { trace: 'off', video: 'off' } });
+    const crud = await newTest('Create and read an order', [
+      { action: 'POST api/orders', data: { json: { item: 'Lamp', quantity: 3 }, extract: { orderId: '$.id' }, status: 201 } },
+      { action: 'assert_json', data: { path: '$.total', equals: 15 } },
+      { action: 'assert_header', target: 'content-type', data: { value: 'json' } },
+      { action: 'http_request', target: 'api/orders/{{vars.orderId}}' },
+      { action: 'Verify the status code is 2xx' },
+      { action: 'assert_json', data: { path: '$.item', equals: 'Lamp' } },
+      { action: 'assert_json', data: { path: '$.missing', exists: false } },
+      { action: 'GET api/orders' },
+      { action: 'assert_json', data: { path: '$.length', equals: 2 } },
+      { action: 'assert_json', data: { path: '$[0].item', contains: 'Book' } },
+    ]);
+    const invalid = await newTest('Rejects an order without item', [
+      { action: 'http_request', target: 'api/orders', data: { method: 'POST', json: {} } },
+      { action: 'assert_status', data: { value: '4xx' } },
+      { action: 'assert_json', data: { path: '$.error', matches: 'required' } },
+    ]);
+    const slow = await newTest('Slow endpoint is too slow', [
+      { action: 'GET api/slow' },
+      { action: 'assert_response_time', data: { value: 100 } },
+    ]);
+    const mocked = await newTest('Checkout shows a mocked price, and copes with the API being down', [
+      { action: 'mock_route', target: '**/api/price', data: { json: { price: '0.01' }, times: 1 } },
+      { action: 'navigate', target: '/checkout' },
+      { action: 'assert_text', target: '#price', data: { value: 'Price: 0.01' } },
+      { action: 'block_route', target: '**/api/price' },
+      { action: 'navigate', target: '/checkout' },
+      { action: 'assert_text', target: '#price', data: { value: 'Price unavailable' } },
+    ]);
+    const r = await run(agent, [crud, invalid, slow, mocked]);
+    const by = (id: string) => r.results.find((x: any) => x.testCaseId === id);
+    for (const id of [crud, invalid, mocked]) assert.equal(by(id).status, 'passed', `${by(id).metadata.title}: ${by(id).error}`);
+    assert.match(by(crud).metadata.steps[0].message, /^POST http:\/\/127\.0\.0\.1:\d+\/api\/orders → 201 in \d+ ms · .*saved \{\{vars\.orderId\}\}/);
+    assert.equal(by(slow).status, 'failed');
+    assert.match(by(slow).error, /Response took \d+ ms, more than 100 ms/);
+
+    // Tests from the OpenAPI description, without AI
+    const gen = await call('POST', `/api/v1/agents/${agent}/generate-api-tests`, { specUrl: '/openapi.json' });
+    assert.equal(gen.status, 200, gen.text);
+    assert.equal(gen.data.operations, 4);
+    assert.equal(gen.data.created, 3);
+    assert.deepEqual(gen.data.skipped, [{ operation: 'GET /customers/{customerId}', reason: 'no example value for path parameter "customerId"' }]);
+    const post = gen.data.tests.find((x: any) => x.title.startsWith('POST /orders'));
+    assert.equal(post.steps[0].target, 'api/orders', 'paths are under the relative server URL /api');
+    assert.deepEqual(post.steps[0].data, { method: 'POST', json: { item: 'Pen', quantity: 2 } });
+    assert.ok(post.tags.includes(`agent:${agent}`));
+    const r2 = await run(agent, gen.data.tests.map((x: any) => x.id));
+    for (const res of r2.results) assert.equal(res.status, 'passed', `${res.metadata.title}: ${res.error}`);
+
+    // With AI: negative cases too (fake Copilot CLI)
+    const aiAgent = await newAgent('API with AI', { ai: { provider: 'copilot' }, evidence: { trace: 'off', video: 'off' } });
+    const withAi = await call('POST', `/api/v1/agents/${aiAgent}/generate-api-tests`, { specUrl: `${fixtureUrl}/openapi.json`, ai: true });
+    assert.equal(withAi.status, 200, withAi.text);
+    assert.equal(withAi.data.provider, 'copilot');
+    assert.equal(withAi.data.tests[0].title, 'Unknown order is 404');
+    assert.ok(withAi.data.tests[0].tags.includes('ai-generated'));
+    const r3 = await run(aiAgent, [withAi.data.tests[0].id]);
+    assert.equal(r3.results[0].status, 'passed', r3.results[0].error);
+
+    // Invalid input
+    const bad = await call('POST', `/api/v1/agents/${agent}/generate-api-tests`, { spec: 'not: [an api' });
+    assert.equal(bad.status, 400);
+    const noPaths = await call('POST', `/api/v1/agents/${agent}/generate-api-tests`, { spec: { hello: 'world' } });
+    assert.match(noPaths.data.error, /no "paths"/);
   });
 });

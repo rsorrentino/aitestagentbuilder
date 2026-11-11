@@ -33,6 +33,7 @@ Authorization: ApiKey <apiKey>          # from POST /auth/api-keys
 | GET | `/visual/baselines?agentId=` | Visual baselines of the project (signed `image` URL) |
 | DELETE | `/visual/baselines/:id` | Delete a baseline (editor); the next run records a new one |
 | POST | `/runs/:runId/results/:resultId/visual/approve` | `{ name, persona?, viewport? }`: the screenshot of a failed visual check becomes the baseline (editor) |
+| POST | `/agents/:id/generate-api-tests` | `{ specUrl? \| spec?, operations?, ai?, count?, save? }`: test cases from an OpenAPI / Swagger description → `{ operations, created, tests, skipped[], servers }` (editor) |
 | GET | `/quarantine` | Quarantined test cases of the project (`reason`, `auto`, `stats`) |
 | POST | `/testcases/:id/quarantine` | `{ reason }`: quarantine a test by hand (editor) |
 | DELETE | `/testcases/:id/quarantine` | Release it (editor) |

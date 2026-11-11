@@ -13,6 +13,8 @@ import { approveActual, VisualBaselineRepository, VisualEntry } from '../../modu
 import { applyHealing, healedStepsOf } from '../../modules/quality/healing.js';
 import { triageRun } from '../../modules/quality/triage.js';
 import { QuarantineRepository } from '../../modules/quality/quarantine.js';
+import { aiApiTests, basePathOf, fetchSpec, listOperations, operationKey, parseSpec, smokeTest } from '../../modules/quality/openapi-tests.js';
+import type { TestCaseCreateInput } from '../../core/domain/test-case.js';
 import { AgentRepository } from '../../core/repositories/agent.repository.js';
 import { getLLMRouter } from '../../infra/llm/router.js';
 
@@ -78,6 +80,77 @@ export function registerQualityRoutes(router: Router, roles: { viewer: RequestHa
     await runs.updateResult(result.id, { metadata: { ...result.metadata, visual: entries } });
     res.locals.audit = { entityId: baseline.id, details: { name: entry.name, persona: entry.persona, viewport: entry.viewport, runId: run.id } };
     res.json({ ...baseline, image: signArtifactPath(baseline.path) });
+  }));
+
+  // ── API tests from OpenAPI ────────────────────────────────────────────────
+  /**
+   * Body: { specUrl? | spec? (JSON/YAML text or object), operations?: ["GET /orders"], ai?: boolean,
+   *         count?: number, save?: boolean (default true) }
+   */
+  router.post('/agents/:id/generate-api-tests', editor, audit('agent.generate_api_tests', 'agent'), wrap(async (req, res) => {
+    const agent = await new AgentRepository().findById(req.params.id, req.project!.id);
+    if (!agent) {
+      res.status(404).json({ error: 'Agent not found' });
+      return;
+    }
+    const cfg: any = agent.config ?? {};
+    const { specUrl, operations: only, ai = false, save = true } = req.body ?? {};
+    let spec: any;
+    try {
+      if (req.body?.spec) spec = typeof req.body.spec === 'string' ? parseSpec(req.body.spec) : parseSpec(JSON.stringify(req.body.spec));
+      else if (specUrl) spec = await fetchSpec(new URL(String(specUrl), String(cfg.api_base_url || cfg.base_url)).toString());
+      else throw new Error('Give the OpenAPI description: specUrl (absolute, or relative to the agent URL) or spec');
+    } catch (e: any) {
+      res.status(400).json({ error: e.message });
+      return;
+    }
+    let ops = listOperations(spec);
+    if (Array.isArray(only) && only.length) ops = ops.filter((op) => only.map(String).includes(operationKey(op)));
+    if (!ops.length) {
+      res.status(400).json({ error: 'No operations to test in this description' });
+      return;
+    }
+
+    const skipped: Array<{ operation: string; reason: string }> = [];
+    let tests: TestCaseCreateInput[] = [];
+    let provider: string | undefined;
+    if (ai) {
+      if (!getLLMRouter().hasAnyProvider()) {
+        res.status(503).json({ error: 'No AI provider is configured: generate without AI (smoke tests) or configure one' });
+        return;
+      }
+      const result = await aiApiTests(spec, ops, Math.min(Math.max(Number(req.body?.count) || ops.length * 2, 1), 50), cfg.ai?.provider);
+      tests = result.tests;
+      provider = result.provider;
+    } else {
+      for (const op of ops) {
+        const { test, skipped: why } = smokeTest(op, basePathOf(spec));
+        if (test) tests.push(test);
+        else skipped.push({ operation: operationKey(op), reason: why! });
+      }
+    }
+
+    // Tag for the agent and respect its priority filter so the tests actually run
+    const priorities: string[] = cfg.test_selection?.priority ?? [];
+    const toSave = tests.map((t) => ({
+      ...t,
+      ...(priorities.length && !priorities.includes(t.priority) ? { priority: priorities[0] as any } : {}),
+      tags: [...new Set([...(t.tags ?? []), `agent:${agent.id}`])],
+      projectId: req.project!.id,
+    }));
+    const saved = save ? await Promise.all(toSave.map((t) => testCases.create(t))) : toSave;
+    const servers = (spec.servers ?? []).map((s: any) => s.url).filter(Boolean);
+    res.locals.audit = { entityId: agent.id, details: { operations: ops.length, created: saved.length, ai, saved: !!save } };
+    res.json({
+      operations: ops.length,
+      created: saved.length,
+      saved: !!save,
+      tests: saved,
+      skipped,
+      ...(provider ? { provider } : {}),
+      servers,
+      ...(!cfg.api_base_url && servers.some((u: string) => /^https?:\/\//.test(u)) ? { hint: `Set the agent's API base URL (api_base_url) to ${servers[0]} if the API is not under ${cfg.base_url}` } : {}),
+    });
   }));
 
   // ── Flaky-test quarantine ──────────────────────────────────────────────────
