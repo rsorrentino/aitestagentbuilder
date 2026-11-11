@@ -27,6 +27,8 @@ import { failureSignature } from '../quality/triage.js';
 import { Quarantine, QuarantineRepository } from '../quality/quarantine.js';
 import { salesforceSettings, testPersonas } from '../salesforce/personas.js';
 import { SalesforceSessions } from '../salesforce/session.js';
+import { TestDataRepository } from '../../core/repositories/test-data.repository.js';
+import { createFaker, datasetRows, FakeValues, MAX_DATASET_ROWS, rowLabel, seedFor, testDataSettings } from '../quality/test-data-gen.js';
 
 export { ARTIFACTS_PATH };
 
@@ -38,6 +40,19 @@ export interface StepLog {
   message: string;
   durationMs: number;
   healedSelector?: string;
+}
+
+/** One test execution: a test case, optionally as a persona and with a data set row. */
+interface PlanItem {
+  testCase: TestCase;
+  persona?: string;
+  row?: { index: number; label: string; values: Record<string, any> };
+  /** The data set could not be loaded: the test fails with this error */
+  dataError?: string;
+}
+
+function titleOf(item: PlanItem): string {
+  return `${item.testCase.title}${item.persona ? ` [as ${item.persona}]` : ''}${item.row ? ` [${item.row.label}]` : ''}`;
 }
 
 class CancelledError extends Error {
@@ -71,12 +86,54 @@ export class RunExecutor {
     if (sf) this.salesforce = new SalesforceSessions(sf);
   }
 
-  /** Tests to execute: one per test case, or one per persona for tests with data.personas. */
-  private plan(): Array<{ testCase: TestCase; persona?: string }> {
+  /** Rows of the data sets the test cases use (data.dataset), loaded once per run. */
+  private datasets = new Map<string, { rows: Array<Record<string, any>>; error?: string }>();
+
+  private async loadDatasets(): Promise<void> {
+    const repo = new TestDataRepository();
+    const { environment } = testDataSettings(this.config);
+    for (const tc of this.testCases) {
+      const ref = tc.data?.dataset;
+      if (ref === undefined || ref === null || ref === '' || this.datasets.has(String(ref))) continue;
+      try {
+        const set = await repo.findByIdOrName(String(ref), this.agent.projectId, environment);
+        if (!set) {
+          this.datasets.set(String(ref), { rows: [], error: `Test data set "${ref}" not found in this project` });
+          continue;
+        }
+        let rows = datasetRows(set.data);
+        if (!rows.length) {
+          this.datasets.set(String(ref), { rows: [], error: `Test data set "${ref}" has no rows` });
+          continue;
+        }
+        if (rows.length > MAX_DATASET_ROWS) {
+          this.log(`Test data set "${ref}" has ${rows.length} rows: only the first ${MAX_DATASET_ROWS} run`, {}, 'warn');
+          rows = rows.slice(0, MAX_DATASET_ROWS);
+        }
+        this.datasets.set(String(ref), { rows });
+      } catch (e: any) {
+        this.datasets.set(String(ref), { rows: [], error: `Test data set "${ref}" could not be loaded: ${e.message}` });
+      }
+    }
+  }
+
+  /**
+   * Tests to execute: one per test case, one per persona for tests with data.personas,
+   * and one per data set row for tests with data.dataset (personas × rows when both).
+   */
+  private plan(): PlanItem[] {
     const settings = this.salesforce?.settings ?? null;
     return this.testCases.flatMap((testCase) => {
-      const personas = testPersonas(testCase.data, settings);
-      return personas.length ? personas.map((persona) => ({ testCase, persona })) : [{ testCase }];
+      const personas: Array<string | undefined> = testPersonas(testCase.data, settings);
+      const ref = testCase.data?.dataset;
+      const ds = ref !== undefined && ref !== null && ref !== '' ? this.datasets.get(String(ref)) : undefined;
+      const rows: Array<Partial<PlanItem>> = !ds
+        ? [{}]
+        : ds.error
+          ? [{ dataError: ds.error }]
+          : ds.rows.map((values, index) => ({ row: { index, label: rowLabel(values, index), values } }));
+      return (personas.length ? personas : [undefined]).flatMap((persona) =>
+        rows.map((r) => ({ testCase, ...(persona ? { persona } : {}), ...r })));
     });
   }
 
@@ -85,12 +142,14 @@ export class RunExecutor {
   }
 
   /**
-   * Resolve {{secrets.NAME}} / {{env.NAME}} in a step's target and data values,
+   * Resolve {{secrets.NAME}} / {{env.NAME}} / {{vars.NAME}} / {{data.FIELD}} / {{fake.KIND}} in a step's target and data values,
    * and apply per-persona overrides: data.by_persona = { rep: { edit: false }, admin: { edit: true } }.
    */
-  private resolveStep(step: TestStep, persona?: string, vars?: Record<string, string>): TestStep {
+  private resolveStep(step: TestStep, ctx: StepContext): TestStep {
+    const persona = ctx.persona;
+    const extra = { data: ctx.testData?.row ?? null, fake: ctx.testData?.fake };
     const resolve = (v: any): any => {
-      if (typeof v === 'string') return resolvePlaceholders(v, this.secrets, vars);
+      if (typeof v === 'string') return resolvePlaceholders(v, this.secrets, ctx.api?.vars, extra);
       if (Array.isArray(v)) return v.map(resolve);
       if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, resolve(x)]));
       return v;
@@ -130,6 +189,7 @@ export class RunExecutor {
 
   /** Runs every test; resolves with the final run status. */
   async execute(): Promise<'completed' | 'failed' | 'cancelled'> {
+    await this.loadDatasets();
     const plan = this.plan();
     const total = plan.length;
     const counts = { passed: 0, failed: 0, skipped: 0, quarantined: 0 };
@@ -146,14 +206,14 @@ export class RunExecutor {
 
       for (let i = 0; i < total; i++) {
         if (this.cancelled) throw new CancelledError();
-        const { testCase, persona } = plan[i];
-        const title = persona ? `${testCase.title} [as ${persona}]` : testCase.title;
-        emitRunEvent(this.runId, 'test_started', { testId: testCase.id, title, persona, index: i + 1, total });
+        const { testCase, persona, row } = plan[i];
+        const title = titleOf(plan[i]);
+        emitRunEvent(this.runId, 'test_started', { testId: testCase.id, title, persona, ...(row ? { dataRow: row.index } : {}), index: i + 1, total });
 
         let status: string = 'failed';
         for (let attempt = 0; attempt <= retries; attempt++) {
           if (attempt > 0) this.log(`Retrying "${title}" (attempt ${attempt + 1}/${retries + 1})`, { testId: testCase.id }, 'warn');
-          status = await this.runTestCase(testCase, attempt, persona);
+          status = await this.runTestCase(plan[i], attempt);
           if (status !== 'failed' && status !== 'error') break;
           if (this.cancelled) throw new CancelledError();
         }
@@ -182,13 +242,15 @@ export class RunExecutor {
     }
   }
 
-  private async runTestCase(testCase: TestCase, attempt: number, persona?: string): Promise<string> {
+  private async runTestCase(item: PlanItem, attempt: number): Promise<string> {
+    const { testCase, persona, row } = item;
     const config = this.config;
     const startedAt = new Date();
-    const title = persona ? `${testCase.title} [as ${persona}]` : testCase.title;
+    const title = titleOf(item);
     const baseMeta = {
       title, module: testCase.module, priority: testCase.priority, attempt: attempt + 1,
       ...(persona ? { persona } : {}),
+      ...(row ? { dataRow: row.index, dataLabel: row.label } : {}),
       ...(this.quarantined.has(testCase.id) ? { quarantined: true } : {}),
     };
     const result = await this.runRepo.createResult({
@@ -205,6 +267,7 @@ export class RunExecutor {
     let page: Page | undefined;
     let status: 'passed' | 'failed' | 'skipped' | 'error' = 'passed';
     let error: string | undefined;
+    let testData: StepContext['testData'];
 
     this.log(`▶ ${title}`, { testId: testCase.id });
 
@@ -233,6 +296,15 @@ export class RunExecutor {
         });
       }
       page = await context.newPage();
+      if (item.dataError) throw new Error(item.dataError);
+      const td = testDataSettings(config);
+      const fake = new FakeValues(await createFaker(td.locale, seedFor(td.seed, testCase.id, persona, row?.index)));
+      // Row values may use {{secrets.X}}, {{env.X}} and {{fake.kind}} themselves
+      const resolveRow = (v: any): any => typeof v === 'string'
+        ? resolvePlaceholders(v, this.secrets, undefined, { fake })
+        : Array.isArray(v) ? v.map(resolveRow)
+          : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, resolveRow(x)])) : v;
+      testData = { fake, ...(row ? { row: resolveRow(row.values) } : {}) };
       const ctx: StepContext = {
         page,
         baseUrl: config.base_url,
@@ -241,6 +313,7 @@ export class RunExecutor {
         salesforce: this.salesforce,
         persona,
         quality,
+        testData,
         api: { vars: {} },
         ai: {
           judge: async (system, user) => {
@@ -260,7 +333,7 @@ export class RunExecutor {
 
       // Persona tests without an explicit login step start logged in as the persona.
       if (persona && !steps.some((s) => classifyAction(s.action, s) === 'salesforce_login')) {
-        const log = await this.runStep({ stepId: 0, action: 'salesforce_login', data: { persona } }, ctx, testCase, persona);
+        const log = await this.runStep({ stepId: 0, action: 'salesforce_login', data: { persona } }, ctx, testCase);
         stepLogs.push(log);
         if (log.status === 'failed') {
           status = 'failed';
@@ -274,7 +347,7 @@ export class RunExecutor {
           stepLogs.push({ stepId: step.stepId, action: step.action, target: step.target, status: 'skipped', message: `Not for persona ${persona ?? '(none)'}`, durationMs: 0 });
           continue;
         }
-        const log = await this.runStep(step, ctx, testCase, persona);
+        const log = await this.runStep(step, ctx, testCase);
         stepLogs.push(log);
         await this.streamScreenshot(page, testCase.id);
         if (log.status === 'failed') {
@@ -348,6 +421,7 @@ export class RunExecutor {
         ...(quality.aiChecks?.length ? { aiChecks: quality.aiChecks } : {}),
         ...(healed.length ? { healing: { steps: healed, applied: healingApplied } } : {}),
         ...(kept.traceMasked ? { traceRedactions: kept.traceMasked } : {}),
+        ...this.testDataMeta(row, testData),
         // Lets triage recognise the same failure in later runs
         ...((status === 'failed' || status === 'error') && error
           ? { failureSignature: failureSignature(error, stepLogs.find((l) => l.status === 'failed')?.action) }
@@ -358,32 +432,40 @@ export class RunExecutor {
 
     const icon = status === 'passed' ? '✓' : status === 'skipped' ? '○' : '✗';
     this.log(`${icon} ${title}: ${status}${error ? ` — ${error}` : ''}`, { testId: testCase.id }, status === 'passed' ? 'info' : 'warn');
-    emitRunEvent(this.runId, 'test_result', { testId: testCase.id, resultId: result.id, title, persona, status, error, duration });
+    emitRunEvent(this.runId, 'test_result', { testId: testCase.id, resultId: result.id, title, persona, ...(row ? { dataRow: row.index } : {}), status, error, duration });
     return status;
   }
 
-  private async runStep(step: TestStep, ctx: StepContext, testCase: TestCase, persona?: string): Promise<StepLog> {
+  /** Test data shown with the result: the data set row as stored (secrets stay placeholders) and the fake values used. */
+  private testDataMeta(row: PlanItem['row'], testData: StepContext['testData']): Record<string, any> {
+    const fake = testData?.fake.used() ?? {};
+    if (!row && !Object.keys(fake).length) return {};
+    const masked = Object.fromEntries(Object.entries(fake).map(([k, v]) => [k, this.mask(v)]));
+    return { testData: { ...(row ? { row: row.values } : {}), ...(Object.keys(masked).length ? { fake: masked } : {}) } };
+  }
+
+  private async runStep(step: TestStep, ctx: StepContext, testCase: TestCase): Promise<StepLog> {
     const started = Date.now();
     const base = { stepId: step.stepId, action: step.action, target: step.target };
     const kind = classifyAction(step.action, step);
     this.log(`  Step ${step.stepId}: ${step.action}${step.target ? ` → ${step.target}` : ''}`, { testId: testCase.id, stepId: step.stepId });
 
     try {
-      const outcome = await executeStep(this.resolveStep(step, persona, ctx.api?.vars), ctx);
+      const outcome = await executeStep(this.resolveStep(step, ctx), ctx);
       return { ...base, ...outcome, message: this.mask(outcome.message), durationMs: Date.now() - started };
     } catch (e: any) {
       let message = this.mask(String(e.message || e).split('\n')[0]);
       if (step.target && /Timeout \d+ms exceeded/.test(message)) {
         message = `Element "${step.target}" was not found or not actionable (${message})`;
       }
-      const healed = await this.trySelfHeal(step, ctx, kind, message, testCase, persona);
+      const healed = await this.trySelfHeal(step, ctx, kind, message, testCase);
       if (healed) return { ...base, ...healed, durationMs: Date.now() - started };
       return { ...base, status: 'failed', message, durationMs: Date.now() - started };
     }
   }
 
   /** Ask the LLM for a replacement selector when a step fails on a selector. */
-  private async trySelfHeal(step: TestStep, ctx: StepContext, kind: ReturnType<typeof classifyAction>, error: string, testCase: TestCase, persona?: string) {
+  private async trySelfHeal(step: TestStep, ctx: StepContext, kind: ReturnType<typeof classifyAction>, error: string, testCase: TestCase) {
     const config = this.config;
     if (!config.ai?.self_healing || !step.target || !isSelectorFailure(kind, error)) return null;
 
@@ -391,7 +473,7 @@ export class RunExecutor {
     const cached = this.healingCache.get(step.target, ctx.page.url());
     if (cached) {
       try {
-        const outcome = await executeStep(this.resolveStep(step, persona, ctx.api?.vars), ctx, cached);
+        const outcome = await executeStep(this.resolveStep(step, ctx), ctx, cached);
         this.log(`  🩹 Reused healed selector "${cached}" for "${step.target}"`, { testId: testCase.id, stepId: step.stepId });
         return { ...outcome, message: `${outcome.message} (healed selector reused: "${step.target}" → "${cached}")`, healedSelector: cached };
       } catch {
@@ -421,7 +503,7 @@ export class RunExecutor {
       if (!selector || selector === step.target) return null;
 
       const failedUrl = ctx.page.url();
-      const outcome = await executeStep(this.resolveStep(step, persona, ctx.api?.vars), ctx, selector);
+      const outcome = await executeStep(this.resolveStep(step, ctx), ctx, selector);
       this.healingCache.set(step.target, failedUrl, selector);
       this.log(`  🩹 Healed: "${step.target}" → "${selector}"`, { testId: testCase.id, stepId: step.stepId });
       return { ...outcome, message: `${outcome.message} (self-healed from "${step.target}")`, healedSelector: selector };

@@ -37,6 +37,8 @@ else if (prompt.includes('You are a strict QA judge')) {
   else if (expectation.includes('everything has a name') && prompt.includes('Everything here has a name')) console.log('{"verdict": "pass", "confidence": 0.92, "reason": "The page says everything has a name"}');
   else console.log('{"verdict": "fail", "confidence": 0.85, "reason": "No shopping cart is shown on the page"}');
 }
+else if (prompt.includes('You generate test data for software tests')) console.log(JSON.stringify([
+  { _label: 'valid', email: 'ada@example.com', qty: 2 }, { _label: 'empty email', email: '', qty: 1, 'bad key': 'x' }, 'not a row']));
 else if (prompt.includes('You triage failed UI test runs')) console.log('[{"group": 1, "category": "app_bug", "cause": "The page no longer shows the expected text", "suggestion": "Check the release notes of the last deploy"}]');
 else console.log('[]');
 `);
@@ -146,6 +148,11 @@ const PAGES: Record<string, (q: URLSearchParams) => string> = {
       .then((d) => { document.getElementById('price').textContent = 'Price: ' + d.price; })
       .catch(() => { document.getElementById('price').textContent = 'Price unavailable'; });
   </script>`),
+  // Echoes a form back: data-driven tests fill it and check the result
+  '/signup': () => page('Signup', `<form onsubmit="event.preventDefault(); document.getElementById('out').textContent =
+    'Welcome ' + document.getElementById('name').value + ' <' + document.getElementById('email').value + '>' + ' x' + document.getElementById('qty').value;">
+    <label for="name">Name</label><input id="name"><label for="email">Email</label><input id="email">
+    <label for="qty">Quantity</label><input id="qty"><button type="submit">Sign up</button></form><p id="out"></p>`),
   '/heal': () => page('Heal', '<button id="new-id" type="button" onclick="document.getElementById(\'out\').textContent=\'clicked\'">Continue</button><p id="out"></p>'),
 };
 
@@ -174,8 +181,8 @@ async function newAgent(name: string, config: Record<string, any> = {}): Promise
   return res.data.id;
 }
 
-async function newTest(title: string, steps: any[]): Promise<string> {
-  const res = await call('POST', '/api/v1/testcases', { title, module: 'Quality', priority: 'High', steps, expectedResults: ['ok'] });
+async function newTest(title: string, steps: any[], data?: Record<string, any>): Promise<string> {
+  const res = await call('POST', '/api/v1/testcases', { title, module: 'Quality', priority: 'High', steps, expectedResults: ['ok'], ...(data ? { data } : {}) });
   assert.equal(res.status, 201, res.text);
   return res.data.id;
 }
@@ -576,4 +583,74 @@ describe('quality extensions (integration)', () => {
     const appBug = r.metadata.triage.groups.find((g: any) => g.category === 'app_bug');
     assert.ok(appBug.tests.some((x: any) => x.testCaseId === cart));
   });
+
+  it('generates test data and runs data-driven tests with fake values', async (t) => {
+    if (!dbAvailable) return t.skip('database not available');
+    // Faker generation: preview, then saved as a data set
+    const kinds = await call('GET', '/api/v1/testdata/fake-kinds?locale=it');
+    assert.equal(kinds.status, 200, kinds.text);
+    assert.ok(kinds.data.some((k: any) => k.kind === 'email' && /@example\./.test(k.example)));
+    const preview = await call('POST', '/api/v1/testdata/generate', { fields: { name: 'fullName', email: 'email' }, count: 3, locale: 'it', seed: 5 });
+    assert.equal(preview.status, 200, preview.text);
+    assert.equal(preview.data.rows.length, 3);
+    assert.equal(preview.data.source, 'faker');
+    assert.equal((await call('POST', '/api/v1/testdata/generate', { fields: { e: 'nope' } })).status, 400);
+    assert.equal((await call('POST', '/api/v1/testdata/generate', {})).status, 400);
+
+    // AI generation: untrusted rows are sanitized before they are saved
+    const ai = await call('POST', '/api/v1/testdata/generate', { prompt: 'Signup data with an edge case', count: 5, save: true, name: 'AI signups' });
+    assert.equal(ai.status, 201, ai.text);
+    assert.equal(ai.data.source, 'ai');
+    assert.deepEqual(ai.data.rows, [{ _label: 'valid', email: 'ada@example.com', qty: 2 }, { _label: 'empty email', email: '', qty: 1 }]);
+    assert.equal(ai.data.saved.data.generated.source, 'ai');
+
+    // Stored data set given as an array of rows; one row uses a secret and a fake value
+    const set = await call('POST', '/api/v1/testdata', { name: 'signups', data: [
+      { _label: 'Ada', name: 'Ada', email: 'ada@example.com', qty: 1 },
+      { name: '{{fake.firstName}}', email: '{{fake.email}}', qty: '{{secrets.QTY}}' },
+    ] });
+    assert.equal(set.status, 201, set.text);
+    assert.equal((await call('GET', `/api/v1/testdata/${set.data.id}`)).data.rowCount, 2);
+
+    const agent = await newAgent('Test data', { evidence: { trace: 'off', video: 'off' }, secrets: { QTY: '7' }, test_data: { locale: 'it', seed: 99 } });
+    const driven = await newTest('Signup works', [
+      { action: 'navigate', target: '/signup' },
+      { action: 'fill', target: '#name', data: { value: '{{data.name}}' } },
+      { action: 'fill', target: '#email', data: { value: '{{data.email}}' } },
+      { action: 'fill', target: '#qty', data: { value: '{{data.qty}}' } },
+      { action: 'click', target: 'text=Sign up' },
+      { action: 'assert_text', target: '#out', data: { value: 'Welcome {{data.name}} <{{data.email}}> x{{data.qty}}' } },
+    ], { dataset: 'signups' });
+    const faked = await newTest('Signup with fake values', [
+      { action: 'navigate', target: '/signup' },
+      { action: 'fill', target: '#name', data: { value: '{{fake.fullName:buyer}}' } },
+      { action: 'fill', target: '#email', data: { value: '{{fake.email:buyer}}' } },
+      { action: 'fill', target: '#qty', data: { value: '{{fake.number}}' } },
+      { action: 'click', target: 'text=Sign up' },
+      { action: 'assert_text', target: '#out', data: { value: 'Welcome {{fake.fullName:buyer}} <{{fake.email:buyer}}> x{{fake.number}}' } },
+    ]);
+    const missing = await newTest('Unknown data set', [{ action: 'navigate', target: '/signup' }], { dataset: 'nope' });
+    const r = await run(agent, [driven, faked, missing]);
+
+    const rows = r.results.filter((x: any) => x.testCaseId === driven);
+    assert.equal(rows.length, 2, 'one execution per row');
+    assert.deepEqual(rows.map((x: any) => x.status), ['passed', 'passed'], rows.map((x: any) => x.error).join(' | '));
+    assert.deepEqual(rows.map((x: any) => x.metadata.title), ['Signup works [Ada]', 'Signup works [row 2]']);
+    assert.deepEqual(rows.map((x: any) => x.metadata.dataRow), [0, 1]);
+    // The stored row keeps the placeholders (no secret in the result); fake values are listed
+    assert.equal(rows[1].metadata.testData.row.qty, '{{secrets.QTY}}');
+    assert.match(rows[1].metadata.testData.fake.email, /@example\./);
+    const fakedResult = r.results.find((x: any) => x.testCaseId === faked);
+    assert.equal(fakedResult.status, 'passed', fakedResult.error);
+    assert.deepEqual(Object.keys(fakedResult.metadata.testData.fake).sort(), ['email:buyer', 'fullName:buyer', 'number']);
+    const missed = r.results.find((x: any) => x.testCaseId === missing);
+    assert.equal(missed.status, 'error');
+    assert.match(missed.error, /Test data set "nope" not found/);
+    assert.equal(r.metadata.triage.groups[0].category, 'test_bug');
+
+    // The seed makes values reproducible across runs
+    const again = await run(agent, [faked]);
+    assert.deepEqual(again.results[0].metadata.testData.fake, fakedResult.metadata.testData.fake);
+  });
 });
+

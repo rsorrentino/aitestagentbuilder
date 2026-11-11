@@ -163,6 +163,12 @@ describe('MCP server (integration, login enabled)', () => {
       });
       assert.equal(created.isError, false, JSON.stringify(created.data));
 
+      const generated = await mcp.tool('generate_test_data', { fields: { user: 'username', email: 'email' }, count: 3, locale: 'it', name: 'mcp users' });
+      assert.equal(generated.isError, false, JSON.stringify(generated.data));
+      assert.equal(generated.data.rows.length, 3);
+      assert.equal(generated.data.saved.name, 'mcp users');
+      assert.match(generated.data.usage, /dataset: "mcp users"/);
+
       const plan = await mcp.tool('plan_tests', { agentId: demo.id });
       const passingId = plan.data.testCases[0].id;
 

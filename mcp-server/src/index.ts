@@ -77,7 +77,7 @@ export function summarizeFailure(r: any) {
 function finalResults(results: any[] = []): any[] {
   const map = new Map<string, any>();
   for (const r of results) {
-    const key = `${r.testCaseId}@${r.metadata?.persona ?? ''}`;
+    const key = `${r.testCaseId}@${r.metadata?.persona ?? ''}#${r.metadata?.dataRow ?? ''}`;
     const prev = map.get(key);
     if (!prev || new Date(r.startedAt) >= new Date(prev.startedAt)) map.set(key, r);
   }
@@ -133,6 +133,8 @@ export const TOOLS = [
       'http_request (target path, data { method, json, extract: { id: "$.id" } } → later {{vars.id}}), assert_status, assert_json ' +
       '({ path, equals | contains | exists }), mock_route / block_route (stub calls during UI tests), ' +
       'assert_ai (data.value: an expectation in plain language, judged by the AI from the page text). ' +
+      'Values may use {{data.column}} (row of the data set named in the test case data.dataset: the test runs once per row), ' +
+      '{{fake.email}} / {{fake.email:label}} (fictitious values, the same within a test for the same label) and {{secrets.NAME}}. ' +
       'Targets are CSS selectors, text=…, or plain labels ("Sign in button"); data.value holds text to type or expect.',
     inputSchema: {
       type: 'object',
@@ -151,6 +153,7 @@ export const TOOLS = [
         expectedResults: { type: 'array', items: { type: 'string' } },
         tags: { type: 'array', items: { type: 'string' } },
         personas: { type: 'array', items: { type: 'string' }, description: 'Salesforce personas to run the test as' },
+        dataset: { type: 'string', description: 'Name of a test data set: the test runs once per row, steps use {{data.column}}' },
       },
       required: ['title', 'module', 'steps'],
     },
@@ -197,6 +200,21 @@ export const TOOLS = [
       type: 'object',
       properties: { runId: { type: 'string' }, resultId: { type: 'string' }, stepIds: { type: 'array', items: { type: 'number' } } },
       required: ['runId', 'resultId'],
+    },
+  },
+  {
+    name: 'generate_test_data',
+    description: 'Generate a test data set: with Faker from column kinds (fields: { "email": "email", "name": "fullName" }) or with the AI ' +
+      'from a description (prompt, e.g. "signup data with edge cases"). Give a name to save it; tests then use it with dataset: name.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        fields: { type: 'object', additionalProperties: { type: 'string' }, description: 'column → kind (firstName, lastName, fullName, email, phone, company, street, city, zip, country, iban, testCard, uuid, unique, number, amount, date, pastDate, birthdate, word, sentence, url, …)' },
+        prompt: { type: 'string', description: 'What the AI should generate (instead of or with fields)' },
+        count: { type: 'number', description: 'Rows, 1–100 (default 10)' },
+        locale: { type: 'string', description: 'e.g. en, it, de, fr, es, pt_BR' },
+        name: { type: 'string', description: 'Save as a data set with this name' },
+      },
     },
   },
   {
@@ -278,12 +296,13 @@ export class TestAgentMCPServer {
     },
 
     create_test_case: async (args: any) => {
-      const { personas, ...rest } = args;
+      const { personas, dataset, ...rest } = args;
+      const extra = { ...(personas?.length ? { personas } : {}), ...(dataset ? { dataset } : {}) };
       const { data } = await this.api.post('/testcases', {
         priority: 'Medium',
         expectedResults: [],
         ...rest,
-        ...(personas?.length ? { data: { personas } } : {}),
+        ...(Object.keys(extra).length ? { data: extra } : {}),
       });
       return { id: data.id, title: data.title, steps: data.steps.length };
     },
@@ -319,6 +338,16 @@ export class TestAgentMCPServer {
       const { data } = await this.api.post(`/runs/${encodeURIComponent(args.runId)}/results/${encodeURIComponent(args.resultId)}/apply-healing`,
         args.stepIds?.length ? { stepIds: args.stepIds } : {});
       return data;
+    },
+
+    generate_test_data: async (args: { fields?: Record<string, string>; prompt?: string; count?: number; locale?: string; name?: string }) => {
+      const { data } = await this.api.post('/testdata/generate', { ...args, ...(args.name ? { save: true } : {}) });
+      return {
+        source: data.source,
+        rows: data.rows.slice(0, 20),
+        ...(data.rows.length > 20 ? { moreRows: data.rows.length - 20 } : {}),
+        ...(data.saved ? { saved: { id: data.saved.id, name: data.saved.name }, usage: `Set dataset: "${data.saved.name}" on a test case; steps use {{data.<column>}}` } : {}),
+      };
     },
 
     ingest_test_book: async (args: { filePath: string; extractTestCases?: boolean }) => {

@@ -148,12 +148,20 @@ export class QuarantineRepository {
     const out = new Map<string, Array<{ status: string; attempt: number }>>();
     if (!testCaseIds.length) return out;
     const res = await this.db.query(
-      `WITH final AS (
-         SELECT DISTINCT ON (r.run_id, r.test_case_id, COALESCE(r.metadata->>'persona', ''))
-                r.test_case_id, r.status, COALESCE((r.metadata->>'attempt')::int, 1) AS attempt, ru.started_at
+      `WITH variant AS (
+         -- final attempt of each persona / data row of a test in a run
+         SELECT DISTINCT ON (r.run_id, r.test_case_id, COALESCE(r.metadata->>'persona', '') || COALESCE('#' || (r.metadata->>'dataRow'), ''))
+                r.run_id, r.test_case_id, r.status, COALESCE((r.metadata->>'attempt')::int, 1) AS attempt, ru.started_at
            FROM results r JOIN runs ru ON ru.id = r.run_id
           WHERE ru.agent_id = $1 AND r.test_case_id = ANY($2) AND r.status <> 'running' AND ru.status IN ('completed', 'failed')
-          ORDER BY r.run_id, r.test_case_id, COALESCE(r.metadata->>'persona', ''), r.started_at DESC
+          ORDER BY r.run_id, r.test_case_id, COALESCE(r.metadata->>'persona', '') || COALESCE('#' || (r.metadata->>'dataRow'), ''), r.started_at DESC
+       ), final AS (
+         -- one outcome per test and run: a failing persona or row fails the test
+         SELECT test_case_id, MIN(started_at) AS started_at,
+                CASE WHEN bool_or(status IN ('failed', 'error', 'timeout')) THEN 'failed'
+                     WHEN bool_or(status = 'passed') THEN 'passed' ELSE MIN(status) END AS status,
+                MAX(attempt) AS attempt
+           FROM variant GROUP BY run_id, test_case_id
        ), ranked AS (
          SELECT *, ROW_NUMBER() OVER (PARTITION BY test_case_id ORDER BY started_at DESC) AS n FROM final
        )

@@ -2,7 +2,8 @@
  * Create / edit a test case, including its executable steps.
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { api, errorMessage, PRIORITIES, STEP_ACTIONS, TEST_TYPES } from '../lib/api';
 
 interface StepRow { action: string; target: string; value: string }
@@ -48,6 +49,11 @@ export default function TestCaseEditor({ initial, onSaved, onCancel }: TestCaseE
   const [steps, setSteps] = useState<StepRow[]>(toRows(initial?.steps));
   const initialPersonas = initial?.data?.personas;
   const [personas, setPersonas] = useState<string>(Array.isArray(initialPersonas) ? initialPersonas.join(', ') : initialPersonas ?? '');
+  const [dataset, setDataset] = useState<string>(initial?.data?.dataset ?? '');
+  const [datasets, setDatasets] = useState<Array<{ id: string; name: string }>>([]);
+  useEffect(() => {
+    api.get('/testdata').then((res) => setDatasets(res.data)).catch(() => undefined);
+  }, []);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -83,7 +89,12 @@ export default function TestCaseEditor({ initial, onSaved, onCancel }: TestCaseE
         const list = personas.split(',').map((p: string) => p.trim()).filter(Boolean);
         const rest = { ...(initial?.data ?? {}) };
         delete rest.personas;
-        const next = list.length ? { ...rest, personas: list.includes('all') ? 'all' : list } : rest;
+        delete rest.dataset;
+        const next = {
+          ...rest,
+          ...(list.length ? { personas: list.includes('all') ? 'all' : list } : {}),
+          ...(dataset.trim() ? { dataset: dataset.trim() } : {}),
+        };
         return Object.keys(next).length ? next : null;
       })(),
     };
@@ -131,6 +142,12 @@ export default function TestCaseEditor({ initial, onSaved, onCancel }: TestCaseE
             <div className="form-hint">Salesforce agents: the test runs once per persona.</div>
           </div>
           <div className="form-group">
+            <label className="form-label" htmlFor="tc-dataset">Data set</label>
+            <input id="tc-dataset" className="form-control" list="tc-datasets" value={dataset} onChange={(e) => setDataset(e.target.value)} placeholder="none" />
+            <datalist id="tc-datasets">{[...new Set(datasets.map((d) => d.name))].map((n) => <option key={n} value={n} />)}</datalist>
+            <div className="form-hint">The test runs once per row; steps use <code>{'{{data.column}}'}</code>. <Link href="/testdata">Test data →</Link></div>
+          </div>
+          <div className="form-group">
             <label className="form-label" htmlFor="tc-tags">Tags (comma separated)</label>
             <input id="tc-tags" className="form-control" value={tags} onChange={(e) => setTags(e.target.value)} placeholder="smoke, login" />
           </div>
@@ -166,6 +183,8 @@ export default function TestCaseEditor({ initial, onSaved, onCancel }: TestCaseE
             mock_route / block_route (target: URL pattern, e.g. <code>**/api/payments/**</code>; value <code>{'{"status": 500}'}</code>) to stub calls in UI tests.
             AI: assert_ai (value: the expectation in plain language, e.g. “the answer explains how to reset a password”; optional target element), or write
             the action as “Verify with AI that …”.
+            Test data: <code>{'{{data.column}}'}</code> (row of the data set), <code>{'{{fake.email}}'}</code> or <code>{'{{fake.email:buyer}}'}</code> (fictitious
+            values: the same kind and label give the same value within a test, so a later step can check it), <code>{'{{secrets.NAME}}'}</code>.
             Targets can be CSS selectors (#id, .class), <code>text=Visible text</code>, or a plain label like “Sign in button”.
             Salesforce: salesforce_login (target = persona), assert_object_access (target = Account, value <code>{'{"read": true, "delete": false}'}</code>),
             assert_field_access (Account.AnnualRevenue), assert_record_access (record Id), assert_profile, assert_access_denied.

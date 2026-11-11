@@ -46,6 +46,7 @@
 | **Quality checks** | Accessibility (axe-core, WCAG 2.x), visual regression against approved baselines, Playwright trace + video of failures (secrets masked), AI-repaired selectors kept and written back to test cases |
 | **AI-judged assertions** | `assert_ai`: plain-language expectations judged by the AI against the live page (e.g. chatbot answers), with confidence threshold and per-run cache |
 | **API testing** | HTTP request steps with status / JSON / header / timing assertions and captured variables, tests generated from OpenAPI (with AI edge cases), mocked or blocked calls in UI tests |
+| **Test data generation** | `{{fake.email}}`-style values (Faker, 30+ kinds, locales, reproducible with a seed), data-driven tests that run once per data set row, data sets generated from column kinds or by the AI with edge cases |
 | **Flaky-test quarantine** | Flaky tests keep running without failing runs, CI or notifications; quarantined by hand or automatically, released when stable |
 | **Failure triage** | Failures grouped by cause and classified as app bug, test bug or environment, new vs. seen before, optionally explained by the AI; in notifications and the MCP server |
 | **MCP server** | Claude Code, Copilot, Cursor and other agents can write tests, run them and read failure evidence ([docs/mcp-server.md](docs/mcp-server.md)) |

@@ -36,8 +36,8 @@ export class AnalyticsService {
     // Final attempt of each test in each run within the window
     const finalAttempts = `
       WITH final AS (
-        SELECT DISTINCT ON (r.run_id, r.test_case_id, COALESCE(r.metadata->>'persona', ''))
-               r.run_id, r.test_case_id || COALESCE('@' || (r.metadata->>'persona'), '') AS test_case_id, r.status, r.duration, r.error, r.started_at,
+        SELECT DISTINCT ON (r.run_id, r.test_case_id, COALESCE(r.metadata->>'persona', '') || COALESCE('#' || (r.metadata->>'dataRow'), ''))
+               r.run_id, r.test_case_id || COALESCE('@' || (r.metadata->>'persona'), '') || COALESCE('#' || (r.metadata->>'dataRow'), '') AS test_case_id, r.status, r.duration, r.error, r.started_at,
                COALESCE(r.metadata->>'title', tc.title, r.test_case_id) AS title,
                COALESCE((r.metadata->>'attempt')::int, 1) AS attempt
           FROM results r
@@ -45,7 +45,7 @@ export class AnalyticsService {
           LEFT JOIN test_cases tc ON tc.id = r.test_case_id
          WHERE ru.project_id = $1 AND ru.started_at >= NOW() - ($2 || ' days')::interval
            AND r.status <> 'running'
-         ORDER BY r.run_id, r.test_case_id, COALESCE(r.metadata->>'persona', ''), r.started_at DESC
+         ORDER BY r.run_id, r.test_case_id, COALESCE(r.metadata->>'persona', '') || COALESCE('#' || (r.metadata->>'dataRow'), ''), r.started_at DESC
       )`;
 
     const [runStats, triggers, trend, flaky, failing, slow, testTotals] = await Promise.all([

@@ -22,7 +22,7 @@ export interface TriageGroup {
   suggestion?: string;
   source: 'rules' | 'ai';
   sample: { error: string; action?: string; target?: string };
-  tests: Array<{ resultId: string; testCaseId: string; title: string; persona?: string }>;
+  tests: Array<{ resultId: string; testCaseId: string; title: string; persona?: string; dataRow?: string }>;
   /** Earlier runs of the same agent with this failure (last 30 days) */
   seenBefore: number;
   firstSeen?: string;
@@ -60,7 +60,7 @@ const RULES: Array<{ category: FailureCategory; test: RegExp; reason: string }> 
   { category: 'environment', test: /Salesforce token request failed|login as .* did not complete|verification code|phishing-resistant|Cannot connect to PostgreSQL|No Salesforce API access/i, reason: 'Login or infrastructure problem, not the behaviour under test' },
   // Test bug: the test no longer matches the application or is misconfigured
   { category: 'test_bug', test: /was not found or not actionable|strict mode violation|resolved to \d+ elements|waiting for (locator|getBy)|locator\.\w+: Timeout|not attached to the DOM|outside of the viewport/i, reason: 'A selector no longer finds the element: the page changed or the test is outdated' },
-  { category: 'test_bug', test: /needs (a target|data\.value)|Unknown secret|Unknown Salesforce persona|not in STEP_ENV_ALLOWLIST|Test case has no steps|Give the expected access|Expected true\/false|No approved baseline|Unknown accessibility level/i, reason: 'The test case is incomplete or misconfigured' },
+  { category: 'test_bug', test: /needs (a target|data\.value)|Unknown secret|Unknown Salesforce persona|not in STEP_ENV_ALLOWLIST|Test case has no steps|Give the expected access|Expected true\/false|No approved baseline|Unknown accessibility level|Test data set .* (not found|has no rows)|Unknown data field|needs a data set|Unknown fake data kind|Unknown test data locale/i, reason: 'The test case is incomplete or misconfigured' },
   // App bug: the application behaved differently from what the test expects
   { category: 'app_bug', test: /Expected .* to contain|Expected the page to contain|Expected URL to contain|Expected title to contain|Expected access to be denied|Unexpected access to|Expected profile|is missing permission set|must not have permission set|not to be visible|differs from the baseline|changed size compared with the baseline|accessibility violation/i, reason: 'The application did not show or allow what the test expects' },
   { category: 'app_bug', test: /AI judged .*: fail\b/i, reason: 'The AI judged that the page does not meet the expectation' },
@@ -76,7 +76,7 @@ export function classifyFailure(error: string): { category: FailureCategory; rea
 function finalFailures(results: any[]): any[] {
   const latest = new Map<string, any>();
   for (const r of results) {
-    const key = `${r.testCaseId}@${r.metadata?.persona ?? ''}`;
+    const key = `${r.testCaseId}@${r.metadata?.persona ?? ''}#${r.metadata?.dataRow ?? ''}`;
     const prev = latest.get(key);
     if (!prev || new Date(r.startedAt) >= new Date(prev.startedAt)) latest.set(key, r);
   }
@@ -96,7 +96,7 @@ export function groupFailures(results: any[]): Omit<TriageGroup, 'seenBefore' | 
       group = { signature, category, reason, source: 'rules', sample: { error: error.slice(0, 500), action: step?.action, target: step?.target }, tests: [] };
       groups.set(signature, group);
     }
-    group.tests.push({ resultId: r.id, testCaseId: r.testCaseId, title: r.metadata?.title ?? r.testCaseId, ...(r.metadata?.persona ? { persona: r.metadata.persona } : {}) });
+    group.tests.push({ resultId: r.id, testCaseId: r.testCaseId, title: r.metadata?.title ?? r.testCaseId, ...(r.metadata?.persona ? { persona: r.metadata.persona } : {}), ...(r.metadata?.dataLabel ? { dataRow: r.metadata.dataLabel } : {}) });
   }
   const order: Record<FailureCategory, number> = { app_bug: 0, environment: 1, test_bug: 2, unknown: 3 };
   return [...groups.values()].sort((a, b) => order[a.category] - order[b.category] || b.tests.length - a.tests.length);

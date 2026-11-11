@@ -45,6 +45,8 @@ export interface StepContext {
   /** Last API response and variables captured by http_request steps of this test. */
   api?: ApiState;
   /** AI judge for assert_ai steps (cache shared across the run). */
+  /** Data set row of this test execution ({{data.field}}) and its fake values ({{fake.kind}}) */
+  testData?: { row?: Record<string, any>; fake: { get(kind: string, label?: string): string; used(): Record<string, string> } };
   ai?: { judge: Judge; outline: (page: Page) => Promise<string>; mask: (text: string) => string; cache: Map<string, Omit<AiVerdict, 'cached'>> };
 }
 

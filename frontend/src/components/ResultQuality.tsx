@@ -26,7 +26,8 @@ export default function ResultQuality({ runId, result, canEdit, onChanged }: Pro
   const visual: any[] = result.metadata?.visual ?? [];
   const healing = result.metadata?.healing;
   const aiChecks: any[] = result.metadata?.aiChecks ?? [];
-  if (!ev.trace && !ev.video && !a11y.length && !visual.length && !healing?.steps?.length && !aiChecks.length) return null;
+  const testData = result.metadata?.testData;
+  if (!ev.trace && !ev.video && !a11y.length && !visual.length && !healing?.steps?.length && !aiChecks.length && !testData) return null;
 
   const act = async (key: string, fn: () => Promise<string>) => {
     setBusy(key);
@@ -162,6 +163,28 @@ export default function ResultQuality({ runId, result, canEdit, onChanged }: Pro
             </tbody>
           </table>
           <p className="form-hint">Judged from the page&apos;s text and structure, not its pixels. AI verdicts can vary; keep classic assertions for what must never change.</p>
+        </section>
+      )}
+
+      {testData && (
+        <section aria-label="Test data">
+          <h4 className="mb-2">🎲 Test data</h4>
+          {testData.row && (
+            <div className="text-sm mb-2">
+              <span className="text-muted">Data set row{result.metadata?.dataLabel ? ` “${result.metadata.dataLabel}”` : ''}: </span>
+              {Object.entries(testData.row).map(([k, v]) => (
+                <span key={k} className="code" style={{ marginRight: 10 }}>{k}={typeof v === 'object' ? JSON.stringify(v) : String(v)}</span>
+              ))}
+            </div>
+          )}
+          {testData.fake && (
+            <div className="text-sm">
+              <span className="text-muted">Generated values: </span>
+              {Object.entries(testData.fake).map(([k, v]) => (
+                <span key={k} className="code" style={{ marginRight: 10 }}>{`{{fake.${k}}}`}={String(v)}</span>
+              ))}
+            </div>
+          )}
         </section>
       )}
 

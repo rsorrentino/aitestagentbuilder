@@ -37,7 +37,7 @@ export function latestAttempts(results: TestResult[]): TestResult[] {
   // One entry per test and persona (persona matrix runs execute a test once per persona).
   const byTest = new Map<string, TestResult>();
   for (const r of results) {
-    const key = `${r.testCaseId}@${(r.metadata as any)?.persona ?? ''}`;
+    const key = `${r.testCaseId}@${(r.metadata as any)?.persona ?? ''}#${(r.metadata as any)?.dataRow ?? ''}`;
     const prev = byTest.get(key);
     if (!prev || new Date(r.startedAt) >= new Date(prev.startedAt)) byTest.set(key, r);
   }

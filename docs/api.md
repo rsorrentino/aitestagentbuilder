@@ -135,6 +135,13 @@ Screenshots are served at `GET /artifacts/<path from evidence.screenshots>`.
 ## Test data
 
 `POST/GET /testdata`, `GET/PUT/DELETE /testdata/:id`: named JSON data sets `{ name, data, description?, tags?, environment? }`.
+A data set with `data.rows` (or `data` given as an array, stored as `{ rows }`) drives data-driven tests: a test case
+with `data.dataset` set to its name or id runs once per row. `GET /testdata/:id` adds `rowCount`.
+
+| Method | Path | Role | Description |
+|---|---|---|---|
+| POST | `/testdata/generate` | editor | `{ fields?: { column: kind }, prompt?, count? (≤100), locale?, seed?, save?, name?, environment?, provider? }` → `{ rows, source: faker\|ai, saved? }`. `fields` alone uses Faker; `prompt` uses the AI (fields become column hints). 400 for unknown kinds or locales, or when no AI provider is configured for a prompt. |
+| GET | `/testdata/fake-kinds?locale=it` | viewer | Kinds usable as `{{fake.kind}}`, with a description and an example |
 
 ## Health & metrics (outside `/api/v1`)
 

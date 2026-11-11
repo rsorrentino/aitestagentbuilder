@@ -31,6 +31,10 @@ quarantine:
 checks:
   accessibility: report                # off | report | fail — axe-core scan of the page each test ends on
   accessibility_options: { level: wcag21aa, minImpact: serious }
+test_data:
+  locale: it                           # names, addresses, phone numbers of {{fake.*}} values (default en)
+  seed: 42                             # optional: the same values in every run (per test, row and persona)
+  environment: staging                 # optional: prefer data sets of this environment when names repeat
 evidence:
   trace: on_failure                    # off | on_failure | always — Playwright trace, secrets masked
   video: on_failure                    # off | on_failure | always
@@ -76,6 +80,52 @@ The agent page shows **Tests in the next run**: exactly what the planner will ex
   "expectedResults": ["User reaches the dashboard"]
 }
 ```
+
+## Test data
+
+**Generated values.** Steps can use `{{fake.<kind>}}` anywhere in a target or value:
+
+```json
+{ "action": "fill", "target": "#email", "data": { "value": "{{fake.email:buyer}}" } },
+{ "action": "assert_text", "target": "#summary", "data": { "value": "Order for {{fake.email:buyer}}" } }
+```
+
+- **The same within a test:** the same kind and label give the same value, so a later step can check what an
+  earlier one typed. Different labels (`{{fake.email:buyer}}`, `{{fake.email:seller}}`) give different values.
+- **Safe values:** emails use `example.com/.net/.org`, card numbers are well-known test cards (`4111111111111111`, …),
+  URLs point at `example.com`.
+- **Kinds:** firstName, lastName, fullName, email, username, password, phone, company, jobTitle, street, city, state,
+  zip, country, countryCode, iban, testCard, cvv, expiry, uuid, unique, number, amount, date, pastDate, birthdate,
+  word, words, sentence, paragraph, url, color. The **Test Data** page lists them with examples in each locale.
+- **Reproducible or unique:** `test_data.seed` gives the same values in every run; `{{fake.unique}}` stays unique
+  anyway, e.g. `{{fake.firstName}}.{{fake.unique}}@example.com` for records that must not already exist.
+- **Where they show:** the run page lists the values each test used.
+
+**Data-driven tests.** A test case with `"data": { "dataset": "signups" }` runs once per row of the data set, and steps
+use `{{data.<column>}}` (nested: `{{data.address.city}}`).
+
+```json
+{ "name": "signups", "data": { "rows": [
+  { "_label": "valid", "email": "ada@example.com", "qty": 1 },
+  { "_label": "empty email", "email": "", "qty": 1 },
+  { "_label": "admin", "email": "{{fake.email}}", "password": "{{secrets.ADMIN_PASSWORD}}" }
+] } }
+```
+
+- **Row names:** `_label` (or `label`, `name`, `title`, `id`) names the row in titles and reports:
+  *Signup works [empty email]*.
+- **Placeholders in rows:** values may use `{{secrets.NAME}}` and `{{fake.kind}}`. Results show the row as stored, so
+  secrets stay out of reports.
+- **With personas:** each persona runs each row.
+- **Limits:** at most 100 rows run. A missing data set fails the test as a *test bug* in triage.
+
+**Generating data sets.** On the **Test Data** page, or with `POST /testdata/generate`:
+- **From columns (Faker):** `{ "fields": { "name": "fullName", "email": "email" }, "count": 20, "locale": "it" }`.
+  Add `seed` for reproducible rows.
+- **With AI:** `{ "prompt": "customers for the signup form, with edge cases: empty email, 255-char name, apostrophes" }`.
+  The AI labels each edge case and is told to keep every value fictitious. Its answer is checked: flat rows, safe
+  column names, scalar values only.
+- **Saving:** preview first, then save as a data set; with the API, add `"save": true, "name": "signups"`.
 
 ## Step actions
 

@@ -129,11 +129,31 @@ export function secretValues(decrypted: any): string[] {
 }
 
 /**
- * Replace {{secrets.NAME}}, {{env.NAME}} and {{vars.NAME}} placeholders. Unknown secrets
- * and variables throw. Variables come from earlier steps of the test (http_request extract).
+ * Replace {{secrets.NAME}}, {{env.NAME}}, {{vars.NAME}}, {{data.FIELD}} and {{fake.KIND[:label]}}
+ * placeholders. Unknown secrets, variables and fields throw. Variables come from earlier steps
+ * of the test (http_request extract), data fields from the test's data set row, fake values
+ * from the test data generator (the same kind and label give the same value within a test).
  */
-export function resolvePlaceholders(text: string, secrets: Record<string, string>, vars?: Record<string, string>): string {
-  return text.replace(/\{\{\s*(secrets|env|vars)\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g, (_m, kind, name) => {
+export function resolvePlaceholders(
+  text: string,
+  secrets: Record<string, string>,
+  vars?: Record<string, string>,
+  extra: { data?: Record<string, any> | null; fake?: { get(kind: string, label?: string): string } } = {},
+): string {
+  return text.replace(/\{\{\s*(secrets|env|vars|data|fake)\.([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*)(?::([\w-]{1,40}))?\s*\}\}/g, (match, kind, name, label) => {
+    if (label !== undefined && kind !== 'fake') return match;
+    if (kind === 'fake') {
+      if (!extra.fake) throw new Error('{{fake.…}} values are only available while a test runs');
+      return extra.fake.get(name, label ?? '');
+    }
+    if (kind === 'data') {
+      if (!extra.data) throw new Error(`{{data.${name}}} needs a data set: set data.dataset on the test case`);
+      let cur: any = extra.data;
+      for (const part of name.split('.')) cur = cur !== null && typeof cur === 'object' && part in cur ? cur[part] : undefined;
+      if (cur === undefined) throw new Error(`Unknown data field "${name}" — the row has: ${Object.keys(extra.data).join(', ') || '(no fields)'}`);
+      return cur === null ? '' : typeof cur === 'object' ? JSON.stringify(cur) : String(cur);
+    }
+    if (name.includes('.')) return match;
     if (kind === 'secrets') {
       if (!(name in secrets)) throw new Error(`Unknown secret "${name}" — define it in the agent's secrets`);
       return secrets[name];

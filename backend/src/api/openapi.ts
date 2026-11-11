@@ -41,7 +41,7 @@ export function buildOpenApi(serverUrl: string) {
     },
     servers: [{ url: serverUrl }],
     security: [{ bearer: [] }, { apiKey: [] }],
-    tags: ['Auth', 'Projects', 'Admin', 'Agents', 'Test cases', 'Documents', 'Runs', 'Quality', 'Schedules', 'Notifications', 'Analytics', 'Audit', 'AI']
+    tags: ['Auth', 'Projects', 'Admin', 'Agents', 'Test cases', 'Documents', 'Runs', 'Quality', 'Test data', 'Schedules', 'Notifications', 'Analytics', 'Audit', 'AI']
       .map((name) => ({ name })),
     paths: {
       // ── Auth ─────────────────────────────────────────────────────────────
@@ -114,6 +114,25 @@ export function buildOpenApi(serverUrl: string) {
       },
       '/agents/{id}/generate-api-tests': {
         post: op('Quality', 'Generate API test cases from an OpenAPI / Swagger description (smoke tests, or AI-written edge cases)', { parameters: [id()] }),
+      },
+      '/testdata/generate': {
+        post: op('Test data', 'Generate data set rows with Faker ({ fields: { column: kind } }) or the AI ({ prompt }); save: true stores them', {
+          requestBody: { content: json({ type: 'object', properties: {
+            fields: { type: 'object', additionalProperties: { type: 'string' }, example: { name: 'fullName', email: 'email' } },
+            prompt: { type: 'string' }, count: { type: 'integer', maximum: 100 }, locale: { type: 'string', example: 'it' }, seed: { type: 'string' },
+            save: { type: 'boolean' }, name: { type: 'string' }, environment: { type: 'string' }, provider: { type: 'string' },
+          } }) },
+        }),
+      },
+      '/testdata/fake-kinds': { get: op('Test data', 'Kinds usable as {{fake.kind}} in steps, with an example', { parameters: [q('locale', { type: 'string' })] }) },
+      '/testdata': {
+        get: op('Test data', 'List data sets'),
+        post: op('Test data', 'Create a data set ({ name, data: { rows: [...] } } or data: [...])'),
+      },
+      '/testdata/{id}': {
+        get: op('Test data', 'Get a data set (with rowCount)', { parameters: [id()] }),
+        put: op('Test data', 'Update a data set', { parameters: [id()] }),
+        delete: op('Test data', 'Delete a data set (project admin)', { parameters: [id()], responses: { 204: { description: 'Deleted' } } }),
       },
       '/quarantine': { get: op('Quality', 'Quarantined (flaky) test cases of the project') },
       '/testcases/{id}/quarantine': {

@@ -166,6 +166,8 @@ scoped.post('/reports/runs/:runId/generate', editor, (req, res) => reports.gener
 
 // Test data
 scoped.post('/testdata', editor, audit('testdata.create', 'test_data'), (req, res) => testData.createTestData(req, res));
+scoped.post('/testdata/generate', editor, audit('testdata.generate', 'test_data'), (req, res) => testData.generateTestData(req, res));
+scoped.get('/testdata/fake-kinds', viewer, (req, res) => testData.fakeKinds(req, res));
 scoped.get('/testdata', viewer, (req, res) => testData.listTestData(req, res));
 scoped.get('/testdata/:id', viewer, (req, res) => testData.getTestData(req, res));
 scoped.put('/testdata/:id', editor, audit('testdata.update', 'test_data'), (req, res) => testData.updateTestData(req, res));

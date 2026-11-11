@@ -435,3 +435,84 @@ describe('AI-judged assertions', () => {
     ] as Array<[string, string]>) assert.equal(classifyAction(action, {}), kind, action);
   });
 });
+
+describe('test data generation', () => {
+  it('gives the same value for the same kind and label within a test', async () => {
+    const { createFaker, FakeValues } = await import('../modules/quality/test-data-gen.js');
+    const values = new FakeValues(await createFaker('en'));
+    const email = values.get('email', 'buyer');
+    assert.equal(values.get('email', 'buyer'), email);
+    assert.notEqual(values.get('email', 'seller'), email);
+    assert.match(email, /@example\.(com|net|org)$/, 'emails never reach real mailboxes');
+    assert.match(values.get('password'), /[A-Z]/);
+    assert.match(values.get('password'), /\d/);
+    assert.ok(['4111111111111111', '5555555555554444', '378282246310005', '4000056655665556'].includes(values.get('testCard')));
+    assert.match(values.get('date'), /^\d{4}-\d{2}-\d{2}$/);
+    assert.match(values.get('expiry'), /^\d{2}\/\d{2}$/);
+    assert.deepEqual(Object.keys(values.used()).sort(), ['date', 'email:buyer', 'email:seller', 'expiry', 'password', 'testCard']);
+    assert.throws(() => values.get('ssn'), /Unknown fake data kind "ssn"/);
+  });
+
+  it('is reproducible with a seed and follows the locale', async () => {
+    const { createFaker, FakeValues, seedFor } = await import('../modules/quality/test-data-gen.js');
+    const run = async (seed: unknown, test: string) => {
+      const v = new FakeValues(await createFaker('it', seedFor(seed, test, undefined, 0)));
+      return [v.get('fullName'), v.get('city'), v.get('zip')].join('|');
+    };
+    assert.equal(await run(42, 'TC-1'), await run(42, 'TC-1'));
+    assert.notEqual(await run(42, 'TC-1'), await run(42, 'TC-2'), 'each test gets its own values');
+    assert.equal(seedFor(undefined, 'x'), undefined);
+    assert.match((await run(42, 'TC-1')).split('|')[2], /^\d{5}$/, 'Italian postal codes');
+    await assert.rejects(createFaker('xx_YY'), /Unknown test data locale/);
+  });
+
+  it('resolves data, fake and secret placeholders', async () => {
+    const { resolvePlaceholders } = await import('../core/domain/agent-secrets.js');
+    const fake = { get: (kind: string, label = '') => `<${kind}${label ? `:${label}` : ''}>` };
+    const row = { user: 'ada', address: { city: 'Turin' }, qty: 3, active: false };
+    const r = (t: string) => resolvePlaceholders(t, { PW: 's3cret' }, { id: '7' }, { data: row, fake });
+    assert.equal(r('{{data.user}} lives in {{ data.address.city }}'), 'ada lives in Turin');
+    assert.equal(r('{{data.qty}}/{{data.active}}'), '3/false');
+    assert.equal(r('{{fake.email}} {{fake.email:admin}} {{secrets.PW}} {{vars.id}}'), '<email> <email:admin> s3cret 7');
+    assert.throws(() => r('{{data.nope}}'), /Unknown data field "nope" — the row has: user, address, qty, active/);
+    assert.throws(() => resolvePlaceholders('{{data.user}}', {}, {}, {}), /needs a data set/);
+    assert.throws(() => resolvePlaceholders('{{fake.email}}', {}, {}, {}), /only available while a test runs/);
+    assert.equal(r('{{secrets.PW:x}}'), '{{secrets.PW:x}}', 'labels only apply to fake values');
+  });
+
+  it('reads data set rows and labels them', async () => {
+    const { datasetRows, rowLabel } = await import('../modules/quality/test-data-gen.js');
+    assert.equal(datasetRows({ rows: [{ a: 1 }, 'bad', null, { b: 2 }] }).length, 2);
+    assert.deepEqual(datasetRows({ user: 'x' }), [{ user: 'x' }]);
+    assert.deepEqual(datasetRows(null), []);
+    assert.equal(rowLabel({ _label: 'empty email' }, 0), 'empty email');
+    assert.equal(rowLabel({ name: 'Ada' }, 1), 'Ada');
+    assert.equal(rowLabel({ qty: 2 }, 2), 'row 3');
+  });
+
+  it('generates rows from field kinds and sanitizes AI rows', async () => {
+    const { generateRows, sanitizeRows } = await import('../modules/quality/test-data-gen.js');
+    const rows = await generateRows({ name: 'fullName', email: 'email', qty: 'number' }, 5, { locale: 'de', seed: 1 });
+    assert.equal(rows.length, 5);
+    assert.deepEqual(Object.keys(rows[0]), ['name', 'email', 'qty']);
+    assert.deepEqual(rows, await generateRows({ name: 'fullName', email: 'email', qty: 'number' }, 5, { locale: 'de', seed: 1 }), 'seeded generation is reproducible');
+    assert.equal(new Set(rows.map((r) => r.email)).size, 5, 'each row gets new values');
+    await assert.rejects(generateRows({ email: 'nope' }, 2), /Unknown fake data kind "nope"/);
+    await assert.rejects(generateRows({ 'bad col': 'email' }, 2), /Invalid column name/);
+    await assert.rejects(generateRows({}, 2), /fields must map/);
+    assert.equal((await generateRows({ e: 'email' }, 1000)).length, 100, 'capped at 100 rows');
+
+    const clean = sanitizeRows([{ ok: 'x', 'bad key': 1, nested: { a: 1 }, n: 2, b: true, z: null, long: 'y'.repeat(2000) }, 'text', {}, { ok: 'y' }], 10);
+    assert.deepEqual(Object.keys(clean[0]), ['ok', 'n', 'b', 'z', 'long']);
+    assert.equal((clean[0].long as string).length, 1000);
+    assert.equal(clean.length, 2);
+    assert.equal(sanitizeRows([{ a: 1 }, { a: 2 }, { a: 3 }], 2).length, 2);
+    assert.deepEqual(sanitizeRows('nope', 5), []);
+  });
+
+  it('classifies data set problems as test bugs', async () => {
+    const { classifyFailure } = await import('../modules/quality/triage.js');
+    assert.equal(classifyFailure('Test data set "users" not found in this project').category, 'test_bug');
+    assert.equal(classifyFailure('Unknown data field "mail" — the row has: email').category, 'test_bug');
+  });
+});
