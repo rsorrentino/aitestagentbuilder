@@ -136,6 +136,7 @@ export class ReportingAgentService {
           <td style="color:${color(s.status)}">${escapeHtml(s.status)}</td><td>${escapeHtml(s.message)}</td></tr>`).join('')}</table>`
           : options.includeLogs && r.logs?.length ? `<pre>${escapeHtml(r.logs.join('\n'))}</pre>` : ''}
         ${shots.map((s) => `<a href="${escapeHtml(shotBase + s)}" target="_blank"><img src="${escapeHtml(shotBase + s)}" alt="screenshot"></a>`).join('')}
+        ${this.qualityHtml(r, shotBase)}
       </div>`;
     }).join('');
 
@@ -168,6 +169,33 @@ export class ReportingAgentService {
   </div>
   <h2>Results</h2>${rows || '<p class="muted">No results recorded.</p>'}
 </div></body></html>`;
+  }
+
+  /** Evidence links, accessibility violations, visual differences and repaired selectors of one result. */
+  private qualityHtml(r: any, base: string): string {
+    const parts: string[] = [];
+    const links = [
+      r.evidence?.trace ? `<a href="${escapeHtml(base + r.evidence.trace)}">Playwright trace</a>` : '',
+      r.evidence?.video ? `<a href="${escapeHtml(base + r.evidence.video)}">Video</a>` : '',
+    ].filter(Boolean);
+    if (links.length) parts.push(`<div class="muted">Evidence: ${links.join(' · ')}</div>`);
+    for (const a of (r.metadata?.accessibility ?? []) as any[]) {
+      const counted = (a.violations ?? []).filter((v: any) => v.counted);
+      parts.push(`<div class="muted">Accessibility (${escapeHtml(String(a.level).toUpperCase())}, ${escapeHtml(a.url)}): ${counted.length} violation(s) at ${escapeHtml(a.minImpact)}+</div>`
+        + (counted.length ? `<table><tr><th>Rule</th><th>Impact</th><th>Problem</th><th>Elements</th></tr>${counted.map((v: any) =>
+          `<tr><td><a href="${escapeHtml(v.helpUrl)}">${escapeHtml(v.id)}</a></td><td>${escapeHtml(v.impact)}</td><td>${escapeHtml(v.help)}</td><td><code>${escapeHtml(v.targets.join(', '))}</code></td></tr>`).join('')}</table>` : ''));
+    }
+    for (const v of (r.metadata?.visual ?? []) as any[]) {
+      const line = `Visual check "${escapeHtml(v.name)}" (${escapeHtml(v.viewport)}${v.persona ? `, ${escapeHtml(v.persona)}` : ''}): ${escapeHtml(v.status)}`
+        + (v.status === 'failed' ? `, ${(v.ratio * 100).toFixed(2)}% of pixels changed${v.approved ? ' (approved as new baseline)' : ''}` : '');
+      parts.push(`<div class="muted">${line}</div>`
+        + (v.status === 'failed' ? ['baseline', 'actual', 'diff'].filter((k) => v[k]).map((k) =>
+          `<a href="${escapeHtml(base + v[k])}" target="_blank"><img src="${escapeHtml(base + v[k])}" alt="${k}"></a>`).join('') : ''));
+    }
+    for (const h of (r.metadata?.healing?.steps ?? []) as any[]) {
+      parts.push(`<div class="muted">Step ${escapeHtml(h.stepId)} selector repaired by the AI: <code>${escapeHtml(h.from)}</code> → <code>${escapeHtml(h.to)}</code></div>`);
+    }
+    return parts.join('');
   }
 
   private generateJUnitReport(run: TestRun): string {

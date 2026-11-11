@@ -146,6 +146,7 @@ export const STEP_ACTIONS = [
   'assert_visible', 'assert_not_visible', 'assert_text', 'assert_url', 'assert_title', 'screenshot',
   'salesforce_login', 'salesforce_logout', 'wait_for_lightning', 'assert_access_denied',
   'assert_profile', 'assert_object_access', 'assert_field_access', 'assert_record_access',
+  'assert_accessible', 'assert_screenshot',
 ];
 export const AI_PROVIDERS = [
   { value: '', label: 'Automatic (best available)' },

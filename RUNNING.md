@@ -192,6 +192,7 @@ npm run test:e2e            # UI end-to-end: "npm run setup -- --with-e2e" once,
 | `NOTIFICATIONS_ALLOW_PRIVATE_URLS` | `false` | Allow webhooks to private/internal addresses |
 | `RUN_RETENTION_DAYS` / `AUDIT_RETENTION_DAYS` | `90` / `365` | Data retention (0 = keep forever) |
 | `STEP_ENV_ALLOWLIST` | — | Environment variables steps may read as `{{env.NAME}}` |
+| `EVIDENCE_TRACE` / `EVIDENCE_VIDEO` | `on_failure` | Default trace / video capture when an agent does not set `evidence` (`off`, `on_failure`, `always`) |
 | `SALESFORCE_SIMULATOR` | on outside production | Serve the Salesforce simulator at `/demo/salesforce` |
 
 ## Troubleshooting

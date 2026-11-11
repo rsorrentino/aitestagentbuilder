@@ -43,6 +43,8 @@
 | **Auth** | Off by default for local use; with `AUTH_ENABLED=true`: login page, JWT, API keys, roles |
 | **CLI / CI** | `npm run cli -- run -c agent.yml` waits for the run, writes reports and exits non-zero on failure |
 | **Salesforce personas** | Test as administrators, sales reps and read-only users: UI password, password + authenticator code (TOTP), OAuth JWT bearer → frontdoor, OAuth password, or "Log in as". Identity checks (profile, permission sets), one test run as many personas with per-persona expectations, object/field/record access and access-denied assertions. Built-in Salesforce simulator at `/demo/salesforce` |
+| **Quality checks** | Accessibility (axe-core, WCAG 2.x), visual regression against approved baselines, Playwright trace + video of failures (secrets masked), AI-repaired selectors kept and written back to test cases |
+| **MCP server** | Claude Code, Copilot, Cursor and other agents can write tests, run them and read failure evidence ([docs/mcp-server.md](docs/mcp-server.md)) |
 | **Demo** | Built-in demo shop at `/demo` with ready-made tests: one click on the dashboard |
 
 ## 🏢 Enterprise features
@@ -124,6 +126,8 @@ A test case is a list of steps. Each step has an **action**, an optional **targe
 | `salesforce_login`, `salesforce_logout` | persona name | |
 | `assert_object_access`, `assert_field_access`, `assert_record_access` | `Account`, `Account.AnnualRevenue`, record Id | `{"read": true, "delete": false}` |
 | `assert_profile`, `assert_access_denied` | expected profile / page to open | |
+| `assert_accessible` | optional element | `{"level": "wcag21aa", "ignore": ["color-contrast"]}` |
+| `assert_screenshot` | optional element | `{"name": "home", "mask": [".clock"]}` |
 
 Targets can be CSS selectors (`#id`, `.class`, `input[name=q]`), Playwright selectors (`text=Sign in`), or **plain labels** like `Sign in button` or `Username`. Plain labels resolve in priority order: label, placeholder, button, link, then text. Natural phrasing from extracted documents ("Enter username", "Verify the welcome message is displayed") is understood too. Steps that cannot be automated are reported as skipped rather than failing.
 

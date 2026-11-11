@@ -59,11 +59,12 @@ async function call(method: string, path: string, body?: any, headers: Record<st
 /** Start the MCP server as its own process and connect the official client to it. */
 async function connectMcp(env: Record<string, string>) {
   const { Client } = await import(pathToFileURL(join(SDK, 'index.js')).href);
-  const { StdioClientTransport } = await import(pathToFileURL(join(SDK, 'stdio.js')).href);
+  const { StdioClientTransport, getDefaultEnvironment } = await import(pathToFileURL(join(SDK, 'stdio.js')).href);
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [join(MCP_DIR, 'node_modules', 'tsx', 'dist', 'cli.mjs'), join(MCP_DIR, 'src', 'index.ts')],
-    env: { PATH: process.env.PATH ?? '', ...env },
+    // The SDK's safe defaults (PATH, and SystemRoot etc. on Windows) plus ours; nothing else is inherited
+    env: { ...getDefaultEnvironment(), ...env },
   });
   const client = new Client({ name: 'atab-test', version: '1.0.0' }, { capabilities: {} });
   await client.connect(transport);
