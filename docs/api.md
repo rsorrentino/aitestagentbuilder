@@ -132,6 +132,12 @@ Screenshots are served at `GET /artifacts/<path from evidence.screenshots>`.
 | POST | `/demo/seed` | Creates/updates the *Demo Shop* agent and its 3 tests → `{ agentId, created }` |
 | GET | `/demo/` (outside `/api/v1`) | The demo web app itself (login `demo` / `demo123`) |
 
+## Page speed
+
+`GET /agents/:id/performance?days=30` (viewer) → `{ pages: [{ page, samples: [{ runId, at, metrics }], latest, median }] }`:
+the page speed measured by `assert_performance` steps and the agent-wide `checks.performance`, per page (origin and path),
+oldest sample first. Results carry the measurements in `metadata.performance`.
+
 ## Test data
 
 `POST/GET /testdata`, `GET/PUT/DELETE /testdata/:id`: named JSON data sets `{ name, data, description?, tags?, environment? }`.

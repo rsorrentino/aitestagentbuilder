@@ -148,6 +148,8 @@ const PAGES: Record<string, (q: URLSearchParams) => string> = {
       .then((d) => { document.getElementById('price').textContent = 'Price: ' + d.price; })
       .catch(() => { document.getElementById('price').textContent = 'Price unavailable'; });
   </script>`),
+  // Page speed: '/speed' answers after ?delay ms (time to first byte); '/heavy' blocks the main thread
+  '/heavy': () => page('Heavy', '<p>Busy</p><script>const t = Date.now(); while (Date.now() - t < 300) {}</script>'),
   // Echoes a form back: data-driven tests fill it and check the result
   '/signup': () => page('Signup', `<form onsubmit="event.preventDefault(); document.getElementById('out').textContent =
     'Welcome ' + document.getElementById('name').value + ' <' + document.getElementById('email').value + '>' + ' x' + document.getElementById('qty').value;">
@@ -212,6 +214,12 @@ before(async () => {
   fixture = http.createServer((req, res) => {
     const url = new URL(req.url || '/', 'http://x');
     if (url.pathname.startsWith('/api/') || url.pathname === '/openapi.json') return void handleApi(req, res, url);
+    if (url.pathname === '/speed') {
+      return void setTimeout(() => {
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end(page('Speed', '<p>Fast enough?</p>'));
+      }, Number(url.searchParams.get('delay') || 0));
+    }
     const render = PAGES[url.pathname];
     res.writeHead(render ? 200 : 404, { 'Content-Type': 'text/html' });
     res.end(render ? render(url.searchParams) : 'not found');
@@ -651,6 +659,63 @@ describe('quality extensions (integration)', () => {
     // The seed makes values reproducible across runs
     const again = await run(agent, [faked]);
     assert.deepEqual(again.results[0].metadata.testData.fake, fakedResult.metadata.testData.fake);
+  });
+
+  it('measures page speed against budgets and earlier runs, and keeps a trend', async (t) => {
+    if (!dbAvailable) return t.skip('database not available');
+    const agent = await newAgent('Speed', { evidence: { trace: 'off', video: 'off' } });
+    const step = (delay: number) => [
+      { action: 'navigate', target: `/speed?delay=${delay}` },
+      { action: 'assert_performance', data: { load: 30000, max_regression: 0.5 } },
+    ];
+    const fast = await newTest('Speed page is fast', step(0));
+    const blocked = await newTest('Heavy page blocks the main thread', [{ action: 'assert_performance', target: '/heavy', data: { tbt: 50 } }]);
+    const sentence = await newTest('Loads in time', [{ action: 'navigate', target: '/good' }, { action: 'Verify the page loads in under 30 seconds' }]);
+    const first = await run(agent, [fast, blocked, sentence]);
+    const by = (r: any, id: string) => r.results.find((x: any) => x.testCaseId === id);
+    assert.equal(by(first, fast).status, 'passed', by(first, fast).error);
+    const report = by(first, fast).metadata.performance[0];
+    assert.match(report.page, /\/speed$/, 'the query string is not part of the page key');
+    for (const k of ['ttfb', 'fcp', 'lcp', 'cls', 'tbt', 'load', 'requests']) assert.equal(typeof report.metrics[k], 'number', k);
+    assert.equal(report.baselineRuns, 0);
+    const heavy = by(first, blocked);
+    assert.equal(heavy.status, 'failed');
+    assert.match(heavy.error, /TBT \d+ ms exceeds the performance budget of 50 ms/);
+    assert.equal(by(first, sentence).status, 'passed', by(first, sentence).error);
+    assert.equal(by(first, sentence).metadata.performance[0].budgets.load, 30000);
+    assert.ok(first.metadata.triage.groups.some((g: any) => g.category === 'app_bug'));
+
+    // Two more fast runs build the baseline; then the page gets slow: a regression, not a budget breach
+    await run(agent, [fast]);
+    await run(agent, [fast]);
+    const slow = await newTest('Speed page got slow', step(900));
+    const later = await run(agent, [slow]);
+    const regressed = later.results[0];
+    assert.equal(regressed.status, 'failed');
+    assert.match(regressed.error, /TTFB \d+ ms is slower than the baseline \d+ ms of earlier runs/);
+    assert.equal(regressed.metadata.performance[0].baselineRuns, 3);
+
+    const trend = await call('GET', `/api/v1/agents/${agent}/performance`);
+    assert.equal(trend.status, 200, trend.text);
+    const speedPage = trend.data.pages.find((p: any) => /\/speed$/.test(p.page));
+    assert.equal(speedPage.samples.length, 4);
+    assert.ok(speedPage.latest.ttfb >= 900);
+    assert.ok(speedPage.median.ttfb < speedPage.latest.ttfb);
+
+    // Agent-wide check with throttling: every test's final page is measured and reported
+    const throttled = await newAgent('Speed throttled', {
+      evidence: { trace: 'off', video: 'off' },
+      checks: { performance: 'report', performance_budgets: { lcp: 1 }, performance_options: { throttle: 'slow4g' } },
+    });
+    const plain = await newTest('Plain page', [{ action: 'navigate', target: '/good' }, { action: 'assert_visible', target: 'text=Save' }]);
+    const r2 = await run(throttled, [plain]);
+    assert.equal(r2.results[0].status, 'passed', 'report mode does not fail the test');
+    const agentWide = r2.results[0].metadata.performance[0];
+    assert.equal(agentWide.throttle, 'slow4g');
+    assert.equal(agentWide.passed, false);
+    assert.ok(agentWide.metrics.load >= 140, `150 ms of added latency: ${JSON.stringify(agentWide.metrics)}`);
+    const bad = await call('PUT', `/api/v1/agents/${throttled}`, { config: { checks: { performance: 'always' } } });
+    assert.equal(bad.status, 400);
   });
 });
 

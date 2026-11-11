@@ -13,6 +13,7 @@ import { A11yReport, describeA11y, scanAccessibility } from '../quality/accessib
 import { checkScreenshot, describeVisual, VisualEntry } from '../quality/visual.js';
 import { ApiState, checkJson, describeResponse, extractVars, mockRoute, sendRequest, statusMatches } from '../quality/api-testing.js';
 import { AiVerdict, describeVerdict, judgeExpectation, Judge } from '../quality/ai-assert.js';
+import { budgetFromSentence, checkPerformance, DEFAULT_BUDGETS, describePerformance, normalizeBudgets, PerfReport, performanceSettings } from '../quality/performance.js';
 
 export type StepKind =
   | 'navigate' | 'click' | 'fill' | 'select' | 'check' | 'uncheck' | 'press' | 'hover' | 'wait'
@@ -22,7 +23,7 @@ export type StepKind =
   | 'assert_profile' | 'assert_object_access' | 'assert_field_access' | 'assert_record_access'
   | 'assert_accessible' | 'assert_screenshot'
   | 'http_request' | 'assert_status' | 'assert_json' | 'assert_header' | 'assert_response_time' | 'mock_route' | 'block_route'
-  | 'assert_ai'
+  | 'assert_ai' | 'assert_performance'
   | 'manual';
 
 export interface StepOutcome {
@@ -44,9 +45,9 @@ export interface StepContext {
   quality?: QualityContext;
   /** Last API response and variables captured by http_request steps of this test. */
   api?: ApiState;
-  /** AI judge for assert_ai steps (cache shared across the run). */
   /** Data set row of this test execution ({{data.field}}) and its fake values ({{fake.kind}}) */
   testData?: { row?: Record<string, any>; fake: { get(kind: string, label?: string): string; used(): Record<string, string> } };
+  /** AI judge for assert_ai steps (cache shared across the run). */
   ai?: { judge: Judge; outline: (page: Page) => Promise<string>; mask: (text: string) => string; cache: Map<string, Omit<AiVerdict, 'cached'>> };
 }
 
@@ -59,6 +60,7 @@ export interface QualityContext {
   accessibility: A11yReport[];
   visual: VisualEntry[];
   aiChecks?: AiVerdict[];
+  performance?: PerfReport[];
 }
 
 /** Default text of Salesforce's "no access" pages. */
@@ -81,6 +83,9 @@ export function classifyAction(rawAction: string, step: Pick<TestStep, 'target' 
     'assert status': 'assert_status', 'assert json': 'assert_json', 'assert header': 'assert_header',
     'assert response time': 'assert_response_time', 'mock route': 'mock_route', 'mock api': 'mock_route', 'block route': 'block_route',
     'assert ai': 'assert_ai', 'ai assert': 'assert_ai', 'ai check': 'assert_ai', 'assert with ai': 'assert_ai',
+    'assert performance': 'assert_performance', 'check performance': 'assert_performance', 'measure performance': 'assert_performance',
+    'performance check': 'assert_performance', 'page speed': 'assert_performance', 'assert page speed': 'assert_performance',
+    'check page speed': 'assert_performance', 'web vitals': 'assert_performance', 'assert web vitals': 'assert_performance',
   };
   if (exact[a]) return exact[a];
   // "GET /api/orders", "POST https://…"
@@ -90,6 +95,7 @@ export function classifyAction(rawAction: string, step: Pick<TestStep, 'target' 
   if (/^(send|make|call|invoke)\b.*\b(request|api|endpoint)\b/.test(a)) return 'http_request';
   if (/^(mock|stub|fake)\b/.test(a)) return 'mock_route';
   if (/^(verify|check|assert|confirm|ensure|validate|judge)\s+(with|using|by)\s+(the\s+)?ai\b/.test(a)) return 'assert_ai';
+  if (/^(measure|check|test|audit)\b.*\b(performance|page ?speed|web vitals|load(ing)? time)\b/.test(a)) return 'assert_performance';
   if (/^(assert|verify|expect|validate|confirm|ensure|check that|should|observe|see)\b/.test(a)) {
     if (/\b(access denied|insufficient privileges|no access|not authori[sz]ed|forbidden|cannot access|can't access)\b/.test(a)) return 'assert_access_denied';
     if (/\b(status code|http status|response status)\b/.test(a)) return 'assert_status';
@@ -97,6 +103,7 @@ export function classifyAction(rawAction: string, step: Pick<TestStep, 'target' 
     if (/\b(response|http) headers?\b/.test(a)) return 'assert_header';
     if (/\bjson\b|\bresponse (body|field|contains)\b/.test(a)) return 'assert_json';
     if (/\b(accessib\w*|a11y|wcag)\b/.test(a)) return 'assert_accessible';
+    if (/\b(performance|page ?speed|web vitals|lcp|fcp|cls|ttfb|time to first byte|largest contentful paint|layout shift|blocking time)\b|\bloads? (with)?in (under |less than )?\d|\bload(ing)? time\b/.test(a)) return 'assert_performance';
     if (/\b(visual(ly)?|pixel|baseline|looks the same|screenshot match\w*|matches the screenshot)\b/.test(a)) return 'assert_screenshot';
     if (step.target && /\b(not (be )?(visible|displayed|shown|present)|hidden|absent|isn't (visible|shown|displayed)|is not shown|does not (appear|exist))\b/.test(a)) return 'assert_not_visible';
     if (/\burl\b/.test(a)) return 'assert_url';
@@ -389,6 +396,28 @@ export async function executeStep(step: TestStep, ctx: StepContext, targetOverri
       ctx.quality?.aiChecks?.push(verdict);
       const message = describeVerdict(verdict, Number(minConfidence ?? 0.7));
       if (!verdict.passed) throw new Error(message);
+      return { status: 'passed', message };
+    }
+    case 'assert_performance': {
+      const data = step.data ?? {};
+      // A target loads that page fresh first; otherwise the last page load is measured
+      if (target) {
+        await page.goto(absoluteUrl(ctx.baseUrl, target), { waitUntil: 'load', timeout: Math.max(stepTimeout, 30000) });
+      }
+      const agent = performanceSettings(ctx.config);
+      const own = { ...normalizeBudgets(data), ...budgetFromSentence(step.action) };
+      const budgets = Object.keys(own).length ? own : agent.mode !== 'off' || ctx.config?.checks?.performance_budgets ? agent.budgets : { ...DEFAULT_BUDGETS };
+      const maxRegression = Number(data.max_regression ?? agent.maxRegression);
+      const report = await checkPerformance(page, {
+        budgets,
+        ...(Number.isFinite(maxRegression) && maxRegression > 0 ? { maxRegression } : {}),
+        throttle: agent.throttle,
+        agentId: ctx.quality?.agentId,
+        runId: ctx.quality?.runId,
+      });
+      ctx.quality?.performance?.push(report);
+      const message = describePerformance(report);
+      if (!report.passed && data.report_only !== true) throw new Error(message);
       return { status: 'passed', message };
     }
     case 'salesforce_login': {

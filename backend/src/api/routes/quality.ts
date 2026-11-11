@@ -17,6 +17,7 @@ import { aiApiTests, basePathOf, fetchSpec, listOperations, operationKey, parseS
 import type { TestCaseCreateInput } from '../../core/domain/test-case.js';
 import { AgentRepository } from '../../core/repositories/agent.repository.js';
 import { getLLMRouter } from '../../infra/llm/router.js';
+import { performanceTrend } from '../../modules/quality/performance.js';
 
 type Handler = (req: AuthenticatedRequest, res: Response) => Promise<void>;
 const wrap = (fn: Handler): RequestHandler => (req, res) => {
@@ -151,6 +152,13 @@ export function registerQualityRoutes(router: Router, roles: { viewer: RequestHa
       servers,
       ...(!cfg.api_base_url && servers.some((u: string) => /^https?:\/\//.test(u)) ? { hint: `Set the agent's API base URL (api_base_url) to ${servers[0]} if the API is not under ${cfg.base_url}` } : {}),
     });
+  }));
+
+  // ── Page speed ──────────────────────────────────────────────────────────────
+  router.get('/agents/:id/performance', viewer, wrap(async (req, res) => {
+    const agent = await new AgentRepository().findById(req.params.id, req.project!.id);
+    if (!agent) return void res.status(404).json({ error: 'Agent not found' });
+    res.json({ pages: await performanceTrend(agent.id, Number(req.query.days) || 30) });
   }));
 
   // ── Flaky-test quarantine ──────────────────────────────────────────────────

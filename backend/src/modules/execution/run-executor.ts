@@ -28,6 +28,7 @@ import { Quarantine, QuarantineRepository } from '../quality/quarantine.js';
 import { salesforceSettings, testPersonas } from '../salesforce/personas.js';
 import { SalesforceSessions } from '../salesforce/session.js';
 import { TestDataRepository } from '../../core/repositories/test-data.repository.js';
+import { applyThrottling, checkPerformance, pageKey, describePerformance, PERF_INIT_SCRIPT, performanceSettings } from '../quality/performance.js';
 import { createFaker, datasetRows, FakeValues, MAX_DATASET_ROWS, rowLabel, seedFor, testDataSettings } from '../quality/test-data-gen.js';
 
 export { ARTIFACTS_PATH };
@@ -282,7 +283,10 @@ export class RunExecutor {
       accessibility: [],
       visual: [],
       aiChecks: [],
+      performance: [],
     };
+    const perf = performanceSettings(config);
+    const measuresSpeed = perf.mode !== 'off' || (testCase.steps ?? []).some((s) => classifyAction(s.action, s) === 'assert_performance');
 
     try {
       context = await this.browser!.newContext({
@@ -295,7 +299,11 @@ export class RunExecutor {
           logger.warn('Could not start tracing', { error: e.message });
         });
       }
+      if (measuresSpeed) await context.addInitScript({ content: PERF_INIT_SCRIPT });
       page = await context.newPage();
+      if (measuresSpeed && (await applyThrottling(context, page, perf))) {
+        this.log(`  ⚡ Throttled: ${[perf.throttle, perf.cpuSlowdown ? `CPU ${perf.cpuSlowdown}x slower` : ''].filter(Boolean).join(', ')}`, { testId: testCase.id });
+      }
       if (item.dataError) throw new Error(item.dataError);
       const td = testDataSettings(config);
       const fake = new FakeValues(await createFaker(td.locale, seedFor(td.seed, testCase.id, persona, row?.index)));
@@ -378,6 +386,21 @@ export class RunExecutor {
           this.log(`  ♿ Accessibility scan failed: ${e.message}`, { testId: testCase.id }, 'warn');
         }
       }
+
+      // Agent-wide page speed of the page each test ends on (checks.performance: report | fail)
+      if (perf.mode !== 'off' && status === 'passed' && !page.isClosed() && !quality.performance!.some((r) => r.page === pageKey(page!.url()))) {
+        try {
+          const report = await checkPerformance(page, { budgets: perf.budgets, maxRegression: perf.maxRegression, throttle: perf.throttle, agentId: this.agent.id, runId: this.runId });
+          quality.performance!.push(report);
+          this.log(`  ⚡ ${describePerformance(report)}`, { testId: testCase.id }, report.passed ? 'info' : 'warn');
+          if (perf.mode === 'fail' && !report.passed) {
+            status = 'failed';
+            error = describePerformance(report);
+          }
+        } catch (e: any) {
+          this.log(`  ⚡ Page speed could not be measured: ${e.message}`, { testId: testCase.id }, 'warn');
+        }
+      }
     } catch (e: any) {
       if (e instanceof CancelledError || this.cancelled) {
         status = 'skipped';
@@ -419,6 +442,7 @@ export class RunExecutor {
         ...(quality.accessibility.length ? { accessibility: quality.accessibility } : {}),
         ...(quality.visual.length ? { visual: quality.visual } : {}),
         ...(quality.aiChecks?.length ? { aiChecks: quality.aiChecks } : {}),
+        ...(quality.performance?.length ? { performance: quality.performance } : {}),
         ...(healed.length ? { healing: { steps: healed, applied: healingApplied } } : {}),
         ...(kept.traceMasked ? { traceRedactions: kept.traceMasked } : {}),
         ...this.testDataMeta(row, testData),

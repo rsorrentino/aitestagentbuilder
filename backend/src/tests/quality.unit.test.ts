@@ -516,3 +516,80 @@ describe('test data generation', () => {
     assert.equal(classifyFailure('Unknown data field "mail" — the row has: email').category, 'test_bug');
   });
 });
+
+describe('page speed', () => {
+  it('reads budgets from step data and sentences', async () => {
+    const { normalizeBudgets, budgetFromSentence, performanceSettings, validatePerformanceConfig, DEFAULT_BUDGETS } = await import('../modules/quality/performance.js');
+    assert.deepEqual(normalizeBudgets({ LCP: 2000, cls: '0.05', transfer: 900, nope: 1, tbt: -1 }), { lcp: 2000, cls: 0.05, transfer_kb: 900 });
+    assert.deepEqual(budgetFromSentence('Verify the page loads in under 2 seconds'), { load: 2000 });
+    assert.deepEqual(budgetFromSentence('Check the page speed is below 800 ms'), { load: 800 });
+    assert.deepEqual(budgetFromSentence('Check the page speed'), {});
+    assert.deepEqual(performanceSettings({}).budgets, DEFAULT_BUDGETS);
+    const s = performanceSettings({ checks: { performance: 'fail', performance_budgets: { lcp: 3000, max_regression: 0.3 }, performance_options: { throttle: 'slow4g', cpu_slowdown: 4 } } });
+    assert.deepEqual(s, { mode: 'fail', budgets: { lcp: 3000 }, throttle: 'slow4g', cpuSlowdown: 4, maxRegression: 0.3 });
+    assert.deepEqual(validatePerformanceConfig({ performance: 'fail', performance_budgets: { lcp: 2500 } }), []);
+    assert.equal(validatePerformanceConfig({ performance: 'yes', performance_budgets: { speed: 1, lcp: 0 }, performance_options: { throttle: '5g' } }).length, 4);
+  });
+
+  it('checks budgets and regressions against earlier runs', async () => {
+    const { evaluate, describePerformance } = await import('../modules/quality/performance.js');
+    assert.deepEqual(evaluate({ lcp: 2000, cls: 0.02 }, { lcp: 2500, cls: 0.1 }), []);
+    const over = evaluate({ lcp: 3100, cls: 0.02 }, { lcp: 2500 });
+    assert.deepEqual(over, [{ metric: 'lcp', value: 3100, kind: 'budget', limit: 2500 }]);
+    const history = [{ lcp: 1000 }, { lcp: 1100 }, { lcp: 900 }, { lcp: 1050 }];
+    const reg = evaluate({ lcp: 1600 }, {}, history, 0.25);
+    assert.equal(reg[0].kind, 'regression');
+    assert.equal(reg[0].baseline, 1025);
+    assert.equal(reg[0].limit, 1281.25);
+    assert.deepEqual(evaluate({ lcp: 1200 }, {}, history, 0.1), [], 'below the 200 ms noise floor');
+    assert.deepEqual(evaluate({ lcp: 5000 }, {}, history.slice(0, 2), 0.1), [], 'needs at least 3 earlier runs');
+    const report = { url: 'http://x/a', page: 'http://x/a', metrics: { lcp: 3100, fcp: 900 }, budgets: { lcp: 2500 }, violations: [...over, ...reg], passed: false };
+    assert.match(describePerformance(report as any), /LCP 3\.10 s exceeds the performance budget of 2\.50 s; LCP 1\.60 s is slower than the baseline 1\.0[23] s of earlier runs \(\+56%\)/);
+    const { classifyFailure } = await import('../modules/quality/triage.js');
+    assert.equal(classifyFailure(describePerformance(report as any)).category, 'app_bug');
+  });
+
+  it('measures a real page load: paints, layout shifts, long tasks, bytes', async () => {
+    const { chromium } = await import('playwright');
+    const { PERF_INIT_SCRIPT, measurePage, pageKey } = await import('../modules/quality/performance.js');
+    const http = await import('http');
+    const server = http.createServer((req, res) => {
+      if (req.url === '/app.js') {
+        res.writeHead(200, { 'Content-Type': 'text/javascript' });
+        // A 120 ms long task, then a late banner that pushes the content down (layout shift)
+        return void res.end(`const t = Date.now(); while (Date.now() - t < 120) {}
+          setTimeout(() => { const b = document.createElement('div'); b.style.height = '200px'; b.textContent = 'Banner'; document.body.prepend(b); }, 50);`);
+      }
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end('<!doctype html><html><body><h1 style="font-size:60px">Hello speed</h1><p>Some text to paint.</p><script src="/app.js"></script></body></html>');
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+    const url = `http://127.0.0.1:${(server.address() as any).port}/page?x=1#top`;
+    const browser = await chromium.launch();
+    try {
+      const context = await browser.newContext();
+      await context.addInitScript({ content: PERF_INIT_SCRIPT });
+      const page = await context.newPage();
+      await page.goto(url);
+      await page.waitForTimeout(300);
+      const m = await measurePage(page);
+      assert.ok(m.ttfb! >= 0 && m.fcp! > 0 && m.lcp! >= m.fcp!, JSON.stringify(m));
+      assert.ok(m.tbt! >= 50, `long task counted: ${JSON.stringify(m)}`);
+      assert.ok(m.cls! > 0, `layout shift counted: ${JSON.stringify(m)}`);
+      assert.ok(m.load! > 0 && m.requests === 2 && m.transfer_kb! > 0, JSON.stringify(m));
+      assert.equal(pageKey(url), url.replace('?x=1#top', ''));
+    } finally {
+      await browser.close();
+      server.close();
+    }
+  });
+
+  it('classifies page speed steps', () => {
+    for (const [action, kind] of [
+      ['assert_performance', 'assert_performance'], ['Verify the page loads in under 2 seconds', 'assert_performance'],
+      ['Check the page speed', 'assert_performance'], ['Measure the performance of the home page', 'assert_performance'],
+      ['Verify LCP is below 2.5 s', 'assert_performance'], ['Check the newsletter box', 'check'],
+      ['Verify the response time is under 300 ms', 'assert_response_time'], ['Verify the page title', 'assert_title'],
+    ] as Array<[string, string]>) assert.equal(classifyAction(action, {}), kind, action);
+  });
+});

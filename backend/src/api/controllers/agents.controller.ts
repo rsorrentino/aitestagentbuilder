@@ -4,6 +4,7 @@
  */
 
 import { LOCALE_RE } from '../../modules/quality/test-data-gen.js';
+import { validatePerformanceConfig } from '../../modules/quality/performance.js';
 import { Response } from 'express';
 import { AgentRepository } from '../../core/repositories/agent.repository.js';
 import { TestCaseRepository } from '../../core/repositories/test-case.repository.js';
@@ -48,6 +49,7 @@ export function buildAgentConfig(name: string, raw: any): { errors: string[]; co
       errors.push('config.api_base_url must be an http(s) URL, e.g. https://api.staging.example.com/v1/');
     }
   }
+  errors.push(...validatePerformanceConfig(cfg.checks));
   if (cfg.test_data !== undefined && cfg.test_data !== null) {
     const td = cfg.test_data;
     if (typeof td !== 'object' || Array.isArray(td)) errors.push('config.test_data must be an object { locale, seed, environment }');

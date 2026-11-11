@@ -6,6 +6,7 @@
 
 import { useState } from 'react';
 import { api, artifactUrl, errorMessage } from '../lib/api';
+import { fmt } from './PageSpeedCard';
 
 interface Props {
   runId: string;
@@ -27,7 +28,8 @@ export default function ResultQuality({ runId, result, canEdit, onChanged }: Pro
   const healing = result.metadata?.healing;
   const aiChecks: any[] = result.metadata?.aiChecks ?? [];
   const testData = result.metadata?.testData;
-  if (!ev.trace && !ev.video && !a11y.length && !visual.length && !healing?.steps?.length && !aiChecks.length && !testData) return null;
+  const perf: any[] = result.metadata?.performance ?? [];
+  if (!ev.trace && !ev.video && !a11y.length && !visual.length && !healing?.steps?.length && !aiChecks.length && !testData && !perf.length) return null;
 
   const act = async (key: string, fn: () => Promise<string>) => {
     setBusy(key);
@@ -163,6 +165,37 @@ export default function ResultQuality({ runId, result, canEdit, onChanged }: Pro
             </tbody>
           </table>
           <p className="form-hint">Judged from the page&apos;s text and structure, not its pixels. AI verdicts can vary; keep classic assertions for what must never change.</p>
+        </section>
+      )}
+
+      {perf.length > 0 && (
+        <section aria-label="Page speed">
+          <h4 className="mb-2">⚡ Page speed</h4>
+          {perf.map((p, i) => (
+            <div key={i} className="mb-2">
+              <div className="text-sm text-muted">
+                {p.page}{p.throttle ? ` · throttled (${p.throttle})` : ''}{p.maxRegression ? ` · compared with ${p.baselineRuns} earlier run(s), max +${Math.round(p.maxRegression * 100)}%` : ''} ·{' '}
+                <span className={p.passed ? 'text-success' : 'text-danger'} style={{ fontWeight: 600 }}>{p.passed ? 'within budget' : `${p.violations.length} problem(s)`}</span>
+              </div>
+              <table className="data-table" style={{ fontSize: 13 }}>
+                <thead><tr><th>Metric</th><th>Value</th><th>Budget</th><th>Earlier runs</th></tr></thead>
+                <tbody>
+                  {['lcp', 'fcp', 'cls', 'tbt', 'ttfb', 'dom_content_loaded', 'load', 'transfer_kb', 'requests'].filter((k) => p.metrics[k] !== undefined).map((k) => {
+                    const v = p.violations.filter((x: any) => x.metric === k);
+                    const reg = v.find((x: any) => x.kind === 'regression');
+                    return (
+                      <tr key={k} style={v.length ? { color: 'var(--danger)', fontWeight: 600 } : undefined}>
+                        <td>{k.toUpperCase().replace(/_/g, ' ')}</td>
+                        <td>{fmt(k, p.metrics[k])}</td>
+                        <td>{p.budgets?.[k] !== undefined ? fmt(k, p.budgets[k]) : '—'}</td>
+                        <td>{reg ? `${fmt(k, reg.baseline)} (+${Math.round((reg.value / reg.baseline - 1) * 100)}%)` : ''}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ))}
         </section>
       )}
 

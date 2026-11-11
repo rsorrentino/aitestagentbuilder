@@ -31,6 +31,9 @@ quarantine:
 checks:
   accessibility: report                # off | report | fail — axe-core scan of the page each test ends on
   accessibility_options: { level: wcag21aa, minImpact: serious }
+  performance: report                  # off | report | fail — page speed of the page each test ends on
+  performance_budgets: { lcp: 2500, cls: 0.1, tbt: 200, load: 4000, max_regression: 0.25 }
+  performance_options: { throttle: slow4g, cpu_slowdown: 4 }   # throttle: none | slow4g | fast3g
 test_data:
   locale: it                           # names, addresses, phone numbers of {{fake.*}} values (default en)
   seed: 42                             # optional: the same values in every run (per test, row and persona)
@@ -154,6 +157,7 @@ use `{{data.<column>}}` (nested: `{{data.address.city}}`).
 | `assert_access_denied` | optional page to open | optional custom message |
 | `assert_accessible` | optional element to scan | `{"level": "wcag21aa", "min_impact": "serious", "ignore": ["color-contrast"], "exclude": [".chat-widget"], "report_only": false}` |
 | `assert_screenshot` | optional element (whole viewport if empty) | `{"name": "cart", "max_diff_ratio": 0.001, "threshold": 0.1, "mask": [".clock"], "full_page": false, "on_missing": "create"}` |
+| `assert_performance` | optional page to load fresh (else the last page load is measured) | budgets `{"lcp": 2500, "fcp": 1800, "cls": 0.1, "tbt": 200, "ttfb": 800, "load": 3000, "transfer_kb": 1500, "requests": 80, "max_regression": 0.25, "report_only": false}`; also “Verify the page loads in under 2 seconds” |
 | `assert_ai` | optional element to judge | the expectation in plain language; `{"value": "…", "min_confidence": 0.7, "on_unsure": "fail"}` — or write the action as "Verify with AI that …" |
 | `http_request` | path (relative to `api_base_url`, else `base_url`) or URL; also `"GET orders"` as the action | `{"method": "POST", "json": {...}, "query": {...}, "headers": {...}, "extract": {"orderId": "$.id"}, "status": 201}` |
 | `assert_status` | | `201`, `"2xx"` or `[200, 204]` (or in the sentence: "Verify the status code is 201") |
@@ -227,6 +231,25 @@ A healed step passes with the note `(self-healed from "<old selector>")`. The ru
 - **Opening it:** at [trace.playwright.dev](https://trace.playwright.dev) (in your browser), or with `npx playwright show-trace`.
 - **Secrets:** before a trace is stored, every secret of the run is replaced with `••••` everywhere in the file. That covers
   agent secrets, persona passwords and TOTP secrets, OAuth tokens, session ids and cookie values.
+
+**Page speed.** `assert_performance` measures the last full page load with the browser's own timing APIs.
+- **Metrics:** TTFB, FCP, LCP, CLS, TBT (long-task time over 50 ms), DOMContentLoaded, load, bytes transferred and
+  request count. Single-page-app route changes are not page loads: give the step a target to load a page fresh.
+- **Budgets:** from the step, else the agent's `performance_budgets`, else the "good" Core Web Vitals thresholds
+  (LCP 2.5 s, FCP 1.8 s, CLS 0.1, TBT 200 ms, TTFB 800 ms). A sentence such as “Verify the page loads in under
+  2 seconds” sets a load budget.
+- **Regressions:** with `max_regression` (0.25 = 25 %), each metric is compared with the median of the same page
+  (origin and path, no query) in the agent's earlier runs. It needs at least 3 earlier measurements, and small absolute
+  changes (e.g. under 200 ms of LCP) are ignored as noise.
+- **Agent-wide check:** `checks.performance` measures the page each test ends on, reporting (`report`) or failing the
+  test (`fail`).
+- **Throttling:** `performance_options.throttle` (Lighthouse *slow 4G* or DevTools *fast 3G*) and `cpu_slowdown`
+  approximate slower devices (Chromium). They apply to the whole test, so steps get slower too. Emulated latency shows
+  in load, DOMContentLoaded and LCP, not in TTFB.
+- **Lab values:** they come from the test machine, so they vary between machines and runs; leave headroom in budgets.
+- **Where results show:** the run page and the HTML report; failures over budget are triaged as app bugs. The agent page's
+  **Page speed** card shows each page's latest values against its 30-day median, with an LCP trend
+  (`GET /agents/:id/performance`).
 
 **Kept self-healing.** With `ai.self_healing`, a broken selector is repaired by the AI from the live page.
 - **Within a run:** the repair is reused for the rest of the run without another AI call.

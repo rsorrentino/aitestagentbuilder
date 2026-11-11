@@ -3,6 +3,7 @@
  * Renders run reports as JSON, HTML or JUnit XML.
  */
 
+import { describePerformance } from '../../quality/performance.js';
 import { mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { TestResult, TestRun } from '../../../core/domain/run.js';
@@ -191,6 +192,12 @@ export class ReportingAgentService {
       parts.push(`<div class="muted">${line}</div>`
         + (v.status === 'failed' ? ['baseline', 'actual', 'diff'].filter((k) => v[k]).map((k) =>
           `<a href="${escapeHtml(base + v[k])}" target="_blank"><img src="${escapeHtml(base + v[k])}" alt="${k}"></a>`).join('') : ''));
+    }
+    for (const p of (r.metadata?.performance ?? []) as any[]) {
+      parts.push(`<div class="muted">${escapeHtml(describePerformance(p))}${p.throttle ? ` (throttled: ${escapeHtml(p.throttle)})` : ''}</div>`);
+    }
+    for (const c of (r.metadata?.aiChecks ?? []) as any[]) {
+      parts.push(`<div class="muted">AI check "${escapeHtml(c.expectation)}": ${escapeHtml(c.verdict)} (${Math.round(Number(c.confidence) * 100)}%) — ${escapeHtml(c.reason)}</div>`);
     }
     for (const h of (r.metadata?.healing?.steps ?? []) as any[]) {
       parts.push(`<div class="muted">Step ${escapeHtml(h.stepId)} selector repaired by the AI: <code>${escapeHtml(h.from)}</code> → <code>${escapeHtml(h.to)}</code></div>`);

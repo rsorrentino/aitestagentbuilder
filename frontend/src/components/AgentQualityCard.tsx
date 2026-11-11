@@ -56,7 +56,7 @@ export default function AgentQualityCard({ agentId, config, canEdit, onSaved }: 
     try {
       const res = await api.put(`/agents/${agentId}`, {
         config: {
-          checks: { accessibility: form.accessibility, accessibility_options: { level: form.level, minImpact: form.minImpact } },
+          checks: { ...(config.checks ?? {}), accessibility: form.accessibility, accessibility_options: { level: form.level, minImpact: form.minImpact } },
           evidence: { trace: form.trace, video: form.video },
           quarantine: { ...(config.quarantine ?? {}), auto: form.qAuto, flips: form.qFlips, release_after: form.qRelease },
           ai: { ...(config.ai ?? {}), self_healing: form.selfHealing, auto_apply_healing: form.selfHealing && form.autoApply, triage: form.aiTriage },

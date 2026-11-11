@@ -134,6 +134,9 @@ export function buildOpenApi(serverUrl: string) {
         put: op('Test data', 'Update a data set', { parameters: [id()] }),
         delete: op('Test data', 'Delete a data set (project admin)', { parameters: [id()], responses: { 204: { description: 'Deleted' } } }),
       },
+      '/agents/{id}/performance': {
+        get: op('Quality', 'Page speed trend of an agent: per page, samples (oldest first), latest and median metrics', { parameters: [id(), q('days', { type: 'integer' })] }),
+      },
       '/quarantine': { get: op('Quality', 'Quarantined (flaky) test cases of the project') },
       '/testcases/{id}/quarantine': {
         post: op('Quality', 'Quarantine a test case: it runs, but its failures do not fail runs', { parameters: [id()] }),

@@ -70,6 +70,7 @@ export function summarizeFailure(r: any) {
       name: v.name, changedPixels: v.diffPixels, ratio: v.ratio, baseline: artifactUrl(v.baseline), actual: artifactUrl(v.actual), diff: artifactUrl(v.diff),
     })),
     healedSelectors: r.metadata?.healing?.steps,
+    pageSpeed: (r.metadata?.performance ?? []).filter((p: any) => !p.passed).map((p: any) => ({ page: p.page, metrics: p.metrics, violations: p.violations })),
   };
 }
 
@@ -133,6 +134,7 @@ export const TOOLS = [
       'http_request (target path, data { method, json, extract: { id: "$.id" } } → later {{vars.id}}), assert_status, assert_json ' +
       '({ path, equals | contains | exists }), mock_route / block_route (stub calls during UI tests), ' +
       'assert_ai (data.value: an expectation in plain language, judged by the AI from the page text). ' +
+      'assert_performance (page speed: target optional page to load; data budgets { lcp, fcp, cls, tbt, ttfb, load, transfer_kb, max_regression }). ' +
       'Values may use {{data.column}} (row of the data set named in the test case data.dataset: the test runs once per row), ' +
       '{{fake.email}} / {{fake.email:label}} (fictitious values, the same within a test for the same label) and {{secrets.NAME}}. ' +
       'Targets are CSS selectors, text=…, or plain labels ("Sign in button"); data.value holds text to type or expect.',
