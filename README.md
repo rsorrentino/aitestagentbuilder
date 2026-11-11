@@ -57,23 +57,28 @@ See [docs/enterprise-roadmap.md](docs/enterprise-roadmap.md) for the full list a
 
 ## 🚀 Quick start
 
-**Prerequisites:** Node.js 20.19+ and PostgreSQL 14+ (or Docker).
+**Prerequisites:** Node.js 20.19+ (22 recommended) and PostgreSQL 14+. Works the same on Windows, Linux and macOS.
+
+Everything runs from the root `package.json`:
 
 ```bash
 git clone https://github.com/rsorrentino/aitestagentbuilder.git
 cd aitestagentbuilder
-./scripts/setup.sh        # installs deps + Chromium, creates .env, starts Postgres via Docker if available
+npm run setup        # installs dependencies + Chromium, creates .env, migrates the database
+npm run dev          # API on http://localhost:3000 + UI on http://localhost:4000, live reload
 ```
 
-Then start the two servers in two terminals:
+No PostgreSQL yet? `npm run docker:db` starts one with Docker, or install it natively and set `DATABASE_URL` in `.env`.
 
-```bash
-cd backend && npm run dev     # API on http://localhost:3000 (creates/migrates the DB schema on start)
-```
-
-```bash
-cd frontend && npm run dev    # UI on http://localhost:4000
-```
+| Command | What it does |
+|---|---|
+| `npm run setup` | development install (`.env` from `.env.example`) |
+| `npm run setup -- --production --host myserver --db postgresql://…` | production install: generated secrets, admin account, build, migrations |
+| `npm run dev` / `npm start` | run API + UI with live reload / the production build (Ctrl+C stops both) |
+| `npm run build` · `npm run db:migrate` · `npm run status` | build both apps · migrate the database · check both are answering |
+| `npm run service:install` / `service:uninstall` | start at boot: Windows service or systemd unit |
+| `npm test` · `npm run test:integration` · `npm run test:e2e` | unit · API + database + browser · UI end-to-end |
+| `npm run demo:seed` · `npm run cli -- run -c agent.yml` | create the demo agent · run tests from CI |
 
 Open **http://localhost:4000** and click **🎮 Try the demo** → **▶ Start Run**. Three tests run against the built-in demo shop and you can watch them live.
 
@@ -86,7 +91,7 @@ COPILOT_MODE=api                      # api | sdk | cli
 COPILOT_GITHUB_TOKEN=...              # e.g. the output of `gh auth token`
 ```
 
-Step-by-step instructions, manual setup without Docker, and troubleshooting are in **[RUNNING.md](RUNNING.md)**.
+Step-by-step instructions and troubleshooting are in **[RUNNING.md](RUNNING.md)**; Windows Server specifics in **[docs/windows.md](docs/windows.md)**.
 
 ## 🐙 GitHub Copilot
 
@@ -139,9 +144,9 @@ docs/       Documentation
 ## ✅ Tests
 
 ```bash
-cd backend && npm test                  # unit tests
-cd backend && npm run test:integration  # API, enterprise, Salesforce personas: real Postgres + real browser (needs TEST_DATABASE_URL or a local DB)
-cd e2e && npm test                      # UI end-to-end; start backend + frontend first
+npm test                  # unit tests
+npm run test:integration  # API, enterprise, Salesforce personas: real Postgres + real browser (TEST_DATABASE_URL or a local DB)
+npm run test:e2e          # UI end-to-end; run "npm run setup -- --with-e2e" once and start the app first
 ```
 
 The integration suite also exercises the Copilot **CLI** and **API** transports against local fakes, so it needs no credentials.

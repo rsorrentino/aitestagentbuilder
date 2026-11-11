@@ -8,37 +8,35 @@ Everything you need to install, configure and run the platform locally.
 |---|---|---|
 | Node.js | **20.19+** (22 recommended) | [nodejs.org](https://nodejs.org) |
 | PostgreSQL | 14+ | Docker works: `docker compose up -d postgres`. pgvector is optional. |
-| Chromium for Playwright | installed by `npx playwright install chromium` | done by `scripts/setup.sh` |
-| Docker | optional | only to run PostgreSQL |
+| Chromium for Playwright | downloaded by `npm run setup` | |
+| Docker | optional | only to run PostgreSQL (`npm run docker:db`) |
 | Python | optional | only for the legacy executor (`EXECUTOR=python`) |
 
 ## 1. Install
 
+All commands run from the repository root, on Windows (PowerShell or cmd), Linux and macOS:
+
 ```bash
 git clone https://github.com/rsorrentino/aitestagentbuilder.git
 cd aitestagentbuilder
-./scripts/setup.sh
+npm run setup
 ```
 
-The script installs the backend and frontend dependencies, downloads Chromium, creates `.env` from `.env.example`, and starts PostgreSQL with Docker if Docker is available.
+`npm run setup` checks Node.js, creates `.env` from `.env.example` (if missing), installs the API and UI
+dependencies, downloads Chromium and migrates the database. Options:
 
-<details>
-<summary>Manual installation</summary>
+| Option | |
+|---|---|
+| `--production` | `.env` for a server: `NODE_ENV=production`, login on, generated `JWT_SECRET` / `SECRETS_ENCRYPTION_KEY` and administrator password (printed once), browsers kept inside the installation; also builds |
+| `--host <name>` · `--api-port` · `--ui-port` | address users type in the browser (compiled into the UI) |
+| `--public-url https://…` · `--public-ui-url https://…` | when a reverse proxy serves the API / UI |
+| `--db postgresql://user:pass@host:5432/db` | database (default: local PostgreSQL, user `postgres`) |
+| `--admin-email <email>` · `--no-auth` | first administrator · no login (single user) |
+| `--with-e2e` · `--with-deps` | also install the end-to-end tests · Linux: install Chromium's system libraries |
+| `--skip-build` | production install without building |
 
-```bash
-cp .env.example .env
-(cd backend && npm install && npx playwright install chromium)
-(cd frontend && npm install)
-docker compose up -d postgres     # or use your own PostgreSQL and edit DATABASE_URL
-```
-
-Without Docker, create the database yourself:
-
-```bash
-createdb aitestagentbuilder
-```
-
-</details>
+PostgreSQL: create an empty database (`createdb aitestagentbuilder`, or in psql `CREATE DATABASE aitestagentbuilder;`),
+or run `npm run docker:db` to start one with Docker.
 
 ## 2. Configure
 
@@ -61,23 +59,12 @@ See [.env.example](.env.example) for every option.
 
 ## 3. Start
 
-Terminal 1, the API (the database schema is created/migrated automatically on start):
-
 ```bash
-cd backend
-npm run dev
+npm run dev        # API (http://localhost:3000) + UI (http://localhost:4000) with live reload
 ```
 
-Check it with `curl http://localhost:3000/health/ready`; it should return `{"ready":true}`.
-
-Terminal 2, the UI:
-
-```bash
-cd frontend
-npm run dev
-```
-
-Open **http://localhost:4000**.
+Both run in one terminal with `[api]` / `[ui]` prefixes; Ctrl+C stops both. `npm run status` checks they answer.
+The database schema is created/migrated automatically when the API starts.
 
 ## 4. First run in 60 seconds
 
@@ -85,7 +72,7 @@ Open **http://localhost:4000**.
 2. Click **▶ Start Run**. The live view shows the browser and the step log.
 3. Open **Details** to see every step, screenshots, and the HTML/JUnit/JSON reports.
 
-From the command line, `cd backend && npm run seed:demo` creates the same demo.
+From the command line, `npm run demo:seed` creates the same demo.
 
 ## 5. Test your own application
 
@@ -96,23 +83,22 @@ From the command line, `cd backend && npm run seed:demo` creates the same demo.
    - **Test Cases → New Test Case**: write steps yourself.
 3. The agent page lists the **tests in the next run**. Click **▶ Start Run**.
 
-## Production build
+## Production
 
 ```bash
-cd backend && npm run build && npm start          # node dist/index.js
-cd frontend && npm run build && npm start         # next start -p 4000
+npm run setup -- --production --host myserver --db "postgresql://postgres:PASSWORD@localhost:5432/aitestagentbuilder"
+npm start                      # or, to start at boot:
+npm run service:install        # Windows: service (NSSM) or Scheduled Task; Linux: systemd unit (sudo)
 ```
 
-Set `NEXT_PUBLIC_API_URL` at frontend build time when the API is not at `http://localhost:3000/api/v1`.
+`npm start` runs the production build of the API and the UI under one supervisor: if either stops, both stop
+and the command exits with an error, so the service manager restarts them. After `git pull`, run
+`npm run setup -- --production` again (your `.env` is kept) and restart the service.
 
 ## Windows Server (no Docker)
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\windows\install.ps1 -PublicHost myserver -DatabaseUrl "postgresql://postgres:PASSWORD@localhost:5432/aitestagentbuilder"
-powershell -ExecutionPolicy Bypass -File scripts\windows\install-service.ps1
-```
-
-Full guide: [docs/windows.md](docs/windows.md).
+The same commands work on Windows; run `npm run service:install` from an elevated prompt.
+Details (prerequisites, NSSM, service accounts, IIS/HTTPS, troubleshooting): [docs/windows.md](docs/windows.md).
 
 ## Docker (whole stack)
 
@@ -158,7 +144,6 @@ With authentication on you also get:
 ## CLI / CI usage
 
 ```bash
-cd backend
 npm run cli -- run -c ../configs/login-agent.yml.example -o ./reports
 ```
 
@@ -167,10 +152,10 @@ The CLI creates or updates the agent from the YAML, runs its tests, prints resul
 ## Tests
 
 ```bash
-cd backend && npm test                    # unit tests (no DB needed)
-TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/aitestagentbuilder_test \
-  npm run test:integration                # API + PostgreSQL + real browser; the test DB schema is reset
-cd e2e && npm install && npm test         # UI end-to-end (start backend + frontend first)
+npm test                    # unit tests (no DB needed)
+npm run test:integration    # API + PostgreSQL + real browser; resets the schema of TEST_DATABASE_URL
+                            # (default postgresql://postgres:postgres@localhost:5432/aitestagentbuilder_test)
+npm run test:e2e            # UI end-to-end: "npm run setup -- --with-e2e" once, then start the app
 ```
 
 ## Environment variables
@@ -216,7 +201,7 @@ cd e2e && npm install && npm test         # UI end-to-end (start backend + front
 | `Cannot connect to PostgreSQL` on start | Start the DB (`docker compose up -d postgres`) and check `DATABASE_URL`. |
 | `Port 3000 is already in use` | Set `PORT` in `.env`, and `NEXT_PUBLIC_API_URL` for the frontend to match. |
 | UI shows "Cannot reach the backend" | Start the backend; check `NEXT_PUBLIC_API_URL`. |
-| `Could not start chromium` | `cd backend && npx playwright install chromium` (on Linux add `--with-deps`). |
+| `Could not start chromium` | Run `npm run setup` again (on Linux add `-- --with-deps` for the system libraries). |
 | "No AI provider is configured" | Add a provider key to `.env` and restart the backend. Check **AI Providers → Test connections**. |
 | "No test cases match this agent's test selection" | Add tests or widen the agent's module/priority/tag filters; the agent page shows what will run. |
 | Copilot errors | See [docs/copilot.md](docs/copilot.md#troubleshooting). |

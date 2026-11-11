@@ -77,20 +77,17 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Install
+      - name: npm run setup (development .env, browsers, e2e dependencies)
+        run: npm run setup -- --with-deps --with-e2e
+      - run: npm run build
+      - name: npm start
         run: |
-          (cd backend && npm ci && npx playwright install --with-deps chromium)
-          (cd frontend && npm ci && npm run build)
-          (cd e2e && npm ci)
-      - name: Start backend and frontend
-        run: |
-          (cd backend && nohup npx tsx src/index.ts > ../backend.log 2>&1 &)
-          (cd frontend && nohup npm start > ../frontend.log 2>&1 &)
-          npx --yes wait-on@8.0.3 -t 90000 http://localhost:3000/health/ready http://localhost:4000
-      - run: npm test
-        working-directory: e2e
+          nohup npm start > app.log 2>&1 &
+          npx --yes wait-on@8.0.3 -t 120000 http://localhost:3000/health/ready http://localhost:4000
+          npm run status
+      - run: npm run test:e2e
       - if: failure()
-        run: tail -n 200 backend.log frontend.log
+        run: tail -n 200 app.log
       - if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -99,7 +96,7 @@ jobs:
           retention-days: 7
 
   windows:
-    name: Windows Server (no Docker) — tests, install script, service
+    name: Windows Server (no Docker) - npm scripts, tests, service
     runs-on: windows-latest
     env:
       PGPASSWORD: root            # preinstalled PostgreSQL on GitHub's Windows runners
@@ -119,19 +116,23 @@ jobs:
           & "$env:PGBIN\psql.exe" -U postgres -c "CREATE DATABASE aitestagentbuilder_test;"
       - name: Backend unit + integration tests (real Chromium, Copilot CLI via .cmd shim)
         shell: pwsh
-        working-directory: backend
         run: |
-          npm ci --no-audit --no-fund; if ($LASTEXITCODE) { exit 1 }
-          npx playwright install chromium; if ($LASTEXITCODE) { exit 1 }
+          npm --prefix backend ci --no-audit --no-fund; if ($LASTEXITCODE) { exit 1 }
+          npm --prefix backend exec -- playwright install chromium; if ($LASTEXITCODE) { exit 1 }
           npm run typecheck; if ($LASTEXITCODE) { exit 1 }
           npm run test:all; if ($LASTEXITCODE) { exit 1 }
-      - name: Install with scripts\windows\install.ps1
-        shell: powershell
-        run: .\scripts\windows\install.ps1 -PublicHost localhost -DatabaseUrl postgresql://postgres:root@localhost:5432/aitestagentbuilder
-      - name: Start, sign in and run the demo tests in a browser
-        shell: powershell
+      - name: npm run setup -- --production
+        shell: pwsh
         run: |
-          .\scripts\windows\start.ps1
+          npm run setup -- --production --host localhost --db postgresql://postgres:root@localhost:5432/aitestagentbuilder
+          if ($LASTEXITCODE) { exit 1 }
+      - name: npm start, sign in, run the demo tests in a browser
+        shell: pwsh
+        run: |
+          $sup = Start-Process -FilePath node -ArgumentList 'scripts/atab.mjs', 'start' -PassThru -NoNewWindow `
+            -RedirectStandardOutput logs-start.out -RedirectStandardError logs-start.err
+          foreach ($i in 1..90) { npm run status *> $null; if ($LASTEXITCODE -eq 0) { break }; Start-Sleep 2 }
+          npm run status; if ($LASTEXITCODE) { Get-Content logs-start.out, logs-start.err -Tail 60; exit 1 }
           $admin = @{}
           Get-Content .env | Where-Object { $_ -match '^(ADMIN_EMAIL|ADMIN_PASSWORD)=(.*)$' } | ForEach-Object { $admin[$Matches[1]] = $Matches[2] }
           $login = Invoke-RestMethod -Method Post -Uri http://localhost:3000/api/v1/auth/login -ContentType 'application/json' `
@@ -141,41 +142,38 @@ jobs:
           $run = Invoke-RestMethod -Method Post -Uri http://localhost:3000/api/v1/runs -Headers $h -ContentType 'application/json' `
             -TimeoutSec 400 -Body (@{ agentId = $demo.agentId; wait = $true; timeoutSeconds = 300 } | ConvertTo-Json)
           "Run $($run.id): $($run.status), passed=$($run.passed), $($run.passedTests)/$($run.totalTests)"
-          $ui = Invoke-WebRequest -Uri http://localhost:4000/login -UseBasicParsing
-          if ($ui.StatusCode -ne 200) { throw 'web UI not reachable' }
-          .\scripts\windows\start.ps1 -Stop
-          if (-not $run.passed) { throw 'demo run did not pass' }
-      - name: Run at boot with scripts\windows\install-service.ps1 (NSSM services, then Scheduled Tasks)
-        shell: powershell
+          taskkill /PID $sup.Id /T /F | Out-Null
+          if (-not $run.passed) { exit 1 }
+      - name: npm run service:install (NSSM service, then Scheduled Task)
+        shell: pwsh
         run: |
-          function Wait-Ready {
-            foreach ($i in 1..60) {
-              try { if ((Invoke-WebRequest -Uri http://localhost:3000/health/ready -UseBasicParsing -TimeoutSec 5).StatusCode -eq 200 -and
-                        (Invoke-WebRequest -Uri http://localhost:4000/login -UseBasicParsing -TimeoutSec 5).StatusCode -eq 200) { return $true } } catch { Start-Sleep -Seconds 2 }
-            }
-            return $false
-          }
-          function Wait-Down {
-            foreach ($i in 1..30) {
-              try { Invoke-WebRequest -Uri http://localhost:3000/health/ready -UseBasicParsing -TimeoutSec 2 | Out-Null; Start-Sleep -Seconds 1 } catch { return $true }
-            }
+          function Wait-Status([int]$want, [int]$tries = 90) {
+            foreach ($i in 1..$tries) { npm run status *> $null; if ($LASTEXITCODE -eq $want) { return $true }; Start-Sleep 2 }
             return $false
           }
           if (Get-Command nssm -ErrorAction SilentlyContinue) {
-            .\scripts\windows\install-service.ps1
-            if (-not (Wait-Ready)) { Get-Content logs\ATAB-Backend.log -Tail 50 -ErrorAction SilentlyContinue; throw 'NSSM services did not start' }
-            Get-Service ATAB-* | Format-Table Name, Status
-            .\scripts\windows\install-service.ps1 -Remove
-            if (-not (Wait-Down)) { throw 'NSSM services still answering after -Remove' }
-          } else { 'NSSM not installed on this runner: testing Scheduled Tasks only' }
-          .\scripts\windows\install-service.ps1 -NoNssm
-          if (-not (Wait-Ready)) { Get-Content logs\ATAB-Backend.log -Tail 50 -ErrorAction SilentlyContinue; throw 'scheduled tasks did not start the app' }
-          Get-ScheduledTask -TaskName 'ATAB-*' | Format-Table TaskName, State
-          .\scripts\windows\install-service.ps1 -Remove
-          if (-not (Wait-Down)) { throw 'app still answering after -Remove' }
+            npm run service:install; if ($LASTEXITCODE) { exit 1 }
+            if (-not (Wait-Status 0)) { Get-Content logs\atab.log -Tail 80; throw 'service did not start' }
+            Get-Service ATAB | Format-Table Name, Status
+            # Crash the API: the supervisor exits with an error and the service starts a new API process
+            function Api-Pid { (Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" | Where-Object { $_.CommandLine -like '*backend\dist\index.js*' } | Select-Object -First 1).ProcessId }
+            $before = Api-Pid
+            Stop-Process -Id $before -Force
+            $restarted = $false
+            foreach ($i in 1..60) { $now = Api-Pid; if ($now -and $now -ne $before) { $restarted = $true; break }; Start-Sleep 2 }
+            if (-not $restarted -or -not (Wait-Status 0)) { Get-Content logs\atab.log -Tail 80; throw 'service did not restart the app after a crash' }
+            "Restarted after a crash: API pid $before -> $now"
+            npm run service:uninstall; if ($LASTEXITCODE) { exit 1 }
+            if (-not (Wait-Status 1 30)) { throw 'still answering after service:uninstall' }
+          } else { 'NSSM not installed on this runner: testing the Scheduled Task only' }
+          npm run service:install -- --no-nssm; if ($LASTEXITCODE) { exit 1 }
+          if (-not (Wait-Status 0)) { Get-Content logs\atab.log -Tail 80; throw 'scheduled task did not start the app' }
+          Get-ScheduledTask -TaskName ATAB | Format-Table TaskName, State
+          npm run service:uninstall; if ($LASTEXITCODE) { exit 1 }
+          if (-not (Wait-Status 1 30)) { throw 'still answering after service:uninstall' }
       - if: failure()
         shell: pwsh
-        run: Get-ChildItem logs -ErrorAction SilentlyContinue | ForEach-Object { "== $($_.Name)"; Get-Content $_.FullName -Tail 80 }
+        run: Get-ChildItem logs, logs-start.* -ErrorAction SilentlyContinue | ForEach-Object { "== $($_.Name)"; Get-Content $_.FullName -Tail 80 }
 
   executor:
     name: Legacy Python executor (unit tests)
