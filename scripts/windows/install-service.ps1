@@ -5,8 +5,8 @@
 .DESCRIPTION
   With NSSM (https://nssm.cc) on PATH or given with -NssmPath, two real Windows services are created:
   "ATAB-Backend" and "ATAB-Frontend" (visible in services.msc, log rotation included).
-  Without NSSM, two Scheduled Tasks with the same names run at startup (built into Windows,
-  restart on failure every minute).
+  Without NSSM (or with -NoNssm), two Scheduled Tasks with the same names run at startup
+  (built into Windows, restart on failure every minute).
 
   By default they run as LocalSystem. Use -User 'DOMAIN\svc-atab' (and -Password for
   Scheduled Tasks) to run as a dedicated account; it is granted read access to .env.
@@ -21,13 +21,15 @@ param(
   [string]$NssmPath = '',
   [string]$User = '',
   [string]$Password = '',
+  [switch]$NoNssm,
   [switch]$Remove
 )
 
 $ErrorActionPreference = 'Stop'
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $Logs = Join-Path $Root 'logs'
-$Names = @('ATAB-Backend', 'ATAB-Frontend')
+# Removal order: the web UI first (its service depends on the API's)
+$Names = @('ATAB-Frontend', 'ATAB-Backend')
 
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Run this script from an elevated (Administrator) PowerShell.' }
@@ -42,8 +44,8 @@ function Stop-AtabNode {
   } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 }
 
-if (-not $NssmPath) { $NssmPath = (Get-Command nssm -ErrorAction SilentlyContinue).Source }
-$useNssm = [bool]$NssmPath
+if (-not $NssmPath -and -not $NoNssm) { $NssmPath = (Get-Command nssm -ErrorAction SilentlyContinue).Source }
+$useNssm = [bool]$NssmPath -and -not $NoNssm
 
 if ($Remove) {
   foreach ($n in $Names) {

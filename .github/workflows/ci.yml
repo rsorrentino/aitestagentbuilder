@@ -145,17 +145,34 @@ jobs:
           if ($ui.StatusCode -ne 200) { throw 'web UI not reachable' }
           .\scripts\windows\start.ps1 -Stop
           if (-not $run.passed) { throw 'demo run did not pass' }
-      - name: Run as boot-time tasks with scripts\windows\install-service.ps1
+      - name: Run at boot with scripts\windows\install-service.ps1 (NSSM services, then Scheduled Tasks)
         shell: powershell
         run: |
-          .\scripts\windows\install-service.ps1
-          $ok = $false
-          foreach ($i in 1..60) {
-            try { if ((Invoke-WebRequest -Uri http://localhost:3000/health/ready -UseBasicParsing -TimeoutSec 5).StatusCode -eq 200) { $ok = $true; break } } catch { Start-Sleep -Seconds 2 }
+          function Wait-Ready {
+            foreach ($i in 1..60) {
+              try { if ((Invoke-WebRequest -Uri http://localhost:3000/health/ready -UseBasicParsing -TimeoutSec 5).StatusCode -eq 200 -and
+                        (Invoke-WebRequest -Uri http://localhost:4000/login -UseBasicParsing -TimeoutSec 5).StatusCode -eq 200) { return $true } } catch { Start-Sleep -Seconds 2 }
+            }
+            return $false
           }
+          function Wait-Down {
+            foreach ($i in 1..30) {
+              try { Invoke-WebRequest -Uri http://localhost:3000/health/ready -UseBasicParsing -TimeoutSec 2 | Out-Null; Start-Sleep -Seconds 1 } catch { return $true }
+            }
+            return $false
+          }
+          if (Get-Command nssm -ErrorAction SilentlyContinue) {
+            .\scripts\windows\install-service.ps1
+            if (-not (Wait-Ready)) { Get-Content logs\ATAB-Backend.log -Tail 50 -ErrorAction SilentlyContinue; throw 'NSSM services did not start' }
+            Get-Service ATAB-* | Format-Table Name, Status
+            .\scripts\windows\install-service.ps1 -Remove
+            if (-not (Wait-Down)) { throw 'NSSM services still answering after -Remove' }
+          } else { 'NSSM not installed on this runner: testing Scheduled Tasks only' }
+          .\scripts\windows\install-service.ps1 -NoNssm
+          if (-not (Wait-Ready)) { Get-Content logs\ATAB-Backend.log -Tail 50 -ErrorAction SilentlyContinue; throw 'scheduled tasks did not start the app' }
           Get-ScheduledTask -TaskName 'ATAB-*' | Format-Table TaskName, State
-          if (-not $ok) { Get-Content logs\ATAB-Backend.log -Tail 50 -ErrorAction SilentlyContinue; throw 'service did not start' }
           .\scripts\windows\install-service.ps1 -Remove
+          if (-not (Wait-Down)) { throw 'app still answering after -Remove' }
       - if: failure()
         shell: pwsh
         run: Get-ChildItem logs -ErrorAction SilentlyContinue | ForEach-Object { "== $($_.Name)"; Get-Content $_.FullName -Tail 80 }

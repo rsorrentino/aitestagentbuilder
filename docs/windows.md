@@ -75,7 +75,7 @@ powershell -ExecutionPolicy Bypass -File scripts\windows\install-service.ps1
 - With [NSSM](https://nssm.cc) on `PATH` (or `-NssmPath C:\tools\nssm.exe`) you get two Windows services,
   `ATAB-Backend` and `ATAB-Frontend`, restarted automatically if they stop, with rotating logs in `logs\`.
   **Recommended for production.**
-- Without NSSM, two Scheduled Tasks with the same names start at boot as `SYSTEM`.
+- Without NSSM (or with `-NoNssm`), two Scheduled Tasks with the same names start at boot as `SYSTEM`.
 - `-User CONTOSO\svc-atab -Password …` runs them as a dedicated account (it is granted read access to
   `.env` and write access to logs, screenshots and the browser folder).
 - `-Remove` uninstalls them.
