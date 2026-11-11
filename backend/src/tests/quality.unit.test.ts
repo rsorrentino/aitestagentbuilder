@@ -380,3 +380,58 @@ components:
     ] as Array<[string, any, string]>) assert.equal(classifyAction(action, step), kind, action);
   });
 });
+
+describe('AI-judged assertions', () => {
+  it('parses verdicts and treats malformed answers as unsure', async () => {
+    const { parseVerdict, decideVerdict } = await import('../modules/quality/ai-assert.js');
+    assert.deepEqual(parseVerdict('{"verdict":"pass","confidence":0.9,"reason":"Shows order #42"}'), { verdict: 'pass', confidence: 0.9, reason: 'Shows order #42' });
+    assert.equal(parseVerdict('Sure!\n```json\n{"verdict":"fail","confidence":2,"reason":"x"}\n```').confidence, 1, 'clamped');
+    assert.equal(parseVerdict('I think it passes').verdict, 'unsure');
+    assert.equal(parseVerdict('{"verdict":"maybe"}').verdict, 'unsure');
+    assert.equal(decideVerdict({ verdict: 'pass', confidence: 0.9 }, 0.7, 'fail'), true);
+    assert.equal(decideVerdict({ verdict: 'pass', confidence: 0.5 }, 0.7, 'fail'), false, 'not confident enough');
+    assert.equal(decideVerdict({ verdict: 'fail', confidence: 0.99 }, 0.7, 'pass'), false);
+    assert.equal(decideVerdict({ verdict: 'unsure', confidence: 0 }, 0.7, 'fail'), false);
+    assert.equal(decideVerdict({ verdict: 'unsure', confidence: 0 }, 0.7, 'pass'), true);
+  });
+
+  it('judges the live page or an element, masks secrets and caches identical content', async () => {
+    const { judgeExpectation } = await import('../modules/quality/ai-assert.js');
+    const { launchBrowser, outlinePage } = await import('../modules/execution/browser.js');
+    const browser = await launchBrowser();
+    try {
+      const page = await browser.newPage();
+      await page.setContent('<title>Order</title><h1>Thank you</h1><p id="msg">Order #42 confirmed for token SECRET-TOKEN-123</p><button>Track order</button>');
+      const seen: string[] = [];
+      const judge = async (_system: string, user: string) => {
+        seen.push(user);
+        return { content: '{"verdict":"pass","confidence":0.95,"reason":"It says Order #42 confirmed"}', provider: 'stub' };
+      };
+      const opts = { judge, outline: (p: any) => outlinePage(p, 20), mask: (t: string) => t.split('SECRET-TOKEN-123').join('••••'), cache: new Map() };
+      const v1 = await judgeExpectation(page, null, 'The page confirms the order with its number', opts);
+      assert.equal(v1.passed, true);
+      assert.equal(v1.provider, 'stub');
+      assert.match(seen[0], /Expectation: The page confirms the order with its number/);
+      assert.match(seen[0], /Visible text:\n[\s\S]*Order #42 confirmed/);
+      assert.match(seen[0], /button selector="text=Track order"/);
+      assert.ok(!seen[0].includes('SECRET-TOKEN-123'), 'secrets are masked before sending');
+
+      const v2 = await judgeExpectation(page, null, 'The page confirms the order with its number', opts);
+      assert.equal(v2.cached, true);
+      assert.equal(seen.length, 1, 'identical content is judged once');
+
+      await judgeExpectation(page, page.locator('#msg'), 'Mentions the order number', opts);
+      assert.match(seen[1], /Element text:\nOrder #42 confirmed/);
+      assert.doesNotMatch(seen[1], /Headings and controls/);
+    } finally {
+      await browser.close();
+    }
+  });
+
+  it('classifies AI-check steps', () => {
+    for (const [action, kind] of [
+      ['assert_ai', 'assert_ai'], ['Verify with AI that the cart shows 3 items', 'assert_ai'], ['Check using the AI whether the tone is polite', 'assert_ai'],
+      ['Verify the AI assistant is visible', 'assert_text'],
+    ] as Array<[string, string]>) assert.equal(classifyAction(action, {}), kind, action);
+  });
+});

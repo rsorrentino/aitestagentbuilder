@@ -31,6 +31,12 @@ const prompt = process.argv[process.argv.indexOf('-p') + 1] || '';
 if (prompt.includes('fix broken UI test selectors')) console.log('[{"selector": "#new-id"}]');
 else if (prompt.includes('senior API test engineer')) console.log(JSON.stringify([{ title: 'Unknown order is 404', module: 'Orders', priority: 'High',
   steps: [{ action: 'http_request', target: 'api/orders/999' }, { action: 'assert_status', data: { value: 404 } }], expectedResults: ['404'] }]));
+else if (prompt.includes('You are a strict QA judge')) {
+  const expectation = (prompt.match(/Expectation: (.*)/) || [])[1] || '';
+  if (expectation.includes('unsure')) console.log('{"verdict": "unsure", "confidence": 0.3, "reason": "The content does not say"}');
+  else if (expectation.includes('everything has a name') && prompt.includes('Everything here has a name')) console.log('{"verdict": "pass", "confidence": 0.92, "reason": "The page says everything has a name"}');
+  else console.log('{"verdict": "fail", "confidence": 0.85, "reason": "No shopping cart is shown on the page"}');
+}
 else if (prompt.includes('You triage failed UI test runs')) console.log('[{"group": 1, "category": "app_bug", "cause": "The page no longer shows the expected text", "suggestion": "Check the release notes of the last deploy"}]');
 else console.log('[]');
 `);
@@ -534,5 +540,40 @@ describe('quality extensions (integration)', () => {
     assert.equal(bad.status, 400);
     const noPaths = await call('POST', `/api/v1/agents/${agent}/generate-api-tests`, { spec: { hello: 'world' } });
     assert.match(noPaths.data.error, /no "paths"/);
+  });
+
+  it('judges plain-language expectations with the AI (assert_ai)', async (t) => {
+    if (!dbAvailable) return t.skip('database not available');
+    const agent = await newAgent('AI checks', { ai: { provider: 'copilot' }, evidence: { trace: 'off', video: 'off' } });
+    const ok = await newTest('Says everything has a name', [
+      { action: 'navigate', target: '/good' },
+      { action: 'Verify with AI that the page says everything has a name' },
+    ]);
+    const same = await newTest('Same check, same page', [
+      { action: 'navigate', target: '/good' },
+      { action: 'assert_ai', data: { value: 'the page says everything has a name' } },
+    ]);
+    const cart = await newTest('Shows a cart', [{ action: 'navigate', target: '/good' }, { action: 'assert_ai', data: { value: 'The page shows a shopping cart' } }]);
+    const unsure = await newTest('Unsure fails by default', [{ action: 'navigate', target: '/good' }, { action: 'assert_ai', data: { value: 'unsure about this' } }]);
+    const tolerant = await newTest('Unsure may pass', [{ action: 'navigate', target: '/good' }, { action: 'assert_ai', data: { value: 'unsure again', on_unsure: 'pass' } }]);
+
+    const before = copilotCalls();
+    const r = await run(agent, [ok, same, cart, unsure, tolerant]);
+    const by = (id: string) => r.results.find((x: any) => x.testCaseId === id);
+    assert.equal(by(ok).status, 'passed', by(ok).error);
+    assert.match(by(ok).metadata.steps[1].message, /AI judged "the page says everything has a name": pass, confidence 92%.* — The page says everything has a name/);
+    assert.equal(by(ok).metadata.aiChecks[0].provider, 'copilot');
+    assert.equal(by(same).status, 'passed', by(same).error);
+    // Whichever of the two identical checks ran second reused the verdict
+    const cachedFlags = [by(ok), by(same)].map((x: any) => /same content as earlier in this run/.test(x.metadata.steps[1].message));
+    assert.deepEqual(cachedFlags.sort(), [false, true]);
+    assert.equal(by(cart).status, 'failed');
+    assert.match(by(cart).error, /: fail, confidence 85% — No shopping cart is shown/);
+    assert.equal(by(unsure).status, 'failed');
+    assert.equal(by(tolerant).status, 'passed', by(tolerant).error);
+    assert.equal(copilotCalls() - before, 4 + 0, 'one AI call per distinct expectation and page (the repeated check is cached)');
+    // Triage knows AI verdicts
+    const appBug = r.metadata.triage.groups.find((g: any) => g.category === 'app_bug');
+    assert.ok(appBug.tests.some((x: any) => x.testCaseId === cart));
   });
 });

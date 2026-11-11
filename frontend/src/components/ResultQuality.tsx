@@ -25,7 +25,8 @@ export default function ResultQuality({ runId, result, canEdit, onChanged }: Pro
   const a11y: any[] = result.metadata?.accessibility ?? [];
   const visual: any[] = result.metadata?.visual ?? [];
   const healing = result.metadata?.healing;
-  if (!ev.trace && !ev.video && !a11y.length && !visual.length && !healing?.steps?.length) return null;
+  const aiChecks: any[] = result.metadata?.aiChecks ?? [];
+  if (!ev.trace && !ev.video && !a11y.length && !visual.length && !healing?.steps?.length && !aiChecks.length) return null;
 
   const act = async (key: string, fn: () => Promise<string>) => {
     setBusy(key);
@@ -139,6 +140,28 @@ export default function ResultQuality({ runId, result, canEdit, onChanged }: Pro
               )}
             </div>
           ))}
+        </section>
+      )}
+
+      {aiChecks.length > 0 && (
+        <section aria-label="AI checks">
+          <h4 className="mb-2">🤖 AI checks</h4>
+          <table className="data-table" style={{ fontSize: 13 }}>
+            <thead><tr><th>Expectation</th><th>Verdict</th><th>Why</th></tr></thead>
+            <tbody>
+              {aiChecks.map((c, i) => (
+                <tr key={i}>
+                  <td>{c.expectation}</td>
+                  <td>
+                    <span className={c.passed ? 'text-success' : 'text-danger'} style={{ fontWeight: 600 }}>{c.verdict}</span>
+                    <div className="text-muted">{Math.round(c.confidence * 100)}% confident{c.provider ? ` · ${c.provider}` : ''}</div>
+                  </td>
+                  <td>{c.reason}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="form-hint">Judged from the page&apos;s text and structure, not its pixels. AI verdicts can vary; keep classic assertions for what must never change.</p>
         </section>
       )}
 

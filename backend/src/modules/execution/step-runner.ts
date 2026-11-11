@@ -12,6 +12,7 @@ import { SalesforceSessions } from '../salesforce/session.js';
 import { A11yReport, describeA11y, scanAccessibility } from '../quality/accessibility.js';
 import { checkScreenshot, describeVisual, VisualEntry } from '../quality/visual.js';
 import { ApiState, checkJson, describeResponse, extractVars, mockRoute, sendRequest, statusMatches } from '../quality/api-testing.js';
+import { AiVerdict, describeVerdict, judgeExpectation, Judge } from '../quality/ai-assert.js';
 
 export type StepKind =
   | 'navigate' | 'click' | 'fill' | 'select' | 'check' | 'uncheck' | 'press' | 'hover' | 'wait'
@@ -21,6 +22,7 @@ export type StepKind =
   | 'assert_profile' | 'assert_object_access' | 'assert_field_access' | 'assert_record_access'
   | 'assert_accessible' | 'assert_screenshot'
   | 'http_request' | 'assert_status' | 'assert_json' | 'assert_header' | 'assert_response_time' | 'mock_route' | 'block_route'
+  | 'assert_ai'
   | 'manual';
 
 export interface StepOutcome {
@@ -42,6 +44,8 @@ export interface StepContext {
   quality?: QualityContext;
   /** Last API response and variables captured by http_request steps of this test. */
   api?: ApiState;
+  /** AI judge for assert_ai steps (cache shared across the run). */
+  ai?: { judge: Judge; outline: (page: Page) => Promise<string>; mask: (text: string) => string; cache: Map<string, Omit<AiVerdict, 'cached'>> };
 }
 
 export interface QualityContext {
@@ -52,6 +56,7 @@ export interface QualityContext {
   testCaseId: string;
   accessibility: A11yReport[];
   visual: VisualEntry[];
+  aiChecks?: AiVerdict[];
 }
 
 /** Default text of Salesforce's "no access" pages. */
@@ -73,6 +78,7 @@ export function classifyAction(rawAction: string, step: Pick<TestStep, 'target' 
     'http request': 'http_request', 'api request': 'http_request', 'request': 'http_request',
     'assert status': 'assert_status', 'assert json': 'assert_json', 'assert header': 'assert_header',
     'assert response time': 'assert_response_time', 'mock route': 'mock_route', 'mock api': 'mock_route', 'block route': 'block_route',
+    'assert ai': 'assert_ai', 'ai assert': 'assert_ai', 'ai check': 'assert_ai', 'assert with ai': 'assert_ai',
   };
   if (exact[a]) return exact[a];
   // "GET /api/orders", "POST https://…"
@@ -81,6 +87,7 @@ export function classifyAction(rawAction: string, step: Pick<TestStep, 'target' 
   if (verb && (verb[2] ? /^(\/|https?:\/\/|[\w.{}-]+\/)/.test(verb[2]) : !!step.target)) return 'http_request';
   if (/^(send|make|call|invoke)\b.*\b(request|api|endpoint)\b/.test(a)) return 'http_request';
   if (/^(mock|stub|fake)\b/.test(a)) return 'mock_route';
+  if (/^(verify|check|assert|confirm|ensure|validate|judge)\s+(with|using|by)\s+(the\s+)?ai\b/.test(a)) return 'assert_ai';
   if (/^(assert|verify|expect|validate|confirm|ensure|check that|should|observe|see)\b/.test(a)) {
     if (/\b(access denied|insufficient privileges|no access|not authori[sz]ed|forbidden|cannot access|can't access)\b/.test(a)) return 'assert_access_denied';
     if (/\b(status code|http status|response status)\b/.test(a)) return 'assert_status';
@@ -364,6 +371,24 @@ export async function executeStep(step: TestStep, ctx: StepContext, targetOverri
     case 'mock_route':
     case 'block_route':
       return { status: 'passed', message: await mockRoute(page, target || String(step.data?.url ?? ''), step.data ?? {}, kind === 'block_route') };
+    case 'assert_ai': {
+      if (!ctx.ai) throw new Error('AI checks need a run context');
+      const data = step.data ?? {};
+      // The expectation: data.value, else the sentence after "Verify with AI that …", else the expected result
+      const fromAction = step.action.replace(/^\s*(verify|check|assert|confirm|ensure|validate|judge)\s+(with|using|by)\s+(the\s+)?ai\s*(that|whether|if)?\s*/i, '').trim();
+      const expectation = String(data.value ?? data.expect ?? (fromAction && fromAction !== step.action.trim() ? fromAction : '') ?? '').trim()
+        || String(step.expectedResult ?? '').trim();
+      if (!expectation || /^assert[_ ]ai$/i.test(expectation)) need('the expectation in plain language in data.value');
+      const locator = target ? await resolveLocator(page, target) : null;
+      const minConfidence = data.min_confidence ?? data.minConfidence;
+      const verdict = await judgeExpectation(page, locator, expectation, {
+        ...ctx.ai, minConfidence, onUnsure: data.on_unsure ?? data.onUnsure,
+      });
+      ctx.quality?.aiChecks?.push(verdict);
+      const message = describeVerdict(verdict, Number(minConfidence ?? 0.7));
+      if (!verdict.passed) throw new Error(message);
+      return { status: 'passed', message };
+    }
     case 'salesforce_login': {
       const sessions = requireSalesforce(ctx);
       const persona = step.data?.persona ?? (target && !/^(https?:|\/)/.test(target) ? target : undefined) ?? ctx.persona;

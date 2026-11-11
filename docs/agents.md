@@ -104,6 +104,7 @@ The agent page shows **Tests in the next run**: exactly what the planner will ex
 | `assert_access_denied` | optional page to open | optional custom message |
 | `assert_accessible` | optional element to scan | `{"level": "wcag21aa", "min_impact": "serious", "ignore": ["color-contrast"], "exclude": [".chat-widget"], "report_only": false}` |
 | `assert_screenshot` | optional element (whole viewport if empty) | `{"name": "cart", "max_diff_ratio": 0.001, "threshold": 0.1, "mask": [".clock"], "full_page": false, "on_missing": "create"}` |
+| `assert_ai` | optional element to judge | the expectation in plain language; `{"value": "…", "min_confidence": 0.7, "on_unsure": "fail"}` — or write the action as "Verify with AI that …" |
 | `http_request` | path (relative to `api_base_url`, else `base_url`) or URL; also `"GET orders"` as the action | `{"method": "POST", "json": {...}, "query": {...}, "headers": {...}, "extract": {"orderId": "$.id"}, "status": 201}` |
 | `assert_status` | | `201`, `"2xx"` or `[200, 204]` (or in the sentence: "Verify the status code is 201") |
 | `assert_json` | JSON path | `{"path": "$.items[0].name", "equals": "Lamp"}` — or `contains`, `matches`, `type`, `length`, `exists: false` |
@@ -219,3 +220,15 @@ login is authenticated as that user.
   - With AI, it also writes negative and edge cases.
   - Paths are prefixed with a relative server URL (`/api/v1`) or Swagger `basePath`. For an absolute server URL, set the
     agent's **API base URL** to it.
+
+**AI-judged assertions.** `assert_ai` checks an expectation written in plain language against the live page. For example,
+"the chatbot's answer explains how to reset a password and links to the help page" can verify Salesforce Agentforce or
+Einstein answers.
+- **What the AI sees:** the page's (or the element's) visible text, its headings and controls, the URL and the title. It does
+  not see pixels; use `assert_screenshot` for how a page looks. Known secrets are masked before anything is sent.
+- **How it decides:** the step passes only on a *pass* verdict at or above `min_confidence` (default 0.7). *Unsure* fails
+  unless `on_unsure: "pass"`.
+- **Caching:** identical page content with the same expectation is judged once per run.
+- **Where verdicts show:** with their reasons, on the run page; failed AI checks are triaged as app bugs.
+- **Cost and variability:** each check is one AI call (through the `analysis` route). Verdicts can vary more than classic
+  assertions, so keep exact assertions for what must never change.

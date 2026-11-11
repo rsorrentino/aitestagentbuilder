@@ -56,6 +56,8 @@ export class RunExecutor {
   private secrets: Record<string, string>;
   private secretList: string[];
   private salesforce?: SalesforceSessions;
+  /** assert_ai verdicts by content, so identical pages are judged once per run. */
+  private aiCache = new Map<string, any>();
   /** Quarantined tests of the project: they run, but their failures do not fail the run. */
   private quarantined = new Map<string, Quarantine>();
   /** Selectors healed earlier in this run: reused without another model call. */
@@ -216,6 +218,7 @@ export class RunExecutor {
       testCaseId: testCase.id,
       accessibility: [],
       visual: [],
+      aiChecks: [],
     };
 
     try {
@@ -239,6 +242,17 @@ export class RunExecutor {
         persona,
         quality,
         api: { vars: {} },
+        ai: {
+          judge: async (system, user) => {
+            const router = getLLMRouter();
+            if (!router.hasAnyProvider()) throw new Error('assert_ai needs an AI provider, and none is configured');
+            const r = await router.chat([{ role: 'system', content: system }, { role: 'user', content: user }], 'analysis', { preferred: config.ai?.provider, maxTokens: 400 });
+            return { content: r.content, provider: r.provider };
+          },
+          outline: (p) => outlinePage(p, 80),
+          mask: (text) => this.mask(text),
+          cache: this.aiCache,
+        },
       };
 
       const steps: TestStep[] = testCase.steps ?? [];
@@ -331,6 +345,7 @@ export class RunExecutor {
         steps: stepLogs,
         ...(quality.accessibility.length ? { accessibility: quality.accessibility } : {}),
         ...(quality.visual.length ? { visual: quality.visual } : {}),
+        ...(quality.aiChecks?.length ? { aiChecks: quality.aiChecks } : {}),
         ...(healed.length ? { healing: { steps: healed, applied: healingApplied } } : {}),
         ...(kept.traceMasked ? { traceRedactions: kept.traceMasked } : {}),
         // Lets triage recognise the same failure in later runs

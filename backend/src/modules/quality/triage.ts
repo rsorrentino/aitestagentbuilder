@@ -56,12 +56,15 @@ export function failureSignature(error: string, action?: string): string {
 const RULES: Array<{ category: FailureCategory; test: RegExp; reason: string }> = [
   // Environment: the application or the network was not available
   { category: 'environment', test: /net::ERR_|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ECONNRESET|socket hang up|getaddrinfo|Cannot reach|HTTP 5\d\d|status of 5\d\d|Service Unavailable|Bad Gateway|browser has been closed|Target page, context or browser has been closed|Navigation timeout|page\.goto: Timeout/i, reason: 'The application or the network was not reachable' },
+  { category: 'environment', test: /needs an AI provider/i, reason: 'An AI check could not run: no AI provider is configured' },
   { category: 'environment', test: /Salesforce token request failed|login as .* did not complete|verification code|phishing-resistant|Cannot connect to PostgreSQL|No Salesforce API access/i, reason: 'Login or infrastructure problem, not the behaviour under test' },
   // Test bug: the test no longer matches the application or is misconfigured
   { category: 'test_bug', test: /was not found or not actionable|strict mode violation|resolved to \d+ elements|waiting for (locator|getBy)|locator\.\w+: Timeout|not attached to the DOM|outside of the viewport/i, reason: 'A selector no longer finds the element: the page changed or the test is outdated' },
   { category: 'test_bug', test: /needs (a target|data\.value)|Unknown secret|Unknown Salesforce persona|not in STEP_ENV_ALLOWLIST|Test case has no steps|Give the expected access|Expected true\/false|No approved baseline|Unknown accessibility level/i, reason: 'The test case is incomplete or misconfigured' },
   // App bug: the application behaved differently from what the test expects
   { category: 'app_bug', test: /Expected .* to contain|Expected the page to contain|Expected URL to contain|Expected title to contain|Expected access to be denied|Unexpected access to|Expected profile|is missing permission set|must not have permission set|not to be visible|differs from the baseline|changed size compared with the baseline|accessibility violation/i, reason: 'The application did not show or allow what the test expects' },
+  { category: 'app_bug', test: /AI judged .*: fail\b/i, reason: 'The AI judged that the page does not meet the expectation' },
+  { category: 'unknown', test: /AI judged .*: (unsure|pass, confidence)/i, reason: 'The AI could not decide with enough confidence: check the evidence' },
 ];
 
 export function classifyFailure(error: string): { category: FailureCategory; reason: string } {
