@@ -18,7 +18,7 @@ import logger from '../../infra/logger/index.js';
 import { decryptAgentConfig, resolvePlaceholders, secretValues } from '../../core/domain/agent-secrets.js';
 import { maskSecrets } from '../../infra/security/secrets.js';
 import { outlinePage } from './browser.js';
-import { deviceOptions, GridConfig, launchTarget, markGridSession, resolveTargets, Target } from './targets.js';
+import { deviceOptions, GridConfig, launchTarget, markGridSession, parallelism, resolveTargets, Target } from './targets.js';
 import { classifyAction, executeStep, isSelectorFailure, QualityContext, StepContext } from './step-runner.js';
 import { TestCaseRepository } from '../../core/repositories/test-case.repository.js';
 import { describeA11y, scanAccessibility } from '../quality/accessibility.js';
@@ -67,6 +67,37 @@ interface PlanItem {
 
 function titleOf(item: PlanItem): string {
   return `${item.testCase.title}${item.persona ? ` [as ${item.persona}]` : ''}${item.row ? ` [${item.row.label}]` : ''}${item.browser ? ` [${item.browser}]` : ''}`;
+}
+
+/** Consecutive groups of the same browser / device (the plan is ordered by target). */
+function byTarget<T extends { item: PlanItem }>(entries: T[]): Array<{ target: Target; items: T[] }> {
+  const groups: Array<{ target: Target; items: T[] }> = [];
+  for (const e of entries) {
+    const last = groups[groups.length - 1];
+    if (last && last.target === e.item.target) last.items.push(e);
+    else groups.push({ target: e.item.target!, items: [e] });
+  }
+  return groups;
+}
+
+/** Run `fn` over the items, `size` at a time; the first error stops new work and is rethrown. */
+async function runPool<T>(items: T[], size: number, fn: (item: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  let failed = false;
+  let failure: unknown;
+  const worker = async () => {
+    while (!failed && next < items.length) {
+      const item = items[next++];
+      try {
+        await fn(item);
+      } catch (e) {
+        if (!failed) failure = e;
+        failed = true;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(size, items.length)) }, worker));
+  if (failed) throw failure;
 }
 
 class CancelledError extends Error {
@@ -289,59 +320,68 @@ export class RunExecutor {
 
     const single = new Set(plan.map((p) => p.target)).size <= 1;
     const state: { current?: Target; passed: boolean; error?: string; single: boolean } = { passed: true, single };
+    const workers = parallelism(config);
+    let completed = 0;
+
+    /** One test (with its retries); tests of the same browser run `workers` at a time. */
+    const runItem = async ({ item: planned, index }: { item: PlanItem; index: number }) => {
+      if (this.cancelled) throw new CancelledError();
+      const item = state.error ? { ...planned, launchError: state.error } : planned;
+      const { testCase, persona, row } = item;
+      const title = titleOf(item);
+      emitRunEvent(this.runId, 'test_started', { testId: testCase.id, title, persona, ...(row ? { dataRow: row.index } : {}), ...(item.browser ? { browser: item.browser } : {}), index: index + 1, total });
+
+      let status: string = 'failed';
+      for (let attempt = 0; attempt <= retries; attempt++) {
+        if (attempt > 0) this.log(`Retrying "${title}" (attempt ${attempt + 1}/${retries + 1})`, { testId: testCase.id }, 'warn');
+        status = await this.runTestCase(item, attempt);
+        if (status !== 'failed' && status !== 'error') break;
+        if (this.cancelled) throw new CancelledError();
+        if (item.launchError) break;
+      }
+      if (status === 'failed' || status === 'error') state.passed = false;
+
+      if (status === 'passed') counts.passed++;
+      else if (status === 'skipped') counts.skipped++;
+      else if (this.quarantined.has(testCase.id)) {
+        counts.quarantined++;
+        this.log(`  🧪 "${title}" is quarantined: its failure does not fail the run`, { testId: testCase.id }, 'warn');
+      } else {
+        counts.failed++;
+        // A browser that could not start is not retried at the end
+        if (!item.launchError) failedItems.push(planned);
+      }
+      completed++;
+      emitRunEvent(this.runId, 'run_progress', { status: 'running', completed, total, ...counts });
+    };
+
     try {
       if (!plan.length) await this.useTarget(resolveTargets(config)[0], state);
+      if (workers > 1) this.log(`Running up to ${workers} tests at a time per browser`);
 
-      for (let i = 0; i < total; i++) {
+      for (const group of byTarget(plan.map((item, index) => ({ item, index })))) {
         if (this.cancelled) throw new CancelledError();
-        await this.useTarget(plan[i].target!, state);
-        const item = state.error ? { ...plan[i], launchError: state.error } : plan[i];
-        const { testCase, persona, row } = item;
-        const title = titleOf(item);
-        emitRunEvent(this.runId, 'test_started', { testId: testCase.id, title, persona, ...(row ? { dataRow: row.index } : {}), ...(item.browser ? { browser: item.browser } : {}), index: i + 1, total });
-
-        let status: string = 'failed';
-        for (let attempt = 0; attempt <= retries; attempt++) {
-          if (attempt > 0) this.log(`Retrying "${title}" (attempt ${attempt + 1}/${retries + 1})`, { testId: testCase.id }, 'warn');
-          status = await this.runTestCase(item, attempt);
-          if (status !== 'failed' && status !== 'error') break;
-          if (this.cancelled) throw new CancelledError();
-          if (item.launchError) break;
-        }
-        if (status === 'failed' || status === 'error') state.passed = false;
-
-        if (status === 'passed') counts.passed++;
-        else if (status === 'skipped') counts.skipped++;
-        else if (this.quarantined.has(testCase.id)) {
-          counts.quarantined++;
-          this.log(`  🧪 "${title}" is quarantined: its failure does not fail the run`, { testId: testCase.id }, 'warn');
-        } else {
-          counts.failed++;
-          // A browser that could not start is not retried at the end
-          if (!item.launchError) failedItems.push(plan[i]);
-        }
-
-        emitRunEvent(this.runId, 'run_progress', { status: 'running', completed: i + 1, total, ...counts });
+        await this.useTarget(group.target, state);
+        await runPool(group.items, workers, runItem);
       }
 
       // Unattended runs: failed tests get one more chance at the end, in a fresh browser
       // (a transient outage or a stuck browser should not wake anyone up)
       if (this.options.rerunFailed && failedItems.length && !this.cancelled) {
         this.log(`Re-running ${failedItems.length} failed test(s) once, in a fresh browser`, {}, 'warn');
-        let restarted: Target | undefined;
-        for (const failed of failedItems) {
+        for (const group of byTarget(failedItems.map((item) => ({ item, index: 0 })))) {
           if (this.cancelled) throw new CancelledError();
-          if (restarted !== failed.target) {
-            await this.useTarget(failed.target!, state, true);
-            restarted = failed.target;
-          }
-          const item = state.error ? { ...failed, launchError: state.error } : failed;
-          const status = await this.runTestCase(item, retries + 1, { rerun: true });
-          if (status === 'passed') {
-            counts.failed--;
-            counts.passed++;
-            this.log(`  ↻ "${titleOf(item)}" passed when re-run: likely flaky or a transient problem`, { testId: item.testCase.id }, 'warn');
-          } else state.passed = false;
+          await this.useTarget(group.target, state, true);
+          await runPool(group.items, workers, async ({ item: failed }) => {
+            if (this.cancelled) throw new CancelledError();
+            const item = state.error ? { ...failed, launchError: state.error } : failed;
+            const status = await this.runTestCase(item, retries + 1, { rerun: true });
+            if (status === 'passed') {
+              counts.failed--;
+              counts.passed++;
+              this.log(`  ↻ "${titleOf(item)}" passed when re-run: likely flaky or a transient problem`, { testId: item.testCase.id }, 'warn');
+            } else state.passed = false;
+          });
         }
         emitRunEvent(this.runId, 'run_progress', { status: 'running', completed: total, total, ...counts });
       }

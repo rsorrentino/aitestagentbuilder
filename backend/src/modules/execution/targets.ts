@@ -73,8 +73,18 @@ export function resolveTargets(config: any): Target[] {
   return out;
 }
 
+/** Tests run at the same time per browser: agent setting parallel (1–16), capped by MAX_PARALLEL_TESTS (default 8). */
+export function parallelism(config: any): number {
+  const cap = Math.min(Math.max(parseInt(process.env.MAX_PARALLEL_TESTS || '8', 10) || 8, 1), 32);
+  const wanted = Math.floor(Number(config?.parallel ?? 1)) || 1;
+  return Math.min(Math.max(wanted, 1), cap);
+}
+
 export function validateTargets(config: any): string[] {
   const errors: string[] = [];
+  if (config?.parallel !== undefined && (!Number.isInteger(config.parallel) || config.parallel < 1 || config.parallel > 16)) {
+    errors.push('config.parallel must be a whole number of tests to run at the same time, 1–16');
+  }
   if (config?.browsers !== undefined) {
     if (!Array.isArray(config.browsers) || config.browsers.some((b: any) => typeof b !== 'string' || !b.trim())) errors.push('config.browsers must be a list such as ["chromium", "firefox", "webkit", "iPhone 15"]');
     else {

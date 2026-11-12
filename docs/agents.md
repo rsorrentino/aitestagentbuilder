@@ -381,6 +381,23 @@ apart. All tests of one browser run together, in one browser start (one session 
 - On this server, Firefox and WebKit must be installed: `cd backend && npx playwright install firefox webkit`
   (Windows: the same command). A browser that cannot start fails only its own tests, with that hint.
 
+### Parallel tests
+
+```json
+"parallel": 4
+```
+
+Up to 4 tests of a browser run at the same time (1–16; the server caps it with `MAX_PARALLEL_TESTS`, default 8), each in
+its own browser context, so a night suite finishes in a fraction of the time. Retries, the re-run of failures at the end,
+cancellation and the maximum run time work as before.
+
+- Tests must be independent: no test may rely on another having run first, and tests running together should not change the
+  same records — give each its own data (`{{fake.email}}`, data sets) or its own persona.
+- Parallel tests signing in as the same user take turns at the sign-in: the first signs in, the others reuse its session (no
+  second MFA prompt). Authenticator codes are never typed twice: a sign-in waits for the next code when the current one was just used.
+- On a cloud grid, all tests of a browser share one session; your plan's parallel limit applies to separate runs.
+- Page speed measured during parallel runs is slower than alone: keep speed budgets in agents with `parallel: 1`.
+
 ### Cloud grids
 
 `"grid"` runs the browsers elsewhere: real Windows and macOS machines, browser versions this server does not have.

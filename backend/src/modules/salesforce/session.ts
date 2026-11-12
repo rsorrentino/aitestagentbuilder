@@ -7,9 +7,10 @@
  * full login (and MFA) for every test.
  */
 
+import { KeyedLock } from '../auth/keyed-lock.js';
 import type { BrowserContext, Page } from 'playwright';
 import { jwtBearerToken, passwordToken, TokenResult, uiBridgeUrl } from './oauth.js';
-import { secondsRemaining, totp } from './totp.js';
+import { freshTotp } from './totp.js';
 import { FieldAccess, ObjectAccess, RecordAccess, SalesforceAdminChecks, SalesforceApi, SfIdentity } from './sf-api.js';
 import { findPersona, Persona, SalesforceSettings } from './personas.js';
 import type { SessionVault } from '../auth/session-vault.js';
@@ -102,7 +103,14 @@ export class SalesforceSessions {
   // ---------------------------------------------------------------- browser login
 
   /** Log the page's browser context in as `name`. Any previous Salesforce session in the context is dropped. */
+  private signIns = new KeyedLock();
+
+  /** Sign in (parallel tests as the same user take turns, the later ones reuse the saved session). */
   async login(page: Page, name?: string, opts: { landing?: string; fresh?: boolean } = {}): Promise<LoginResult> {
+    return this.signIns.run(this.persona(name).name, () => this.loginNow(page, name, opts));
+  }
+
+  private async loginNow(page: Page, name?: string, opts: { landing?: string; fresh?: boolean } = {}): Promise<LoginResult> {
     const persona = this.persona(name);
     const context = page.context();
     await context.clearCookies();
@@ -235,8 +243,7 @@ export class SalesforceSessions {
           throw new Error(`Salesforce asked ${persona.name} for an emailed/SMS code instead of the authenticator app — make the authenticator the user's default verification method.`);
         }
         // Avoid submitting a code that expires in flight.
-        if (secondsRemaining() < 3) await page.waitForTimeout(secondsRemaining() * 1000 + 200);
-        await page.locator(codeSelector).first().fill(totp(persona.totp_secret), { timeout: 10000 });
+        await page.locator(codeSelector).first().fill(await freshTotp(persona.totp_secret, (ms) => page.waitForTimeout(ms)), { timeout: 10000 });
         const submit = await this.firstVisible(page, this.settings.mfa.submit_selector ? [this.settings.mfa.submit_selector] : SUBMIT_SELECTORS);
         if (!submit) throw new Error('Could not find the Verify button on the Salesforce verification page (set salesforce.mfa.submit_selector)');
         await page.locator(submit).first().click({ timeout: 10000 });

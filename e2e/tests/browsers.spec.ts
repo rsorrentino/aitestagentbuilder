@@ -35,9 +35,13 @@ test('tests run per browser and emulated device, locally and on a grid', async (
     await card.getByRole('checkbox', { name: 'iPhone 15', exact: true }).click();
     await card.getByRole('checkbox', { name: 'iPhone 15', exact: true }).click();
     await expect(card).toContainText('each test runs 2× per run');
+    await card.getByLabel('Tests at the same time').fill('2');
+    await expect(card).toContainText('each test runs 2× per run, 2 at a time');
     await card.getByRole('button', { name: 'Save' }).click();
-    await expect(card.getByText('Saved: every test runs 2 times')).toBeVisible();
-    expect((await (await request.get(`${API_URL}/agents/${agent.id}`)).json()).config.browsers).toEqual(['chromium', 'Pixel 7']);
+    await expect(card.getByText('Saved: every test runs 2 times, 2 at a time')).toBeVisible();
+    const savedConfig = (await (await request.get(`${API_URL}/agents/${agent.id}`)).json()).config;
+    expect(savedConfig.browsers).toEqual(['chromium', 'Pixel 7']);
+    expect(savedConfig.parallel).toBe(2);
 
     const local = await (await request.post(`${API_URL}/runs`, { data: { agentId: agent.id, wait: true } })).json();
     expect(local.status).toBe('completed');
@@ -50,7 +54,7 @@ test('tests run per browser and emulated device, locally and on a grid', async (
     await card.getByLabel('Run on').selectOption('playwright');
     await card.getByLabel('Server address *').fill(grid.wsEndpoint());
     await card.getByRole('button', { name: 'Save' }).click();
-    await expect(card.getByText('Saved: every test runs 2 times on Playwright server')).toBeVisible();
+    await expect(card.getByText('Saved: every test runs 2 times on Playwright server (self-hosted grid), 2 at a time')).toBeVisible();
     const remote = await (await request.post(`${API_URL}/runs`, { data: { agentId: agent.id, wait: true } })).json();
     expect(remote.status).toBe('completed');
     const saved = (await (await request.get(`${API_URL}/agents/${agent.id}`)).json()).config.grid;
