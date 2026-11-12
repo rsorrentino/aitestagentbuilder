@@ -111,6 +111,8 @@ export interface GitEvent {
   environment?: string;
   /** deployment_status: the deployed address (preview environments) */
   deploymentUrl?: string;
+  /** Numeric project id where the host has one (GitLab), to match a config that uses it */
+  repositoryId?: string;
   /** Who / what caused it, for the run page */
   actor?: string;
   title?: string;

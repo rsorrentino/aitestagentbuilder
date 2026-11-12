@@ -223,7 +223,10 @@ async function codeHostIntegration(run: TestRun): Promise<Integration | null> {
   if (!git?.sha || !run.projectId) return null;
   const all = (await new IntegrationRepository().list(run.projectId, true)).filter((i) => i.enabled && codeHostFor(i));
   return all.find((i) => i.id === git.integrationId)
-    ?? all.find((i) => String(i.config.repository ?? i.config.project ?? '').toLowerCase() === String(git.repository ?? '').toLowerCase())
+    ?? all.find((i) => {
+      const configured = String(i.config.repository ?? i.config.project ?? '').toLowerCase();
+      return configured === String(git.repository ?? '').toLowerCase() || (git.repositoryId !== undefined && configured === String(git.repositoryId));
+    })
     ?? null;
 }
 

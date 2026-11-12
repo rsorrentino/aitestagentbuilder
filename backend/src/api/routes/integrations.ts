@@ -13,7 +13,7 @@ import { DefectRepository, IntegrationRepository, redactIntegration, TestLinkRep
 import { trackerFor } from '../../modules/integrations/registry.js';
 import { INTEGRATION_TYPES, IntegrationError, IntegrationType } from '../../modules/integrations/types.js';
 import { validateIntegration } from '../../modules/integrations/validate.js';
-import { githubActionsWorkflow } from '../../modules/integrations/triggers.js';
+import { azurePipeline, githubActionsWorkflow, gitlabCiJob } from '../../modules/integrations/triggers.js';
 import { AgentRepository } from '../../core/repositories/agent.repository.js';
 
 type Handler = (req: AuthenticatedRequest, res: Response) => Promise<void>;
@@ -95,19 +95,18 @@ export function registerIntegrationRoutes(router: Router, roles: { viewer: Reque
     }
   }));
 
-  // GitHub Actions workflow running an agent's tests on pull requests and pushes
+  // CI template (GitHub Actions, GitLab CI, Azure Pipelines) running an agent's tests on pull / merge requests and pushes
   router.get('/integrations/:id/workflow', viewer, wrap(async (req, res) => {
     const i = await load(req, res);
     if (!i) return;
-    if (i.type !== 'github') return void res.status(400).json({ error: 'Workflows are generated for GitHub integrations' });
+    if (i.type === 'jira') return void res.status(400).json({ error: 'CI templates are generated for GitHub, GitLab and Azure DevOps integrations' });
     const agent = await agents.findById(String(req.query.agentId ?? ''), req.project!.id);
     if (!agent) return void res.status(400).json({ error: 'agentId must be an agent of this project' });
     const apiUrl = String(req.query.apiUrl || process.env.PUBLIC_API_URL || `${req.protocol}://${req.get('host')}/api/v1`);
-    res.json({
-      path: '.github/workflows/ai-tests.yml',
-      secret: 'ATAB_API_KEY',
-      yaml: githubActionsWorkflow({ apiUrl, projectId: req.project!.id, agentId: agent.id, agentName: agent.name, branch: typeof req.query.branch === 'string' ? req.query.branch : undefined }),
-    });
+    const o = { apiUrl, projectId: req.project!.id, agentId: agent.id, agentName: agent.name, branch: typeof req.query.branch === 'string' ? req.query.branch : undefined };
+    if (i.type === 'gitlab') return void res.json({ path: '.gitlab-ci.yml', secret: 'ATAB_API_KEY', secretWhere: 'Settings → CI/CD → Variables (masked)', yaml: gitlabCiJob(o) });
+    if (i.type === 'azure_devops') return void res.json({ path: 'azure-pipelines.yml', secret: 'ATAB_API_KEY', secretWhere: 'the pipeline\'s Variables (keep this value secret)', yaml: azurePipeline(o) });
+    res.json({ path: '.github/workflows/ai-tests.yml', secret: 'ATAB_API_KEY', secretWhere: 'Settings → Secrets and variables → Actions', yaml: githubActionsWorkflow(o) });
   }));
 
   router.get('/integrations/:id/issues', viewer, wrap(async (req, res) => {

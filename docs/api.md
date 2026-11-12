@@ -169,13 +169,18 @@ See [integrations.md](integrations.md). Secrets (`api_token`, `token`, `pat`, `w
 | DELETE | `/testcases/:id/links/:integrationId/:key` | editor | Unlink |
 | GET | `/requirements/coverage` | viewer | `{ summary, requirements: [{ key, title, url, state, tests: [{ id, title, status, at, runId }] }] }`, state = passing / failing / partial / not_run |
 | GET | `/defects?status=open\|resolved&agentId=` | viewer | Bugs filed by the platform: key, url, status, tests, occurrences, first/last run |
-| GET | `/integrations/:id/workflow?agentId=&branch=&apiUrl=` | viewer | GitHub: `{ path, secret, yaml }` of a GitHub Actions workflow running the agent's tests |
+| GET | `/integrations/:id/workflow?agentId=&branch=&apiUrl=` | viewer | `{ path, secret, secretWhere, yaml }`: a GitHub Actions workflow, GitLab CI job or Azure Pipelines pipeline running the agent's tests |
+| POST | `/hooks/gitlab/:integrationId` | none (`X-Gitlab-Token`) | GitLab webhook: Push Hook, Merge Request Hook, Deployment Hook; same answers as GitHub's |
+| POST | `/hooks/azure/:integrationId` | none (`X-ATAB-Token` or basic auth password) | Azure DevOps service hook: `git.push`, `git.pullrequest.created`, `git.pullrequest.updated` (source branch updated) |
 | POST | `/hooks/github/:integrationId` | none (HMAC) | GitHub webhook: `X-Hub-Signature-256` with the integration's `webhook_secret`; `push`, `pull_request`, `deployment_status` start the runs of matching `config.triggers` → `202 { runs: [{ agentId, runId }] }` or `202 { ignored: reason }` |
 
 GitHub config: `{ repository, token, api_url?, webhook_secret?, commit_status (default true), pr_comment (default true),
 triggers: [{ event: push | pull_request | deployment_status, agent_id, branches?, environments?, use_deployment_url?, include_drafts?, test_ids? }], defects }`.
 
-Runs carrying `metadata.git` (`{ provider: "github", repository, sha, pr?, ref? }`, set by webhooks or sent by CI to
+GitLab config: `{ project, token, base_url?, webhook_secret?, commit_status, pr_comment, triggers, defects }`.
+Azure DevOps config: `{ organization_url, project, pat, repository?, work_item_type? (Bug), webhook_secret?, commit_status, pr_comment, triggers (push, pull_request), defects: { …, resolve_transition? } }`.
+
+Runs carrying `metadata.git` (`{ provider: "github" | "gitlab" | "azure_devops", repository, sha, pr?, ref? }`, set by webhooks or sent by CI to
 `POST /runs`) get a commit status and, with `pr`, a pull request comment; `run.metadata.integrations[].status` and
 `.comment` say what was reported.
 

@@ -147,3 +147,60 @@ describe('GitHub', async () => {
     assert.match(wf.jobs['ai-tests'].steps[0].run, /test "\$status" = completed/);
   });
 });
+
+describe('GitLab and Azure DevOps', async () => {
+  const { parseGitLabEvent, verifyGitLabToken } = await import('../modules/integrations/gitlab.js');
+  const { htmlToText, parseAzureEvent, textToHtml, verifyAzureHook } = await import('../modules/integrations/azure-devops.js');
+  const { CI_RUN_SCRIPT, gitlabCiJob, azurePipeline } = await import('../modules/integrations/triggers.js');
+  const YAML = (await import('yaml')).default;
+
+  it('understands GitLab push, merge request and deployment hooks', () => {
+    const project = { id: 42, path_with_namespace: 'acme/shop' };
+    assert.deepEqual(parseGitLabEvent('Push Hook', { project, ref: 'refs/heads/main', after: 'abc', user_username: 'dev', commits: [{ id: 'abc', title: 'Fix' }] }),
+      { event: 'push', repository: 'acme/shop', repositoryId: '42', sha: 'abc', ref: 'refs/heads/main', branch: 'main', actor: 'dev', title: 'Fix' });
+    assert.equal(parseGitLabEvent('Push Hook', { project, ref: 'refs/heads/x', after: '0000000000000000' }), null, 'branch deleted');
+    const mr = (action: string, extra: any = {}) => parseGitLabEvent('Merge Request Hook', { project, object_attributes: { iid: 3, action, state: 'opened', source_branch: 'f', target_branch: 'main', last_commit: { id: 's' }, ...extra } });
+    assert.deepEqual([mr('open')?.pr, mr('open')?.baseBranch, mr('open')?.event], [3, 'main', 'pull_request']);
+    assert.equal(mr('update'), null, 'no new commits');
+    assert.equal(mr('update', { oldrev: 'r' })?.sha, 's');
+    assert.equal(mr('merge', { state: 'merged' }), null);
+    assert.equal(mr('open', { draft: true })?.draft, true);
+    assert.equal(parseGitLabEvent('Deployment Hook', { project, status: 'running', sha: 's' }), null);
+    assert.equal(parseGitLabEvent('Deployment Hook', { project, status: 'success', sha: 's', environment: 'review/x', environment_external_url: 'https://x.review' })?.deploymentUrl, 'https://x.review');
+    assert.equal(verifyGitLabToken('secret-1234567890', 'secret-1234567890'), true);
+    assert.equal(verifyGitLabToken('secret-1234567890', 'secret-123456789'), false);
+    assert.equal(verifyGitLabToken('secret-1234567890', undefined), false);
+  });
+
+  it('understands Azure DevOps service hooks', () => {
+    const repository = { id: 'r1', name: 'shop-web' };
+    const push = parseAzureEvent({ eventType: 'git.push', resource: { repository, refUpdates: [{ name: 'refs/heads/main', newObjectId: 'abc' }], pushedBy: { uniqueName: 'dev@acme' }, commits: [{ comment: 'Fix\nmore' }] } });
+    assert.deepEqual(push, { event: 'push', repository: 'shop-web', repositoryId: 'r1', sha: 'abc', ref: 'refs/heads/main', branch: 'main', actor: 'dev@acme', title: 'Fix' });
+    assert.equal(parseAzureEvent({ eventType: 'git.push', resource: { repository, refUpdates: [{ name: 'refs/heads/x', newObjectId: '0000000000' }] } }), null);
+    const pr = { repository, pullRequestId: 5, status: 'active', sourceRefName: 'refs/heads/f', targetRefName: 'refs/heads/main', lastMergeSourceCommit: { commitId: 's' } };
+    assert.deepEqual([parseAzureEvent({ eventType: 'git.pullrequest.created', resource: pr })?.pr, parseAzureEvent({ eventType: 'git.pullrequest.created', resource: pr })?.baseBranch], [5, 'main']);
+    assert.equal(parseAzureEvent({ eventType: 'git.pullrequest.updated', message: { text: 'Jamal approved pull request 5' }, resource: pr }), null);
+    assert.equal(parseAzureEvent({ eventType: 'git.pullrequest.updated', message: { text: 'Jamal updated the source branch of pull request 5' }, resource: pr })?.sha, 's');
+    assert.equal(parseAzureEvent({ eventType: 'git.pullrequest.created', resource: { ...pr, status: 'completed' } }), null);
+    assert.equal(verifyAzureHook('secret-1234567890', { token: 'secret-1234567890' }), true);
+    assert.equal(verifyAzureHook('secret-1234567890', { authorization: `Basic ${Buffer.from('any:secret-1234567890').toString('base64')}` }), true);
+    assert.equal(verifyAzureHook('secret-1234567890', { authorization: `Basic ${Buffer.from('secret-1234567890:').toString('base64')}` }), false);
+    assert.equal(verifyAzureHook('', { token: '' }), false);
+  });
+
+  it('converts text to work item HTML and back', () => {
+    assert.equal(textToHtml('Run <1>: https://x.test/runs/1\nnext\n\nPara 2'), '<p>Run &lt;1&gt;: <a href="https://x.test/runs/1">https://x.test/runs/1</a><br>next</p><p>Para 2</p>');
+    assert.equal(htmlToText('<div>As a <b>shopper</b>&nbsp;I pay</div><ul><li>total &amp; tax</li><li>42.00</li></ul>'), 'As a shopper I pay\n- total & tax\n- 42.00');
+  });
+
+  it('writes GitLab CI jobs and Azure pipelines with a POSIX script', () => {
+    const o = { apiUrl: 'https://atab.example.com/api/v1', projectId: 'default', agentId: 'agent-1', agentName: 'Shop' };
+    const job = YAML.parse(gitlabCiJob(o))['ai-tests'];
+    assert.equal(job.image, 'alpine:3.20');
+    assert.ok(job.script[0].includes(CI_RUN_SCRIPT));
+    const pipeline = YAML.parse(azurePipeline({ ...o, branch: 'develop' }));
+    assert.deepEqual(pipeline.pr.branches.include, ['develop']);
+    assert.ok(pipeline.steps[1].bash.includes(CI_RUN_SCRIPT));
+    assert.ok(!/\[\[|\$\{[A-Z_]+\[@\]\}|<<</.test(CI_RUN_SCRIPT), 'no bash-only syntax');
+  });
+});

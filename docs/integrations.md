@@ -6,7 +6,8 @@ Connect the platform to the tools your team already uses: **Settings → Integra
 |---|---|
 | Jira Cloud, Jira Data Center / Server | Available: story import, results on stories, coverage, automatic bugs |
 | GitHub (github.com, Enterprise Server) | Available: runs on pull requests, pushes and deployments (preview URLs), commit status checks, pull request comment, bugs as issues, issues as requirements, Actions workflow |
-| GitLab, Azure DevOps | Planned (same framework) |
+| GitLab (gitlab.com, self-managed) | Available: runs on merge requests, pushes and deployments (review apps), commit statuses, merge request note, bugs as issues (screenshot uploaded), issues as requirements, GitLab CI job |
+| Azure DevOps (Services, Server) | Available: runs on pull requests and pushes (Azure Repos), commit statuses, pull request thread, bugs as work items (screenshot attached), user stories as requirements (ids or WIQL), Azure Pipelines template |
 
 Every integration is project-scoped, its secrets are encrypted at rest (AES-256-GCM, the same as agent
 secrets) and never returned by the API, and every change is in the audit log.
@@ -69,6 +70,50 @@ new failures become issues labelled `atab` (not duplicated, commented when faili
 **closed** as completed when the tests pass. GitHub has no attachment API, so the screenshot stays on the run page
 the issue links to. Issues can be imported as tests (`#12`, or words) and linked to tests; the issue then has one
 “Automated test results” comment, updated after each run.
+
+## GitLab
+
+**Settings → Integrations → Connect → GitLab.** Project: `group/name` (or its numeric id). Token: a project access
+token (or personal access token) with the `api` scope and the Developer role. GitLab URL only for self-managed GitLab.
+
+- **Triggers** as for GitHub: *merge request opened / new commits* (title or label edits do not run tests; filter on
+  target branches), *push* (branches), *deployment succeeded* (environments, e.g. `review/*`; with **Test the deployed
+  address** the environment's external URL is tested — your review apps).
+- **Webhook**: the project's **Settings → Webhooks → Add new webhook**: URL `https://<server>/api/v1/hooks/gitlab/<integration id>`,
+  **Secret token** = the integration's webhook secret (GitLab sends it in `X-Gitlab-Token`), triggers *Push events*,
+  *Merge request events*, *Deployment events*. The integration's **Setup** shows the exact values.
+- **Results**: a commit status `AI tests / <agent>` (running → success / failed, visible in the pipeline and the merge
+  request) and one merge request note per agent, edited on each run.
+- **Bugs and requirements**: issues (labels `atab`, `atab-<fingerprint>`; the failure screenshot is uploaded to the project
+  and shown in a note), closed when fixed; issues can be imported (`#12` or words) and linked to tests, with one results note.
+- **Without webhooks**: **Setup → GitLab CI job** adds an `ai-tests` job to `.gitlab-ci.yml` (merge request pipelines, the default
+  branch, manual pipelines) that calls the API and publishes the JUnit report, so GitLab shows the test results in the merge
+  request. It needs the masked CI/CD variable `ATAB_API_KEY`. To test a review app, set `ATAB_BASE_URL: $CI_ENVIRONMENT_URL`.
+
+## Azure DevOps
+
+**Settings → Integrations → Connect → Azure DevOps.** Organization URL (`https://dev.azure.com/acme`, or your Azure
+DevOps Server collection URL), project, and a personal access token with **Work Items** (read & write) and **Code** (status;
+read & write for pull request comments). **Repository** (Azure Repos) is needed for triggers, commit statuses and pull
+request comments; leave it empty to use only work items.
+
+- **Triggers**: *pull request created / source branch updated* (votes and reviewer changes do not run tests) and *code pushed*.
+  Deployments: start the run from the release pipeline instead (the Azure Pipelines template, with `ATAB_BASE_URL`).
+- **Service hooks**: **Project settings → Service hooks → ＋ → Web Hooks**, one subscription per event: *Code pushed*,
+  *Pull request created*, *Pull request updated* (change: *Source branch updated*), for the repository. URL
+  `https://<server>/api/v1/hooks/azure/<integration id>`, HTTP header `X-ATAB-Token:<webhook secret>` (or basic
+  authentication with the secret as password). The *Test* button sends a sample for Microsoft's sample repository: it is
+  acknowledged as “for another repository”, which confirms the connection and the secret.
+- **Results**: a commit status (genre `AI tests`, name = agent; can be required by a branch policy *status check*) and one
+  pull request thread per agent, edited on each run.
+- **Bugs**: work items of type *Bug* (or the type you set) with the failure in *Repro Steps*, tags `atab; atab-<fingerprint>`
+  and the screenshot attached; commented when failing again; moved to the resolve state when fixed (the one you set, else the
+  first of *Resolved*, *Closed*, *Done* the process allows).
+- **Requirements**: user stories imported by id (`#123`), WIQL (`SELECT [System.Id] FROM WorkItems WHERE …`) or words — their
+  description and acceptance criteria are given to the AI — and linked to tests, with one “Automated test results” comment.
+- **Without service hooks**: **Setup → Azure Pipelines pipeline** (`azure-pipelines.yml`): runs on pushes and pull requests,
+  calls the API, publishes the JUnit results to the pipeline's *Tests* tab. Secret variable `ATAB_API_KEY`. For Azure Repos pull
+  requests, add the pipeline as a *build validation* in the branch policy.
 
 ## Jira
 
