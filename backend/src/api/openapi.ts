@@ -41,7 +41,7 @@ export function buildOpenApi(serverUrl: string) {
     },
     servers: [{ url: serverUrl }],
     security: [{ bearer: [] }, { apiKey: [] }],
-    tags: ['Auth', 'Projects', 'Admin', 'Agents', 'Test cases', 'Documents', 'Runs', 'Quality', 'Schedules', 'Notifications', 'Analytics', 'Audit', 'AI']
+    tags: ['Auth', 'Projects', 'Admin', 'Agents', 'Test cases', 'Documents', 'Runs', 'Quality', 'Recorder', 'Test data', 'Schedules', 'Notifications', 'Analytics', 'Audit', 'AI']
       .map((name) => ({ name })),
     paths: {
       // ── Auth ─────────────────────────────────────────────────────────────
@@ -111,6 +111,60 @@ export function buildOpenApi(serverUrl: string) {
       '/visual/baselines/{id}': { delete: op('Quality', 'Delete a visual baseline', { parameters: [id()] }) },
       '/runs/{runId}/results/{resultId}/visual/approve': {
         post: op('Quality', 'Approve the screenshot of a failed visual check as the new baseline', { parameters: [id('runId'), id('resultId')] }),
+      },
+      '/agents/{id}/generate-api-tests': {
+        post: op('Quality', 'Generate API test cases from an OpenAPI / Swagger description (smoke tests, or AI-written edge cases)', { parameters: [id()] }),
+      },
+      '/testdata/generate': {
+        post: op('Test data', 'Generate data set rows with Faker ({ fields: { column: kind } }) or the AI ({ prompt }); save: true stores them', {
+          requestBody: { content: json({ type: 'object', properties: {
+            fields: { type: 'object', additionalProperties: { type: 'string' }, example: { name: 'fullName', email: 'email' } },
+            prompt: { type: 'string' }, count: { type: 'integer', maximum: 100 }, locale: { type: 'string', example: 'it' }, seed: { type: 'string' },
+            save: { type: 'boolean' }, name: { type: 'string' }, environment: { type: 'string' }, provider: { type: 'string' },
+          } }) },
+        }),
+      },
+      '/testdata/fake-kinds': { get: op('Test data', 'Kinds usable as {{fake.kind}} in steps, with an example', { parameters: [q('locale', { type: 'string' })] }) },
+      '/testdata': {
+        get: op('Test data', 'List data sets'),
+        post: op('Test data', 'Create a data set ({ name, data: { rows: [...] } } or data: [...])'),
+      },
+      '/testdata/{id}': {
+        get: op('Test data', 'Get a data set (with rowCount)', { parameters: [id()] }),
+        put: op('Test data', 'Update a data set', { parameters: [id()] }),
+        delete: op('Test data', 'Delete a data set (project admin)', { parameters: [id()], responses: { 204: { description: 'Deleted' } } }),
+      },
+      '/agents/{id}/performance': {
+        get: op('Quality', 'Page speed trend of an agent: per page, samples (oldest first), latest and median metrics', { parameters: [id(), q('days', { type: 'integer' })] }),
+      },
+      '/runs/{runId}/results/{resultId}/ai-actions/apply': {
+        post: op('Quality', 'Replace an AI action step of the test case with the ordinary steps the AI performed ({ stepId })', { parameters: [id('runId'), id('resultId')] }),
+      },
+      '/agents/{id}/ai-action-cache': {
+        delete: op('Quality', 'Forget cached AI action sequences of an agent (optionally ?testCaseId=): the AI decides again next run', { parameters: [id(), q('testCaseId', { type: 'string' })] }),
+      },
+      '/recordings': {
+        get: op('Recorder', 'Your open recording sessions in this project'),
+        post: op('Recorder', 'Start recording: a server-side browser opens the agent\'s application ({ agentId, startPath?, persona? })'),
+      },
+      '/recordings/{id}': {
+        get: op('Recorder', 'Recording state: URL, title, recorded steps', { parameters: [id()] }),
+        delete: op('Recorder', 'Stop recording and close the browser', { parameters: [id()], responses: { 204: { description: 'Closed' } } }),
+      },
+      '/recordings/{id}/screenshot': { get: op('Recorder', 'Current screen (JPEG, 1280×800)', { parameters: [id()] }) },
+      '/recordings/{id}/inspect': { post: op('Recorder', 'Element at a point of the screen ({ x, y }) with its most robust unique selector and the suggested action', { parameters: [id()] }) },
+      '/recordings/{id}/steps': { post: op('Recorder', 'Perform and record a step ({ action, target?, value?, secret? }); record: false only performs it', { parameters: [id()] }) },
+      '/recordings/{id}/steps/{index}': { delete: op('Recorder', 'Remove a recorded step (not undone in the browser)', { parameters: [id(), id('index', 'Step index (0-based)')] }) },
+      '/recordings/{id}/scroll': { post: op('Recorder', 'Scroll the page ({ dy }), not recorded', { parameters: [id()] }) },
+      '/recordings/{id}/save': { post: op('Recorder', 'Save the recorded steps as a test case ({ title, module?, priority?, tags? })', { parameters: [id()] }) },
+      '/recordings/import': { post: op('Recorder', 'Convert a `npx playwright codegen` script (JS/TS or Python) to steps ({ script, agentId?, save?, title? })') },
+      '/quarantine': { get: op('Quality', 'Quarantined (flaky) test cases of the project') },
+      '/testcases/{id}/quarantine': {
+        post: op('Quality', 'Quarantine a test case: it runs, but its failures do not fail runs', { parameters: [id()] }),
+        delete: op('Quality', 'Release a quarantined test case', { parameters: [id()] }),
+      },
+      '/runs/{runId}/triage': {
+        post: op('Quality', 'Group and classify the failures of a run (app bug, test bug, environment), optionally explained by the AI', { parameters: [id('runId')] }),
       },
       '/runs/{runId}/results/{resultId}/apply-healing': {
         post: op('Quality', 'Write AI-repaired selectors of a result back into its test case', { parameters: [id('runId'), id('resultId')] }),

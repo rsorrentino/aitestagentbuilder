@@ -19,7 +19,7 @@ import { LLMClient, LLMMessage, LLMResponse, LLMProvider, normalizeProvider } fr
 import { isCopilotConfigured } from './copilot.js';
 import logger from '../logger/index.js';
 
-export type TaskType = 'extraction' | 'codegen' | 'chat' | 'embedding' | 'healing';
+export type TaskType = 'extraction' | 'codegen' | 'chat' | 'embedding' | 'healing' | 'analysis';
 
 export interface ProviderStatus {
   provider: LLMProvider;
@@ -43,6 +43,7 @@ const TASK_ROUTES: Record<TaskType, RouteConfig> = {
   embedding:  { primary: 'openai',    fallback: [] },
   chat:       { primary: 'anthropic', fallback: ['openai', 'azure', 'copilot'] },
   healing:    { primary: 'anthropic', fallback: ['openai', 'azure', 'copilot'] },
+  analysis:   { primary: 'anthropic', fallback: ['openai', 'azure', 'copilot'] },
 };
 
 export class NoLLMProviderError extends Error {

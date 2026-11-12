@@ -66,8 +66,11 @@ const OUTLINE_SCRIPT = `(max) => {
     const type = el.getAttribute('type');
     const text = esc(el.innerText || el.value || '');
     const href = el.getAttribute('href');
+    const options = el.tagName === 'SELECT' ? Array.from(el.options).slice(0, 15).map((o) => esc(o.text)).join('|') : '';
+    const checked = (type === 'checkbox' || type === 'radio') ? (el.checked ? ' checked' : ' unchecked') : '';
     out.push(el.tagName.toLowerCase() + (type ? '[type=' + type + ']' : '') + ' selector="' + selectorFor(el) + '"'
-      + (text ? ' text="' + text + '"' : '') + (href ? ' href="' + href.slice(0, 80) + '"' : ''));
+      + (text && !options ? ' text="' + text + '"' : '') + (options ? ' options="' + options + '"' : '') + checked
+      + (href ? ' href="' + href.slice(0, 80) + '"' : ''));
   });
   return out;
 }`;

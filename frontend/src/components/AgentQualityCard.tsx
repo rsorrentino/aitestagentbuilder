@@ -29,6 +29,11 @@ export default function AgentQualityCard({ agentId, config, canEdit, onSaved }: 
     video: config.evidence?.video ?? 'on_failure',
     selfHealing: !!config.ai?.self_healing,
     autoApply: !!config.ai?.auto_apply_healing,
+    aiTriage: !!config.ai?.triage,
+    actionCache: config.ai?.action_cache !== false,
+    qAuto: !!config.quarantine?.auto,
+    qFlips: Number(config.quarantine?.flips ?? 3),
+    qRelease: Number(config.quarantine?.release_after ?? 5),
   }));
   const [baselines, setBaselines] = useState<any[]>([]);
   const [saving, setSaving] = useState(false);
@@ -52,9 +57,10 @@ export default function AgentQualityCard({ agentId, config, canEdit, onSaved }: 
     try {
       const res = await api.put(`/agents/${agentId}`, {
         config: {
-          checks: { accessibility: form.accessibility, accessibility_options: { level: form.level, minImpact: form.minImpact } },
+          checks: { ...(config.checks ?? {}), accessibility: form.accessibility, accessibility_options: { level: form.level, minImpact: form.minImpact } },
           evidence: { trace: form.trace, video: form.video },
-          ai: { ...(config.ai ?? {}), self_healing: form.selfHealing, auto_apply_healing: form.selfHealing && form.autoApply },
+          quarantine: { ...(config.quarantine ?? {}), auto: form.qAuto, flips: form.qFlips, release_after: form.qRelease },
+          ai: { ...(config.ai ?? {}), self_healing: form.selfHealing, auto_apply_healing: form.selfHealing && form.autoApply, triage: form.aiTriage, action_cache: form.actionCache },
         },
       });
       onSaved(res.data);
@@ -136,6 +142,39 @@ export default function AgentQualityCard({ agentId, config, canEdit, onSaved }: 
                 <input type="checkbox" checked={form.autoApply} disabled={!form.selfHealing} onChange={(e) => set({ autoApply: e.target.checked })} />
                 Save repaired selectors to the test cases automatically (otherwise: review them on the run page)
               </label>
+              <label className="flex gap-2 mt-2" style={{ alignItems: 'center' }}>
+                <input type="checkbox" checked={form.aiTriage} onChange={(e) => set({ aiTriage: e.target.checked })} />
+                Explain failed runs with AI automatically (one call per failed run; rules-based triage always runs)
+              </label>
+              <label className="flex gap-2 mt-2" style={{ alignItems: 'center' }}>
+                <input type="checkbox" checked={form.actionCache} onChange={(e) => set({ actionCache: e.target.checked })} />
+                Replay AI action steps that worked before (no AI call while the page still fits)
+              </label>
+              {canEdit && (
+                <button type="button" className="btn btn-ghost btn-sm mt-1" onClick={async () => {
+                  try {
+                    const res = await api.delete(`/agents/${agentId}/ai-action-cache`);
+                    setMessage({ ok: true, text: `Forgot ${res.data.cleared} remembered AI action(s): the AI decides again next run` });
+                  } catch (err) {
+                    setMessage({ ok: false, text: errorMessage(err) });
+                  }
+                }}>Forget remembered AI actions</button>
+              )}
+            </div>
+            <div className="form-group">
+              <label className="flex gap-2" style={{ alignItems: 'center' }}>
+                <input type="checkbox" checked={form.qAuto} onChange={(e) => set({ qAuto: e.target.checked })} />
+                Quarantine flaky tests automatically: they keep running, but their failures do not fail runs, CI or notifications
+              </label>
+              <div className="flex gap-2 mt-2" style={{ alignItems: 'center', flexWrap: 'wrap', opacity: form.qAuto ? 1 : 0.5 }}>
+                <label htmlFor="q-flips" className="text-sm">after</label>
+                <input id="q-flips" type="number" min={1} max={50} className="form-control" style={{ width: 80 }} disabled={!form.qAuto}
+                  value={form.qFlips} onChange={(e) => set({ qFlips: Number(e.target.value) })} aria-label="Pass/fail flips before quarantine" />
+                <span className="text-sm">pass↔fail flips in the last 10 runs; release after</span>
+                <input type="number" min={1} max={100} className="form-control" style={{ width: 80 }} disabled={!form.qAuto}
+                  value={form.qRelease} onChange={(e) => set({ qRelease: Number(e.target.value) })} aria-label="Clean passes before release" />
+                <span className="text-sm">clean passes</span>
+              </div>
             </div>
             {canEdit && <button className="btn btn-primary btn-sm" type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save quality settings'}</button>}
           </fieldset>

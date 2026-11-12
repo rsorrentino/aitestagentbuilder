@@ -2,7 +2,8 @@
  * Create / edit a test case, including its executable steps.
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { api, errorMessage, PRIORITIES, STEP_ACTIONS, TEST_TYPES } from '../lib/api';
 
 interface StepRow { action: string; target: string; value: string }
@@ -48,6 +49,11 @@ export default function TestCaseEditor({ initial, onSaved, onCancel }: TestCaseE
   const [steps, setSteps] = useState<StepRow[]>(toRows(initial?.steps));
   const initialPersonas = initial?.data?.personas;
   const [personas, setPersonas] = useState<string>(Array.isArray(initialPersonas) ? initialPersonas.join(', ') : initialPersonas ?? '');
+  const [dataset, setDataset] = useState<string>(initial?.data?.dataset ?? '');
+  const [datasets, setDatasets] = useState<Array<{ id: string; name: string }>>([]);
+  useEffect(() => {
+    api.get('/testdata').then((res) => setDatasets(res.data)).catch(() => undefined);
+  }, []);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -83,7 +89,12 @@ export default function TestCaseEditor({ initial, onSaved, onCancel }: TestCaseE
         const list = personas.split(',').map((p: string) => p.trim()).filter(Boolean);
         const rest = { ...(initial?.data ?? {}) };
         delete rest.personas;
-        const next = list.length ? { ...rest, personas: list.includes('all') ? 'all' : list } : rest;
+        delete rest.dataset;
+        const next = {
+          ...rest,
+          ...(list.length ? { personas: list.includes('all') ? 'all' : list } : {}),
+          ...(dataset.trim() ? { dataset: dataset.trim() } : {}),
+        };
         return Object.keys(next).length ? next : null;
       })(),
     };
@@ -131,6 +142,12 @@ export default function TestCaseEditor({ initial, onSaved, onCancel }: TestCaseE
             <div className="form-hint">Salesforce agents: the test runs once per persona.</div>
           </div>
           <div className="form-group">
+            <label className="form-label" htmlFor="tc-dataset">Data set</label>
+            <input id="tc-dataset" className="form-control" list="tc-datasets" value={dataset} onChange={(e) => setDataset(e.target.value)} placeholder="none" />
+            <datalist id="tc-datasets">{[...new Set(datasets.map((d) => d.name))].map((n) => <option key={n} value={n} />)}</datalist>
+            <div className="form-hint">The test runs once per row; steps use <code>{'{{data.column}}'}</code>. <Link href="/testdata">Test data →</Link></div>
+          </div>
+          <div className="form-group">
             <label className="form-label" htmlFor="tc-tags">Tags (comma separated)</label>
             <input id="tc-tags" className="form-control" value={tags} onChange={(e) => setTags(e.target.value)} placeholder="smoke, login" />
           </div>
@@ -161,6 +178,17 @@ export default function TestCaseEditor({ initial, onSaved, onCancel }: TestCaseE
             Actions: navigate, click, fill, select, check, press, hover, wait, assert_visible, assert_not_visible, assert_text, assert_url, assert_title, screenshot.
             Quality: assert_accessible (axe-core WCAG scan; value <code>{'{"level": "wcag21aa", "ignore": ["color-contrast"]}'}</code>),
             assert_screenshot (visual regression against a baseline; target an element or leave empty for the page; value <code>{'{"name": "home", "mask": [".clock"]}'}</code>).
+            API: http_request (target: path or URL; value <code>{'{"method": "POST", "json": {...}, "extract": {"id": "$.id"}}'}</code>, later <code>{'{{vars.id}}'}</code>),
+            assert_status (<code>201</code> or <code>2xx</code>), assert_json (<code>{'{"path": "$.items[0].name", "equals": "Lamp"}'}</code>), assert_header, assert_response_time,
+            mock_route / block_route (target: URL pattern, e.g. <code>**/api/payments/**</code>; value <code>{'{"status": 500}'}</code>) to stub calls in UI tests.
+            AI: assert_ai (value: the expectation in plain language, e.g. “the answer explains how to reset a password”; optional target element), or write
+            the action as “Verify with AI that …”.
+            AI actions: write the step as “AI: add the cheapest product to the cart” (or action <code>ai</code> with the instruction as value): the AI
+            carries it out on the live page and later runs replay what worked; use <code>{'{{secrets.NAME}}'}</code> for passwords, the AI never sees them.
+            Speed: assert_performance (optional target page to load fresh; value <code>{'{"lcp": 2500, "cls": 0.1, "tbt": 200, "max_regression": 0.25}'}</code>),
+            or “Verify the page loads in under 2 seconds”.
+            Test data: <code>{'{{data.column}}'}</code> (row of the data set), <code>{'{{fake.email}}'}</code> or <code>{'{{fake.email:buyer}}'}</code> (fictitious
+            values: the same kind and label give the same value within a test, so a later step can check it), <code>{'{{secrets.NAME}}'}</code>.
             Targets can be CSS selectors (#id, .class), <code>text=Visible text</code>, or a plain label like “Sign in button”.
             Salesforce: salesforce_login (target = persona), assert_object_access (target = Account, value <code>{'{"read": true, "delete": false}'}</code>),
             assert_field_access (Account.AnnualRevenue), assert_record_access (record Id), assert_profile, assert_access_denied.

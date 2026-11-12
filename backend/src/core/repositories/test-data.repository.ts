@@ -34,6 +34,18 @@ export class TestDataRepository {
     return result.rows.length ? this.map(result.rows[0]) : null;
   }
 
+  /** A data set by id, or by name (the newest; one for the environment first when given). */
+  async findByIdOrName(ref: string, projectId: string, environment?: string): Promise<TestDataSet | null> {
+    const byId = await this.findById(ref, projectId);
+    if (byId) return byId;
+    const result = await this.db.query(
+      `SELECT * FROM test_data WHERE project_id = $1 AND name = $2
+        ORDER BY (environment IS NOT DISTINCT FROM $3) DESC, (environment IS NULL) DESC, created_at DESC LIMIT 1`,
+      [projectId, ref, environment ?? null],
+    );
+    return result.rows.length ? this.map(result.rows[0]) : null;
+  }
+
   async findAll(projectId: string, opts: { environment?: string; limit?: number; offset?: number } = {}): Promise<TestDataSet[]> {
     const values: any[] = [projectId, opts.limit ?? 100, opts.offset ?? 0];
     let where = 'project_id = $1';

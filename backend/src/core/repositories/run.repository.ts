@@ -92,30 +92,38 @@ export class RunRepository {
    * total_tests keeps the planned count when it is larger.
    */
   async updateRunStats(id: string): Promise<void> {
+    // Failures of quarantined tests are counted apart: they do not fail the run.
     const statsQuery = `
       WITH latest AS (
-        SELECT DISTINCT ON (test_case_id, COALESCE(metadata->>'persona', '')) status
+        SELECT DISTINCT ON (test_case_id, COALESCE(metadata->>'persona', '') || COALESCE('#' || (metadata->>'dataRow'), '')) status,
+               COALESCE((metadata->>'quarantined')::boolean, false) AS quarantined
         FROM results
         WHERE run_id = $1
-        ORDER BY test_case_id, COALESCE(metadata->>'persona', ''), started_at DESC
+        ORDER BY test_case_id, COALESCE(metadata->>'persona', '') || COALESCE('#' || (metadata->>'dataRow'), ''), started_at DESC
       )
       SELECT
         COUNT(*) as total_tests,
         COUNT(*) FILTER (WHERE status = 'passed') as passed_tests,
-        COUNT(*) FILTER (WHERE status IN ('failed', 'error', 'timeout')) as failed_tests,
+        COUNT(*) FILTER (WHERE status IN ('failed', 'error', 'timeout') AND NOT quarantined) as failed_tests,
+        COUNT(*) FILTER (WHERE status IN ('failed', 'error', 'timeout') AND quarantined) as quarantined_failures,
         COUNT(*) FILTER (WHERE status = 'skipped') as skipped_tests
       FROM latest
     `;
     const stats = await this.db.query(statsQuery, [id]);
     const row = stats.rows[0];
     await this.db.query(
-      `UPDATE runs SET total_tests = GREATEST(total_tests, $1), passed_tests = $2, failed_tests = $3, skipped_tests = $4 WHERE id = $5`,
+      `UPDATE runs SET total_tests = GREATEST(total_tests, $1), passed_tests = $2, failed_tests = $3, skipped_tests = $4,
+              metadata = CASE WHEN $6::int > 0 OR metadata ? 'quarantinedFailures'
+                              THEN COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('quarantinedFailures', $6::int)
+                              ELSE metadata END
+        WHERE id = $5`,
       [
         parseInt(row.total_tests),
         parseInt(row.passed_tests),
         parseInt(row.failed_tests),
         parseInt(row.skipped_tests),
         id,
+        parseInt(row.quarantined_failures),
       ]
     );
   }

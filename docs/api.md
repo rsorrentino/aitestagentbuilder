@@ -33,6 +33,11 @@ Authorization: ApiKey <apiKey>          # from POST /auth/api-keys
 | GET | `/visual/baselines?agentId=` | Visual baselines of the project (signed `image` URL) |
 | DELETE | `/visual/baselines/:id` | Delete a baseline (editor); the next run records a new one |
 | POST | `/runs/:runId/results/:resultId/visual/approve` | `{ name, persona?, viewport? }`: the screenshot of a failed visual check becomes the baseline (editor) |
+| POST | `/agents/:id/generate-api-tests` | `{ specUrl? \| spec?, operations?, ai?, count?, save? }`: test cases from an OpenAPI / Swagger description → `{ operations, created, tests, skipped[], servers }` (editor) |
+| GET | `/quarantine` | Quarantined test cases of the project (`reason`, `auto`, `stats`) |
+| POST | `/testcases/:id/quarantine` | `{ reason }`: quarantine a test by hand (editor) |
+| DELETE | `/testcases/:id/quarantine` | Release it (editor) |
+| POST | `/runs/:runId/triage` | `{ ai? }`: (re)triage the run's failures, optionally explained by the AI (editor) → `{ groups[], summary, ai }`; also stored as `run.metadata.triage` |
 | POST | `/runs/:runId/results/:resultId/apply-healing` | `{ stepIds? }`: write AI-repaired selectors of this result into the test case (editor) → `{ applied, skipped }` |
 | POST | `/agents/:id/salesforce/personas/:name/verify` | Log in as the persona and return `{ ok, message, identity: { username, profile, permissionSets, via }, mismatches[] }` (editor) |
 | GET | `/agents/:id/plan` | Tests the next run would execute: `{ strategy, count, testCases[] }` |
@@ -127,9 +132,49 @@ Screenshots are served at `GET /artifacts/<path from evidence.screenshots>`.
 | POST | `/demo/seed` | Creates/updates the *Demo Shop* agent and its 3 tests → `{ agentId, created }` |
 | GET | `/demo/` (outside `/api/v1`) | The demo web app itself (login `demo` / `demo123`) |
 
+## Recorder
+
+Editors only; a session belongs to the user and project that started it.
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/recordings` | `{ agentId, startPath?, persona? }` → session state `{ id, url, title, steps, viewport }` (429 when all `RECORDER_MAX_SESSIONS` are in use) |
+| GET | `/recordings`, `/recordings/:id` | Open sessions / one session's state |
+| GET | `/recordings/:id/screenshot` | Current screen, JPEG |
+| POST | `/recordings/:id/inspect` | `{ x, y }` → `{ selector, alternatives, tag, type, text, value, options, checked, suggested, isPassword }` |
+| POST | `/recordings/:id/steps` | `{ action, target?, value?, secret? }`: performed, then recorded (422 with the error when it fails); `secret: "NAME"` records `{{secrets.NAME}}` |
+| DELETE | `/recordings/:id/steps/:index` | Remove a recorded step |
+| POST | `/recordings/:id/scroll` | `{ dy }` (not recorded) |
+| POST | `/recordings/:id/save` | `{ title, module?, priority?, tags? }` → the new test case (tags `recorded`, `agent:<id>`) |
+| DELETE | `/recordings/:id` | Close the session |
+| POST | `/recordings/import` | `{ script, agentId?, save?, title?, module?, priority? }` → `{ steps, skipped, warnings, language, testCase? }` |
+
+## AI action steps
+
+| Method | Path | Role | Description |
+|---|---|---|---|
+| POST | `/runs/:runId/results/:resultId/ai-actions/apply` | editor | `{ stepId }`: replace that AI step of the test case with the ordinary steps the AI performed (409 when the test case changed since) |
+| DELETE | `/agents/:id/ai-action-cache?testCaseId=` | editor | Forget remembered AI action sequences → `{ cleared }` |
+
+Results carry the actions in `metadata.aiActions` (`stepId`, `instruction`, `actions[]` with `ok`/`error`/`cached`,
+`done`, `reason`, `rounds`, `replayed`, `provider`).
+
+## Page speed
+
+`GET /agents/:id/performance?days=30` (viewer) → `{ pages: [{ page, samples: [{ runId, at, metrics }], latest, median }] }`:
+the page speed measured by `assert_performance` steps and the agent-wide `checks.performance`, per page (origin and path),
+oldest sample first. Results carry the measurements in `metadata.performance`.
+
 ## Test data
 
 `POST/GET /testdata`, `GET/PUT/DELETE /testdata/:id`: named JSON data sets `{ name, data, description?, tags?, environment? }`.
+A data set with `data.rows` (or `data` given as an array, stored as `{ rows }`) drives data-driven tests: a test case
+with `data.dataset` set to its name or id runs once per row. `GET /testdata/:id` adds `rowCount`.
+
+| Method | Path | Role | Description |
+|---|---|---|---|
+| POST | `/testdata/generate` | editor | `{ fields?: { column: kind }, prompt?, count? (≤100), locale?, seed?, save?, name?, environment?, provider? }` → `{ rows, source: faker\|ai, saved? }`. `fields` alone uses Faker; `prompt` uses the AI (fields become column hints). 400 for unknown kinds or locales, or when no AI provider is configured for a prompt. |
+| GET | `/testdata/fake-kinds?locale=it` | viewer | Kinds usable as `{{fake.kind}}`, with a description and an example |
 
 ## Health & metrics (outside `/api/v1`)
 

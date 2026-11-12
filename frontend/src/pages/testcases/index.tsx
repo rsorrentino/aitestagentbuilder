@@ -7,6 +7,7 @@ import Link from 'next/link';
 import Layout from '../../components/Layout';
 import TestCaseEditor from '../../components/TestCaseEditor';
 import { api, errorMessage, PRIORITIES, priorityBadge } from '../../lib/api';
+import { useQuarantine } from '../../lib/useQuarantine';
 
 export default function TestCasesPage() {
   const [cases, setCases] = useState<any[]>([]);
@@ -18,6 +19,7 @@ export default function TestCasesPage() {
   const [module, setModule] = useState('');
   const [editing, setEditing] = useState<any | null>(null); // {} = new
   const [expanded, setExpanded] = useState<string | null>(null);
+  const quarantine = useQuarantine();
 
   const fetchCases = useCallback(async () => {
     setError(null);
@@ -117,6 +119,11 @@ export default function TestCasesPage() {
                     <tr>
                       <td style={{ cursor: 'pointer' }} onClick={() => setExpanded(expanded === tc.id ? null : tc.id)}>
                         <div className="fw-600" style={{ fontSize: 14 }}>{expanded === tc.id ? '▾' : '▸'} {tc.title}</div>
+                        {quarantine.get(tc.id) && (
+                          <span className="badge badge-warning" title={quarantine.get(tc.id)!.reason}>
+                            🧪 quarantined{quarantine.get(tc.id)!.auto ? ' (auto)' : ''}: runs, but its failures do not fail the run
+                          </span>
+                        )}
                         {tc.data?.personas && (
                           <div className="text-sm mt-1" aria-label="Runs as personas">
                             {(Array.isArray(tc.data.personas) ? tc.data.personas : [tc.data.personas]).map((p: string) => (
@@ -135,6 +142,13 @@ export default function TestCasesPage() {
                       <td>
                         <div className="flex gap-2">
                           <button className="btn btn-secondary btn-sm" onClick={() => { setEditing(tc); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>Edit</button>
+                          {quarantine.get(tc.id)
+                            ? <button className="btn btn-secondary btn-sm" onClick={() => quarantine.release(tc.id)}>Release</button>
+                            : <button className="btn btn-secondary btn-sm" title="Keep running it, but do not fail runs when it fails"
+                                onClick={() => {
+                                  const reason = window.prompt('Why quarantine this test? (shown on the test and in reports)', 'Flaky');
+                                  if (reason !== null) quarantine.quarantine(tc.id, reason);
+                                }}>Quarantine</button>}
                           <button className="btn btn-danger btn-sm" onClick={() => deleteCase(tc.id)}>Delete</button>
                         </div>
                       </td>

@@ -3,6 +3,8 @@
  * at rest and never returned in plaintext.
  */
 
+import { LOCALE_RE } from '../../modules/quality/test-data-gen.js';
+import { validatePerformanceConfig } from '../../modules/quality/performance.js';
 import { Response } from 'express';
 import { AgentRepository } from '../../core/repositories/agent.repository.js';
 import { TestCaseRepository } from '../../core/repositories/test-case.repository.js';
@@ -40,6 +42,21 @@ export function buildAgentConfig(name: string, raw: any): { errors: string[]; co
   }
   const appType = cfg.application_type ?? 'web';
   if (!APPLICATION_TYPES.includes(appType)) errors.push(`config.application_type must be one of ${APPLICATION_TYPES.join(', ')}`);
+  if (cfg.api_base_url !== undefined && cfg.api_base_url !== '') {
+    try {
+      if (!/^https?:$/.test(new URL(String(cfg.api_base_url)).protocol)) throw new Error();
+    } catch {
+      errors.push('config.api_base_url must be an http(s) URL, e.g. https://api.staging.example.com/v1/');
+    }
+  }
+  errors.push(...validatePerformanceConfig(cfg.checks));
+  if (cfg.test_data !== undefined && cfg.test_data !== null) {
+    const td = cfg.test_data;
+    if (typeof td !== 'object' || Array.isArray(td)) errors.push('config.test_data must be an object { locale, seed, environment }');
+    else if (td.locale !== undefined && td.locale !== '' && !LOCALE_RE.test(String(td.locale))) {
+      errors.push('config.test_data.locale must be a locale such as en, en_US, it, de, fr, es, pt_BR');
+    }
+  }
   if (cfg.secrets !== undefined && (typeof cfg.secrets !== 'object' || Array.isArray(cfg.secrets))) {
     errors.push('config.secrets must be an object of NAME: value');
   }

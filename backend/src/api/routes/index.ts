@@ -31,6 +31,7 @@ import { rateLimiters } from '../../infra/rate-limit/rate-limiter.js';
 import { seedDemo } from '../../demo/seed-demo.js';
 import { registerAutomationRoutes } from './automation.js';
 import { registerQualityRoutes } from './quality.js';
+import { registerRecorderRoutes } from './recorder.js';
 import { AgentRepository } from '../../core/repositories/agent.repository.js';
 
 const router = Router();
@@ -166,6 +167,8 @@ scoped.post('/reports/runs/:runId/generate', editor, (req, res) => reports.gener
 
 // Test data
 scoped.post('/testdata', editor, audit('testdata.create', 'test_data'), (req, res) => testData.createTestData(req, res));
+scoped.post('/testdata/generate', editor, audit('testdata.generate', 'test_data'), (req, res) => testData.generateTestData(req, res));
+scoped.get('/testdata/fake-kinds', viewer, (req, res) => testData.fakeKinds(req, res));
 scoped.get('/testdata', viewer, (req, res) => testData.listTestData(req, res));
 scoped.get('/testdata/:id', viewer, (req, res) => testData.getTestData(req, res));
 scoped.put('/testdata/:id', editor, audit('testdata.update', 'test_data'), (req, res) => testData.updateTestData(req, res));
@@ -192,6 +195,7 @@ scoped.post('/demo/seed', editor, audit('demo.seed', 'agent'), async (req: Authe
 // Schedules, notifications, analytics (Phase 2/3)
 registerAutomationRoutes(scoped, { viewer, editor, projectAdmin });
 registerQualityRoutes(scoped, { viewer, editor });
+registerRecorderRoutes(scoped, { editor });
 
 router.use(scoped);
 

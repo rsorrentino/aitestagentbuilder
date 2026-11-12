@@ -3,6 +3,7 @@
  * Renders run reports as JSON, HTML or JUnit XML.
  */
 
+import { describePerformance } from '../../quality/performance.js';
 import { mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { TestResult, TestRun } from '../../../core/domain/run.js';
@@ -37,7 +38,7 @@ export function latestAttempts(results: TestResult[]): TestResult[] {
   // One entry per test and persona (persona matrix runs execute a test once per persona).
   const byTest = new Map<string, TestResult>();
   for (const r of results) {
-    const key = `${r.testCaseId}@${(r.metadata as any)?.persona ?? ''}`;
+    const key = `${r.testCaseId}@${(r.metadata as any)?.persona ?? ''}#${(r.metadata as any)?.dataRow ?? ''}`;
     const prev = byTest.get(key);
     if (!prev || new Date(r.startedAt) >= new Date(prev.startedAt)) byTest.set(key, r);
   }
@@ -192,6 +193,12 @@ export class ReportingAgentService {
         + (v.status === 'failed' ? ['baseline', 'actual', 'diff'].filter((k) => v[k]).map((k) =>
           `<a href="${escapeHtml(base + v[k])}" target="_blank"><img src="${escapeHtml(base + v[k])}" alt="${k}"></a>`).join('') : ''));
     }
+    for (const p of (r.metadata?.performance ?? []) as any[]) {
+      parts.push(`<div class="muted">${escapeHtml(describePerformance(p))}${p.throttle ? ` (throttled: ${escapeHtml(p.throttle)})` : ''}</div>`);
+    }
+    for (const c of (r.metadata?.aiChecks ?? []) as any[]) {
+      parts.push(`<div class="muted">AI check "${escapeHtml(c.expectation)}": ${escapeHtml(c.verdict)} (${Math.round(Number(c.confidence) * 100)}%) — ${escapeHtml(c.reason)}</div>`);
+    }
     for (const h of (r.metadata?.healing?.steps ?? []) as any[]) {
       parts.push(`<div class="muted">Step ${escapeHtml(h.stepId)} selector repaired by the AI: <code>${escapeHtml(h.from)}</code> → <code>${escapeHtml(h.to)}</code></div>`);
     }
@@ -200,9 +207,11 @@ export class ReportingAgentService {
 
   private generateJUnitReport(run: TestRun): string {
     const results = latestAttempts(run.results);
-    const failures = results.filter(r => r.status === 'failed').length;
-    const errors = results.filter(r => r.status === 'error' || r.status === 'timeout').length;
-    const skipped = results.filter(r => r.status === 'skipped').length;
+    // A failed quarantined test is reported as skipped, so CI does not fail on a known-flaky test
+    const isQuarantinedFailure = (r: any) => r.metadata?.quarantined === true && ['failed', 'error', 'timeout'].includes(r.status);
+    const failures = results.filter(r => r.status === 'failed' && !isQuarantinedFailure(r)).length;
+    const errors = results.filter(r => (r.status === 'error' || r.status === 'timeout') && !isQuarantinedFailure(r)).length;
+    const skipped = results.filter(r => r.status === 'skipped' || isQuarantinedFailure(r)).length;
     const time = run.duration ? (run.duration / 1000).toFixed(3) : '0';
 
     return `<?xml version="1.0" encoding="UTF-8"?>
@@ -210,11 +219,13 @@ export class ReportingAgentService {
   <testsuite name="${escapeXml(run.agentName ?? run.agentId)}" id="${escapeXml(run.id)}" tests="${results.length}" failures="${failures}" errors="${errors}" skipped="${skipped}" time="${time}" timestamp="${new Date(run.startedAt).toISOString()}">
 ${results.map(r => {
   const t = r.duration ? (r.duration / 1000).toFixed(3) : '0';
-  const body = r.status === 'failed'
-    ? `<failure message="${escapeXml(r.error ?? 'failed')}">${escapeXml((r.logs ?? []).join('\n'))}</failure>`
-    : r.status === 'error' || r.status === 'timeout'
-      ? `<error message="${escapeXml(r.error ?? r.status)}">${escapeXml((r.logs ?? []).join('\n'))}</error>`
-      : r.status === 'skipped' ? `<skipped message="${escapeXml(r.error ?? 'skipped')}"/>` : '';
+  const body = isQuarantinedFailure(r)
+    ? `<skipped message="${escapeXml(`quarantined (flaky): ${r.error ?? r.status}`)}"/><system-out>${escapeXml((r.logs ?? []).join('\n'))}</system-out>`
+    : r.status === 'failed'
+      ? `<failure message="${escapeXml(r.error ?? 'failed')}">${escapeXml((r.logs ?? []).join('\n'))}</failure>`
+      : r.status === 'error' || r.status === 'timeout'
+        ? `<error message="${escapeXml(r.error ?? r.status)}">${escapeXml((r.logs ?? []).join('\n'))}</error>`
+        : r.status === 'skipped' ? `<skipped message="${escapeXml(r.error ?? 'skipped')}"/>` : '';
   return `    <testcase name="${escapeXml(titleOf(r))}" classname="${escapeXml(String(r.metadata?.module ?? 'tests'))}" time="${t}">${body}</testcase>`;
 }).join('\n')}
   </testsuite>

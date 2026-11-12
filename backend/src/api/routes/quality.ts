@@ -11,6 +11,14 @@ import { RunRepository } from '../../core/repositories/run.repository.js';
 import { TestCaseRepository } from '../../core/repositories/test-case.repository.js';
 import { approveActual, VisualBaselineRepository, VisualEntry } from '../../modules/quality/visual.js';
 import { applyHealing, healedStepsOf } from '../../modules/quality/healing.js';
+import { triageRun } from '../../modules/quality/triage.js';
+import { QuarantineRepository } from '../../modules/quality/quarantine.js';
+import { aiApiTests, basePathOf, fetchSpec, listOperations, operationKey, parseSpec, smokeTest } from '../../modules/quality/openapi-tests.js';
+import type { TestCaseCreateInput } from '../../core/domain/test-case.js';
+import { AgentRepository } from '../../core/repositories/agent.repository.js';
+import { getLLMRouter } from '../../infra/llm/router.js';
+import { performanceTrend } from '../../modules/quality/performance.js';
+import { AiActionCache, expandAiStep, successfulActions } from '../../modules/quality/ai-actions.js';
 
 type Handler = (req: AuthenticatedRequest, res: Response) => Promise<void>;
 const wrap = (fn: Handler): RequestHandler => (req, res) => {
@@ -76,8 +84,164 @@ export function registerQualityRoutes(router: Router, roles: { viewer: RequestHa
     res.json({ ...baseline, image: signArtifactPath(baseline.path) });
   }));
 
+  // ── API tests from OpenAPI ────────────────────────────────────────────────
+  /**
+   * Body: { specUrl? | spec? (JSON/YAML text or object), operations?: ["GET /orders"], ai?: boolean,
+   *         count?: number, save?: boolean (default true) }
+   */
+  router.post('/agents/:id/generate-api-tests', editor, audit('agent.generate_api_tests', 'agent'), wrap(async (req, res) => {
+    const agent = await new AgentRepository().findById(req.params.id, req.project!.id);
+    if (!agent) {
+      res.status(404).json({ error: 'Agent not found' });
+      return;
+    }
+    const cfg: any = agent.config ?? {};
+    const { specUrl, operations: only, ai = false, save = true } = req.body ?? {};
+    let spec: any;
+    try {
+      if (req.body?.spec) spec = typeof req.body.spec === 'string' ? parseSpec(req.body.spec) : parseSpec(JSON.stringify(req.body.spec));
+      else if (specUrl) spec = await fetchSpec(new URL(String(specUrl), String(cfg.api_base_url || cfg.base_url)).toString());
+      else throw new Error('Give the OpenAPI description: specUrl (absolute, or relative to the agent URL) or spec');
+    } catch (e: any) {
+      res.status(400).json({ error: e.message });
+      return;
+    }
+    let ops = listOperations(spec);
+    if (Array.isArray(only) && only.length) ops = ops.filter((op) => only.map(String).includes(operationKey(op)));
+    if (!ops.length) {
+      res.status(400).json({ error: 'No operations to test in this description' });
+      return;
+    }
+
+    const skipped: Array<{ operation: string; reason: string }> = [];
+    let tests: TestCaseCreateInput[] = [];
+    let provider: string | undefined;
+    if (ai) {
+      if (!getLLMRouter().hasAnyProvider()) {
+        res.status(503).json({ error: 'No AI provider is configured: generate without AI (smoke tests) or configure one' });
+        return;
+      }
+      const result = await aiApiTests(spec, ops, Math.min(Math.max(Number(req.body?.count) || ops.length * 2, 1), 50), cfg.ai?.provider);
+      tests = result.tests;
+      provider = result.provider;
+    } else {
+      for (const op of ops) {
+        const { test, skipped: why } = smokeTest(op, basePathOf(spec));
+        if (test) tests.push(test);
+        else skipped.push({ operation: operationKey(op), reason: why! });
+      }
+    }
+
+    // Tag for the agent and respect its priority filter so the tests actually run
+    const priorities: string[] = cfg.test_selection?.priority ?? [];
+    const toSave = tests.map((t) => ({
+      ...t,
+      ...(priorities.length && !priorities.includes(t.priority) ? { priority: priorities[0] as any } : {}),
+      tags: [...new Set([...(t.tags ?? []), `agent:${agent.id}`])],
+      projectId: req.project!.id,
+    }));
+    const saved = save ? await Promise.all(toSave.map((t) => testCases.create(t))) : toSave;
+    const servers = (spec.servers ?? []).map((s: any) => s.url).filter(Boolean);
+    res.locals.audit = { entityId: agent.id, details: { operations: ops.length, created: saved.length, ai, saved: !!save } };
+    res.json({
+      operations: ops.length,
+      created: saved.length,
+      saved: !!save,
+      tests: saved,
+      skipped,
+      ...(provider ? { provider } : {}),
+      servers,
+      ...(!cfg.api_base_url && servers.some((u: string) => /^https?:\/\//.test(u)) ? { hint: `Set the agent's API base URL (api_base_url) to ${servers[0]} if the API is not under ${cfg.base_url}` } : {}),
+    });
+  }));
+
+  // ── Page speed ──────────────────────────────────────────────────────────────
+  router.get('/agents/:id/performance', viewer, wrap(async (req, res) => {
+    const agent = await new AgentRepository().findById(req.params.id, req.project!.id);
+    if (!agent) return void res.status(404).json({ error: 'Agent not found' });
+    res.json({ pages: await performanceTrend(agent.id, Number(req.query.days) || 30) });
+  }));
+
+  // ── Flaky-test quarantine ──────────────────────────────────────────────────
+  const quarantine = new QuarantineRepository();
+
+  router.get('/quarantine', viewer, wrap(async (req, res) => {
+    res.json(await quarantine.list(req.project!.id));
+  }));
+
+  /** Quarantine a test by hand. Body: { reason } */
+  router.post('/testcases/:id/quarantine', editor, audit('testcase.quarantine', 'testcase'), wrap(async (req, res) => {
+    const tc = await testCases.findById(req.params.id, req.project!.id);
+    if (!tc) {
+      res.status(404).json({ error: 'Test case not found' });
+      return;
+    }
+    const reason = String(req.body?.reason ?? '').trim().slice(0, 500) || 'Quarantined by hand';
+    const q = await quarantine.add({ testCaseId: tc.id, projectId: req.project!.id, reason, auto: false, by: req.user?.email ?? 'local' });
+    res.locals.audit = { entityId: tc.id, details: { reason } };
+    res.status(201).json({ ...q, title: tc.title });
+  }));
+
+  router.delete('/testcases/:id/quarantine', editor, audit('testcase.release', 'testcase'), wrap(async (req, res) => {
+    if (!(await quarantine.remove(req.params.id, req.project!.id))) {
+      res.status(404).json({ error: 'This test case is not quarantined' });
+      return;
+    }
+    res.locals.audit = { entityId: req.params.id };
+    res.status(204).end();
+  }));
+
+  // ── Failure triage ────────────────────────────────────────────────────────
+  /** (Re)triage a run's failures. Body: { ai?: boolean } — ai asks the AI to explain each group. */
+  router.post('/runs/:runId/triage', editor, audit('run.triage', 'run'), wrap(async (req, res) => {
+    const run = await runs.findRunById(req.params.runId, req.project!.id);
+    if (!run) {
+      res.status(404).json({ error: 'Run not found' });
+      return;
+    }
+    const ai = req.body?.ai === true;
+    if (ai && !getLLMRouter().hasAnyProvider()) {
+      res.status(503).json({ error: 'No AI provider is configured; triage by rules is already on the run' });
+      return;
+    }
+    const agent = await new AgentRepository().findById(run.agentId, req.project!.id).catch(() => null);
+    const triage = await triageRun(run, { ai, preferred: (agent?.config as any)?.ai?.provider });
+    await runs.updateRun(run.id, { metadata: { triage } });
+    res.locals.audit = { entityId: run.id, details: { ai, groups: triage.groups.length } };
+    res.json(triage);
+  }));
+
   // ── Self-healing ──────────────────────────────────────────────────────────
   /** Write the selectors the AI repaired in this result back into the test case. Body: { stepIds?: number[] } */
+  // ── AI action steps ─────────────────────────────────────────────────────────
+  router.post('/runs/:runId/results/:resultId/ai-actions/apply', editor, audit('testcase.ai_actions.apply', 'testcase'), wrap(async (req, res) => {
+    const found = await loadResult(req, res);
+    if (!found) return;
+    const { result } = found;
+    const stepId = Number(req.body?.stepId);
+    const records: any[] = result.metadata?.aiActions ?? [];
+    const record = records.find((r) => r.stepId === stepId && r.done);
+    if (!record) return void res.status(400).json({ error: 'This result has no completed AI action for that step' });
+    const actions = successfulActions(record);
+    if (!actions.length) return void res.status(400).json({ error: 'The AI action did nothing that could be saved' });
+    const testCase = await testCases.findById(result.testCaseId, req.project!.id);
+    if (!testCase) return void res.status(404).json({ error: 'The test case no longer exists' });
+    const original = (result.metadata?.steps ?? []).find((s: any) => s.stepId === stepId)?.action;
+    const steps = original ? expandAiStep(testCase.steps, stepId, original, actions, result.metadata?.testData) : null;
+    if (!steps) return void res.status(409).json({ error: 'The test case changed: that step is no longer the AI step of this run' });
+    const updated = await testCases.update(testCase.id, { steps } as any, req.project!.id);
+    await runs.updateResult(result.id, { metadata: { ...result.metadata, aiActions: records.map((r) => (r.stepId === stepId ? { ...r, applied: true } : r)) } });
+    res.locals.audit = { entityId: testCase.id, details: { stepId, actions: actions.length, resultId: result.id } };
+    res.json({ testCaseId: testCase.id, steps: updated?.steps ?? steps, added: actions.length });
+  }));
+
+  router.delete('/agents/:id/ai-action-cache', editor, audit('agent.ai_action_cache.clear', 'agent'), wrap(async (req, res) => {
+    const agent = await new AgentRepository().findById(req.params.id, req.project!.id);
+    if (!agent) return void res.status(404).json({ error: 'Agent not found' });
+    const testCaseId = typeof req.query.testCaseId === 'string' ? req.query.testCaseId : undefined;
+    res.json({ cleared: await new AiActionCache().clear(agent.id, testCaseId) });
+  }));
+
   router.post('/runs/:runId/results/:resultId/apply-healing', editor, audit('testcase.healing.apply', 'testcase'), wrap(async (req, res) => {
     const found = await loadResult(req, res);
     if (!found) return;

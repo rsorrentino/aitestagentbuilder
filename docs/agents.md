@@ -21,9 +21,24 @@ ai:
 retries: 1                             # re-run failed tests (0–3)
 ai:
   auto_apply_healing: false            # write AI-repaired selectors back into the test cases
+  triage: false                        # explain failed runs with AI (rules-based triage always runs)
+  action_cache: true                   # replay AI action steps that worked before, without calling the AI
+quarantine:
+  auto: false                          # quarantine flaky tests automatically
+  flips: 3                             # pass↔fail changes in the last `window` runs of a test
+  window: 10
+  passed_on_retry: 3                   # or passing only on retry this many times
+  release_after: 5                     # release after this many consecutive first-attempt passes
 checks:
   accessibility: report                # off | report | fail — axe-core scan of the page each test ends on
   accessibility_options: { level: wcag21aa, minImpact: serious }
+  performance: report                  # off | report | fail — page speed of the page each test ends on
+  performance_budgets: { lcp: 2500, cls: 0.1, tbt: 200, load: 4000, max_regression: 0.25 }
+  performance_options: { throttle: slow4g, cpu_slowdown: 4 }   # throttle: none | slow4g | fast3g
+test_data:
+  locale: it                           # names, addresses, phone numbers of {{fake.*}} values (default en)
+  seed: 42                             # optional: the same values in every run (per test, row and persona)
+  environment: staging                 # optional: prefer data sets of this environment when names repeat
 evidence:
   trace: on_failure                    # off | on_failure | always — Playwright trace, secrets masked
   video: on_failure                    # off | on_failure | always
@@ -70,6 +85,81 @@ The agent page shows **Tests in the next run**: exactly what the planner will ex
 }
 ```
 
+## Recording tests
+
+**Recorder page.** Record a test by using the application instead of writing steps.
+- **How it works:** the browser runs on the server (Windows Server included), and the page shows its screen. Click on the
+  picture to act: links and buttons are clicked, fields ask for the text to type, lists for the option, check boxes
+  toggle. **✓ Text**, **👁 Visible** and **↗ Hover** turn the next click into a check or a hover. Buttons add key presses
+  (Enter, Tab, Escape) and URL / title checks, and the address bar navigates.
+- **Steps replay as recorded:** every action runs through the same executor as a test run, and a failing action is
+  reported and not recorded.
+- **Selectors:** each pick gets the most robust selector that is unique on the page: id, test id
+  (`data-testid`, `data-test`, `data-qa`), `name`, role and accessible name (`role=button[name="Save"s]`), label,
+  placeholder, text, and finally a CSS path. Ids that look generated (4+ digits) are skipped.
+- **Passwords:** pick one of the agent's secrets instead of typing it: the step stores `{{secrets.NAME}}`. Password
+  fields are never read back.
+- **Salesforce:** start *logged in as* a persona; the first step is then `salesforce_login`.
+- **Limits:** sessions belong to their user and project, close after 10 minutes without use, and at most
+  `RECORDER_MAX_SESSIONS` (default 4) run at once. The application must be reachable from the server.
+
+**Importing Playwright codegen.** Record on your own computer with `npx playwright codegen https://your-app`, then
+paste the script (JavaScript, TypeScript or Python) in the recorder's **Import** tab or send it to
+`POST /recordings/import`.
+- **What converts:** `goto`, click, fill, press, check/uncheck, `selectOption`, hover and the `expect` assertions
+  (`toBeVisible`, `toBeHidden`, `toHaveText`, `toContainText`, `toHaveValue`, `toHaveURL`, `toHaveTitle`, with `not`), on
+  `getByRole` / `getByText` / `getByLabel` / `getByPlaceholder` / `getByTestId` / `getByTitle` / `getByAltText` /
+  `locator`, chained, with `first()` / `last()` / `nth()`.
+- **Adjusted for the agent:** URLs of the agent become paths, and values typed into password-like fields become
+  `{{secrets.PASSWORD}}`, with a reminder to add that secret.
+- **Anything else** (regular expressions, screenshots, mouse coordinates, popups) is listed as skipped with its line.
+
+## Test data
+
+**Generated values.** Steps can use `{{fake.<kind>}}` anywhere in a target or value:
+
+```json
+{ "action": "fill", "target": "#email", "data": { "value": "{{fake.email:buyer}}" } },
+{ "action": "assert_text", "target": "#summary", "data": { "value": "Order for {{fake.email:buyer}}" } }
+```
+
+- **The same within a test:** the same kind and label give the same value, so a later step can check what an
+  earlier one typed. Different labels (`{{fake.email:buyer}}`, `{{fake.email:seller}}`) give different values.
+- **Safe values:** emails use `example.com/.net/.org`, card numbers are well-known test cards (`4111111111111111`, …),
+  URLs point at `example.com`.
+- **Kinds:** firstName, lastName, fullName, email, username, password, phone, company, jobTitle, street, city, state,
+  zip, country, countryCode, iban, testCard, cvv, expiry, uuid, unique, number, amount, date, pastDate, birthdate,
+  word, words, sentence, paragraph, url, color. The **Test Data** page lists them with examples in each locale.
+- **Reproducible or unique:** `test_data.seed` gives the same values in every run; `{{fake.unique}}` stays unique
+  anyway, e.g. `{{fake.firstName}}.{{fake.unique}}@example.com` for records that must not already exist.
+- **Where they show:** the run page lists the values each test used.
+
+**Data-driven tests.** A test case with `"data": { "dataset": "signups" }` runs once per row of the data set, and steps
+use `{{data.<column>}}` (nested: `{{data.address.city}}`).
+
+```json
+{ "name": "signups", "data": { "rows": [
+  { "_label": "valid", "email": "ada@example.com", "qty": 1 },
+  { "_label": "empty email", "email": "", "qty": 1 },
+  { "_label": "admin", "email": "{{fake.email}}", "password": "{{secrets.ADMIN_PASSWORD}}" }
+] } }
+```
+
+- **Row names:** `_label` (or `label`, `name`, `title`, `id`) names the row in titles and reports:
+  *Signup works [empty email]*.
+- **Placeholders in rows:** values may use `{{secrets.NAME}}` and `{{fake.kind}}`. Results show the row as stored, so
+  secrets stay out of reports.
+- **With personas:** each persona runs each row.
+- **Limits:** at most 100 rows run. A missing data set fails the test as a *test bug* in triage.
+
+**Generating data sets.** On the **Test Data** page, or with `POST /testdata/generate`:
+- **From columns (Faker):** `{ "fields": { "name": "fullName", "email": "email" }, "count": 20, "locale": "it" }`.
+  Add `seed` for reproducible rows.
+- **With AI:** `{ "prompt": "customers for the signup form, with edge cases: empty email, 255-char name, apostrophes" }`.
+  The AI labels each edge case and is told to keep every value fictitious. Its answer is checked: flat rows, safe
+  column names, scalar values only.
+- **Saving:** preview first, then save as a data set; with the API, add `"save": true, "name": "signups"`.
+
 ## Step actions
 
 | Action | Target | Value (`data.value`) |
@@ -97,6 +187,15 @@ The agent page shows **Tests in the next run**: exactly what the planner will ex
 | `assert_access_denied` | optional page to open | optional custom message |
 | `assert_accessible` | optional element to scan | `{"level": "wcag21aa", "min_impact": "serious", "ignore": ["color-contrast"], "exclude": [".chat-widget"], "report_only": false}` |
 | `assert_screenshot` | optional element (whole viewport if empty) | `{"name": "cart", "max_diff_ratio": 0.001, "threshold": 0.1, "mask": [".clock"], "full_page": false, "on_missing": "create"}` |
+| `assert_performance` | optional page to load fresh (else the last page load is measured) | budgets `{"lcp": 2500, "fcp": 1800, "cls": 0.1, "tbt": 200, "ttfb": 800, "load": 3000, "transfer_kb": 1500, "requests": 80, "max_regression": 0.25, "report_only": false}`; also “Verify the page loads in under 2 seconds” |
+| `ai` | — | the instruction: `{"value": "Add the cheapest product to the cart", "max_actions": 12, "cache": true}`; also written as “AI: add the cheapest product to the cart” |
+| `assert_ai` | optional element to judge | the expectation in plain language; `{"value": "…", "min_confidence": 0.7, "on_unsure": "fail"}` — or write the action as "Verify with AI that …" |
+| `http_request` | path (relative to `api_base_url`, else `base_url`) or URL; also `"GET orders"` as the action | `{"method": "POST", "json": {...}, "query": {...}, "headers": {...}, "extract": {"orderId": "$.id"}, "status": 201}` |
+| `assert_status` | | `201`, `"2xx"` or `[200, 204]` (or in the sentence: "Verify the status code is 201") |
+| `assert_json` | JSON path | `{"path": "$.items[0].name", "equals": "Lamp"}` — or `contains`, `matches`, `type`, `length`, `exists: false` |
+| `assert_header` | header name | text it contains |
+| `assert_response_time` | | maximum ms (or "… under 500 ms") |
+| `mock_route` / `block_route` | URL pattern, e.g. `**/api/payments/**` | `{"status": 200, "json": {...}, "delay": 2000, "times": 1, "method": "POST"}` |
 
 Persona matrix: `data.personas` on the test case (list or `"all"`) runs it once per persona; `data.by_persona` on a step gives per-persona values and `data.only_personas` / `data.skip_personas` limit a step. Details in [salesforce-guide.md](salesforce-guide.md).
 
@@ -164,8 +263,96 @@ A healed step passes with the note `(self-healed from "<old selector>")`. The ru
 - **Secrets:** before a trace is stored, every secret of the run is replaced with `••••` everywhere in the file. That covers
   agent secrets, persona passwords and TOTP secrets, OAuth tokens, session ids and cookie values.
 
+**Page speed.** `assert_performance` measures the last full page load with the browser's own timing APIs.
+- **Metrics:** TTFB, FCP, LCP, CLS, TBT (long-task time over 50 ms after first contentful paint, as in Lighthouse), DOMContentLoaded, load, bytes transferred and
+  request count. Single-page-app route changes are not page loads: give the step a target to load a page fresh.
+- **Budgets:** from the step, else the agent's `performance_budgets`, else the "good" Core Web Vitals thresholds
+  (LCP 2.5 s, FCP 1.8 s, CLS 0.1, TBT 200 ms, TTFB 800 ms). A sentence such as “Verify the page loads in under
+  2 seconds” sets a load budget.
+- **Regressions:** with `max_regression` (0.25 = 25 %), each metric is compared with the median of the same page
+  (origin and path, no query) in the agent's earlier runs. It needs at least 3 earlier measurements, and small absolute
+  changes (e.g. under 200 ms of LCP) are ignored as noise.
+- **Agent-wide check:** `checks.performance` measures the page each test ends on, reporting (`report`) or failing the
+  test (`fail`).
+- **Throttling:** `performance_options.throttle` (Lighthouse *slow 4G* or DevTools *fast 3G*) and `cpu_slowdown`
+  approximate slower devices (Chromium). They apply to the whole test, so steps get slower too. Emulated latency shows
+  in load, DOMContentLoaded and LCP, not in TTFB.
+- **Lab values:** they come from the test machine, so they vary between machines and runs; leave headroom in budgets.
+- **Where results show:** the run page and the HTML report; failures over budget are triaged as app bugs. The agent page's
+  **Page speed** card shows each page's latest values against its 30-day median, with an LCP trend
+  (`GET /agents/:id/performance`).
+
+**AI action steps.** A step written as an instruction is carried out by the AI on the live page:
+`{ "action": "AI: add the cheapest product to the cart" }` or `{ "action": "ai", "data": { "value": "…" } }`.
+- **How it works:** in rounds, the AI sees the instruction, what it did so far and the page (visible text, controls with
+  selectors), and answers with the next few actions: click, fill, select, check, uncheck, press, hover, navigate (only
+  within the application) or wait. It stops when it reports the instruction done, gives up (the step fails with its
+  reason, triaged as *unknown*), or reaches `max_actions` (default 12).
+- **Secrets:** `{{secrets.NAME}}` stays a placeholder in what the AI sees; the AI copies it into values and it is
+  resolved only when the action runs. Page content is masked as everywhere else. `{{data.*}}` and `{{fake.*}}` are
+  resolved before, so the AI can reason with them.
+- **Replay:** a sequence that completed the instruction is remembered per agent, test, step, persona/data row and
+  instruction, and replayed in later runs without calling the AI. If the replay breaks (the page changed), the AI
+  continues from where it stopped and the new sequence is remembered. Turn it off with `ai.action_cache: false` or the
+  step's `"cache": false`; forget remembered sequences with **Forget remembered AI actions** on the agent page
+  (`DELETE /agents/:id/ai-action-cache`).
+- **Save as steps:** the run page lists every action. **Save as steps** replaces the AI step in the test case with
+  ordinary steps: reviewable, and no AI needed any more. Values that came from the data set row or fake values go back
+  to placeholders (`{{data.email}}`), and `only_personas` / `skip_personas` carry over.
+- **When to use it:** for flows that are tedious to script or change often (e.g. setting up state); keep classic steps
+  and assertions for what the test checks. AI actions do not assert; follow them with `assert_*` or `assert_ai`.
+
 **Kept self-healing.** With `ai.self_healing`, a broken selector is repaired by the AI from the live page.
 - **Within a run:** the repair is reused for the rest of the run without another AI call.
 - **After the run:** it is recorded in the result. The run page's **Save to the test case** writes it into the test case,
   or `ai.auto_apply_healing: true` does that automatically after a passing test.
 - **Safety check:** a step is only changed while it still has the broken selector.
+
+**Failure triage.** When a run fails, its failures are grouped by what went wrong (the failed step and the
+error, without run-specific details such as ids, numbers and URLs).
+- **Categories:** each group is classified by rules as
+  - **app bug:** an expectation about the application failed (text, URL, access, visual, accessibility);
+  - **test bug:** a selector no longer finds its element, or the test is misconfigured;
+  - **environment:** the application, network or login was not available.
+- **New or known:** groups are marked *new*, or *seen in N earlier runs* of the same agent in the last 30 days.
+- **AI explanation:** with an AI provider, **Explain with AI** on the run page, `ai.triage: true`, or
+  `POST /runs/:id/triage {"ai": true}` adds a likely cause and a next step to each group. It costs one AI call per run.
+- **Where it shows:** the triage summary is included in Slack / Teams / email notifications and in the MCP server's
+  `run_tests` / `get_failures` answers.
+
+**Flaky-test quarantine.** A quarantined test still runs and reports its result, but its failure does not fail the run.
+- **Effect:** the run stays *completed*, CI wait mode reports `passed`, no failure notification is sent, and JUnit
+  reports it as *skipped*. The run page and reports mark it 🧪 and count it apart.
+- **By hand:** quarantine a test from the test case list or the analytics flaky table (with a reason), and release it the same way.
+- **Automatically:** with `quarantine.auto`, a test is quarantined after the run where it reaches `flips` pass↔fail changes
+  (or `passed_on_retry` passes on retry) within its last `window` runs. A test that always fails is a real failure and is
+  never quarantined automatically.
+- **Release:** an automatically quarantined test is released after `release_after` consecutive first-attempt passes;
+  hand-quarantined tests stay until released by hand.
+
+**API testing.** API steps run in the test's browser context, so requests share its cookies: an API call made after a UI
+login is authenticated as that user.
+- **Variables:** `extract` saves values from a JSON response, used later as `{{vars.name}}` (per test).
+- **Mocking in UI tests:** `mock_route` answers matching browser requests with a fixed response (or a delay), and
+  `block_route` makes them fail as if the network were down. Use them to test error handling, or to stub third-party
+  services in UI tests.
+- **Tests from OpenAPI.** The **API tests** card on the agent page (or `POST /agents/:id/generate-api-tests`) reads an
+  OpenAPI 3 / Swagger 2 description, from a URL or pasted.
+  - Without AI, every operation that can be called with the description's examples, defaults or enums gets a smoke
+    test: request, then expected success status, then required response fields.
+  - Operations needing values the description does not give are listed as skipped.
+  - With AI, it also writes negative and edge cases.
+  - Paths are prefixed with a relative server URL (`/api/v1`) or Swagger `basePath`. For an absolute server URL, set the
+    agent's **API base URL** to it.
+
+**AI-judged assertions.** `assert_ai` checks an expectation written in plain language against the live page. For example,
+"the chatbot's answer explains how to reset a password and links to the help page" can verify Salesforce Agentforce or
+Einstein answers.
+- **What the AI sees:** the page's (or the element's) visible text, its headings and controls, the URL and the title. It does
+  not see pixels; use `assert_screenshot` for how a page looks. Known secrets are masked before anything is sent.
+- **How it decides:** the step passes only on a *pass* verdict at or above `min_confidence` (default 0.7). *Unsure* fails
+  unless `on_unsure: "pass"`.
+- **Caching:** identical page content with the same expectation is judged once per run.
+- **Where verdicts show:** with their reasons, on the run page; failed AI checks are triaged as app bugs.
+- **Cost and variability:** each check is one AI call (through the `analysis` route). Verdicts can vary more than classic
+  assertions, so keep exact assertions for what must never change.

@@ -55,6 +55,8 @@ export function summarizeFailure(r: any) {
     title: r.metadata?.title,
     persona: r.metadata?.persona,
     status: r.status,
+    // Known flaky: its failure does not fail the run
+    quarantined: r.metadata?.quarantined === true || undefined,
     error: r.error,
     failedStep: failedStep ? { stepId: failedStep.stepId, action: failedStep.action, target: failedStep.target, message: failedStep.message } : undefined,
     evidence: {
@@ -68,6 +70,8 @@ export function summarizeFailure(r: any) {
       name: v.name, changedPixels: v.diffPixels, ratio: v.ratio, baseline: artifactUrl(v.baseline), actual: artifactUrl(v.actual), diff: artifactUrl(v.diff),
     })),
     healedSelectors: r.metadata?.healing?.steps,
+    aiActions: (r.metadata?.aiActions ?? []).filter((a: any) => !a.done).map((a: any) => ({ stepId: a.stepId, instruction: a.instruction, reason: a.reason, actions: a.actions })),
+    pageSpeed: (r.metadata?.performance ?? []).filter((p: any) => !p.passed).map((p: any) => ({ page: p.page, metrics: p.metrics, violations: p.violations })),
   };
 }
 
@@ -75,7 +79,7 @@ export function summarizeFailure(r: any) {
 function finalResults(results: any[] = []): any[] {
   const map = new Map<string, any>();
   for (const r of results) {
-    const key = `${r.testCaseId}@${r.metadata?.persona ?? ''}`;
+    const key = `${r.testCaseId}@${r.metadata?.persona ?? ''}#${r.metadata?.dataRow ?? ''}`;
     const prev = map.get(key);
     if (!prev || new Date(r.startedAt) >= new Date(prev.startedAt)) map.set(key, r);
   }
@@ -90,6 +94,16 @@ export function runSummary(run: any) {
     passed: run.status === 'completed',
     totals: { tests: run.totalTests, passed: run.passedTests, failed: run.failedTests, skipped: run.skippedTests },
     failures: results.filter((r) => ['failed', 'error', 'timeout'].includes(r.status)).map(summarizeFailure),
+    // Failures grouped by cause: app bug / test bug / environment, new or seen before
+    ...(run.metadata?.triage ? {
+      triage: {
+        summary: run.metadata.triage.summary,
+        groups: run.metadata.triage.groups.map((g: any) => ({
+          category: g.category, tests: g.tests.map((t: any) => t.title), error: g.sample?.error,
+          cause: g.cause ?? g.reason, suggestion: g.suggestion, seenBefore: g.seenBefore,
+        })),
+      },
+    } : {}),
   };
 }
 
@@ -117,7 +131,14 @@ export const TOOLS = [
     name: 'create_test_case',
     description:
       'Create a test case. Steps use actions such as navigate, click, fill, select, assert_text, assert_visible, assert_url, ' +
-      'assert_accessible (axe-core WCAG scan), assert_screenshot (visual regression), salesforce_login. ' +
+      'assert_accessible (axe-core WCAG scan), assert_screenshot (visual regression), salesforce_login, and API steps: ' +
+      'http_request (target path, data { method, json, extract: { id: "$.id" } } → later {{vars.id}}), assert_status, assert_json ' +
+      '({ path, equals | contains | exists }), mock_route / block_route (stub calls during UI tests), ' +
+      'assert_ai (data.value: an expectation in plain language, judged by the AI from the page text). ' +
+      'ai (data.value: an instruction the AI carries out on the live page, e.g. "add the cheapest product to the cart"; also written as "AI: …"). ' +
+      'assert_performance (page speed: target optional page to load; data budgets { lcp, fcp, cls, tbt, ttfb, load, transfer_kb, max_regression }). ' +
+      'Values may use {{data.column}} (row of the data set named in the test case data.dataset: the test runs once per row), ' +
+      '{{fake.email}} / {{fake.email:label}} (fictitious values, the same within a test for the same label) and {{secrets.NAME}}. ' +
       'Targets are CSS selectors, text=…, or plain labels ("Sign in button"); data.value holds text to type or expect.',
     inputSchema: {
       type: 'object',
@@ -136,6 +157,7 @@ export const TOOLS = [
         expectedResults: { type: 'array', items: { type: 'string' } },
         tags: { type: 'array', items: { type: 'string' } },
         personas: { type: 'array', items: { type: 'string' }, description: 'Salesforce personas to run the test as' },
+        dataset: { type: 'string', description: 'Name of a test data set: the test runs once per row, steps use {{data.column}}' },
       },
       required: ['title', 'module', 'steps'],
     },
@@ -172,7 +194,7 @@ export const TOOLS = [
   },
   {
     name: 'get_failures',
-    description: 'Failed tests of a run with their evidence (screenshots, trace, video, accessibility, visual diffs, healed selectors).',
+    description: 'Failed tests of a run with their evidence (screenshots, trace, video, accessibility, visual diffs, healed selectors) and the triage: failures grouped as app bug, test bug or environment, new or seen before.',
     inputSchema: { type: 'object', properties: { runId: { type: 'string' } }, required: ['runId'] },
   },
   {
@@ -182,6 +204,21 @@ export const TOOLS = [
       type: 'object',
       properties: { runId: { type: 'string' }, resultId: { type: 'string' }, stepIds: { type: 'array', items: { type: 'number' } } },
       required: ['runId', 'resultId'],
+    },
+  },
+  {
+    name: 'generate_test_data',
+    description: 'Generate a test data set: with Faker from column kinds (fields: { "email": "email", "name": "fullName" }) or with the AI ' +
+      'from a description (prompt, e.g. "signup data with edge cases"). Give a name to save it; tests then use it with dataset: name.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        fields: { type: 'object', additionalProperties: { type: 'string' }, description: 'column → kind (firstName, lastName, fullName, email, phone, company, street, city, zip, country, iban, testCard, uuid, unique, number, amount, date, pastDate, birthdate, word, sentence, url, …)' },
+        prompt: { type: 'string', description: 'What the AI should generate (instead of or with fields)' },
+        count: { type: 'number', description: 'Rows, 1–100 (default 10)' },
+        locale: { type: 'string', description: 'e.g. en, it, de, fr, es, pt_BR' },
+        name: { type: 'string', description: 'Save as a data set with this name' },
+      },
     },
   },
   {
@@ -263,12 +300,13 @@ export class TestAgentMCPServer {
     },
 
     create_test_case: async (args: any) => {
-      const { personas, ...rest } = args;
+      const { personas, dataset, ...rest } = args;
+      const extra = { ...(personas?.length ? { personas } : {}), ...(dataset ? { dataset } : {}) };
       const { data } = await this.api.post('/testcases', {
         priority: 'Medium',
         expectedResults: [],
         ...rest,
-        ...(personas?.length ? { data: { personas } } : {}),
+        ...(Object.keys(extra).length ? { data: extra } : {}),
       });
       return { id: data.id, title: data.title, steps: data.steps.length };
     },
@@ -304,6 +342,16 @@ export class TestAgentMCPServer {
       const { data } = await this.api.post(`/runs/${encodeURIComponent(args.runId)}/results/${encodeURIComponent(args.resultId)}/apply-healing`,
         args.stepIds?.length ? { stepIds: args.stepIds } : {});
       return data;
+    },
+
+    generate_test_data: async (args: { fields?: Record<string, string>; prompt?: string; count?: number; locale?: string; name?: string }) => {
+      const { data } = await this.api.post('/testdata/generate', { ...args, ...(args.name ? { save: true } : {}) });
+      return {
+        source: data.source,
+        rows: data.rows.slice(0, 20),
+        ...(data.rows.length > 20 ? { moreRows: data.rows.length - 20 } : {}),
+        ...(data.saved ? { saved: { id: data.saved.id, name: data.saved.name }, usage: `Set dataset: "${data.saved.name}" on a test case; steps use {{data.<column>}}` } : {}),
+      };
     },
 
     ingest_test_book: async (args: { filePath: string; extractTestCases?: boolean }) => {

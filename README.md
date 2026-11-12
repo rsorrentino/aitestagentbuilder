@@ -44,6 +44,14 @@
 | **CLI / CI** | `npm run cli -- run -c agent.yml` waits for the run, writes reports and exits non-zero on failure |
 | **Salesforce personas** | Test as administrators, sales reps and read-only users: UI password, password + authenticator code (TOTP), OAuth JWT bearer → frontdoor, OAuth password, or "Log in as". Identity checks (profile, permission sets), one test run as many personas with per-persona expectations, object/field/record access and access-denied assertions. Built-in Salesforce simulator at `/demo/salesforce` |
 | **Quality checks** | Accessibility (axe-core, WCAG 2.x), visual regression against approved baselines, Playwright trace + video of failures (secrets masked), AI-repaired selectors kept and written back to test cases |
+| **AI-judged assertions** | `assert_ai`: plain-language expectations judged by the AI against the live page (e.g. chatbot answers), with confidence threshold and per-run cache |
+| **API testing** | HTTP request steps with status / JSON / header / timing assertions and captured variables, tests generated from OpenAPI (with AI edge cases), mocked or blocked calls in UI tests |
+| **Test recorder** | Record tests by clicking through the application in a server-side browser (robust unique selectors, secrets as placeholders), or import `npx playwright codegen` scripts (JS/TS/Python) |
+| **AI action steps** | “AI: add the cheapest product to the cart”: the AI carries out an instruction on the live page; what worked is replayed without the AI, secrets never reach it, and the actions can be saved as ordinary steps |
+| **Page speed** | `assert_performance` and an agent-wide check: LCP, FCP, CLS, TBT, TTFB, load, bytes against budgets and against earlier runs (regressions), optional network/CPU throttling, per-page trend |
+| **Test data generation** | `{{fake.email}}`-style values (Faker, 30+ kinds, locales, reproducible with a seed), data-driven tests that run once per data set row, data sets generated from column kinds or by the AI with edge cases |
+| **Flaky-test quarantine** | Flaky tests keep running without failing runs, CI or notifications; quarantined by hand or automatically, released when stable |
+| **Failure triage** | Failures grouped by cause and classified as app bug, test bug or environment, new vs. seen before, optionally explained by the AI; in notifications and the MCP server |
 | **MCP server** | Claude Code, Copilot, Cursor and other agents can write tests, run them and read failure evidence ([docs/mcp-server.md](docs/mcp-server.md)) |
 | **Demo** | Built-in demo shop at `/demo` with ready-made tests: one click on the dashboard |
 

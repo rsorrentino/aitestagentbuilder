@@ -6,6 +6,7 @@
 
 import { useState } from 'react';
 import { api, artifactUrl, errorMessage } from '../lib/api';
+import { fmt } from './PageSpeedCard';
 
 interface Props {
   runId: string;
@@ -25,7 +26,11 @@ export default function ResultQuality({ runId, result, canEdit, onChanged }: Pro
   const a11y: any[] = result.metadata?.accessibility ?? [];
   const visual: any[] = result.metadata?.visual ?? [];
   const healing = result.metadata?.healing;
-  if (!ev.trace && !ev.video && !a11y.length && !visual.length && !healing?.steps?.length) return null;
+  const aiChecks: any[] = result.metadata?.aiChecks ?? [];
+  const testData = result.metadata?.testData;
+  const perf: any[] = result.metadata?.performance ?? [];
+  const aiActions: any[] = result.metadata?.aiActions ?? [];
+  if (!ev.trace && !ev.video && !a11y.length && !visual.length && !healing?.steps?.length && !aiChecks.length && !testData && !perf.length && !aiActions.length) return null;
 
   const act = async (key: string, fn: () => Promise<string>) => {
     setBusy(key);
@@ -43,6 +48,11 @@ export default function ResultQuality({ runId, result, canEdit, onChanged }: Pro
   const approve = (v: any) => act(`visual-${v.name}`, async () => {
     await api.post(`/runs/${runId}/results/${result.id}/visual/approve`, { name: v.name, persona: v.persona, viewport: v.viewport });
     return `New baseline saved for “${v.name}”`;
+  });
+
+  const saveAiSteps = (stepId: number) => act(`ai-${stepId}`, async () => {
+    const res = await api.post(`/runs/${runId}/results/${result.id}/ai-actions/apply`, { stepId });
+    return `Step ${stepId} replaced by ${res.data.added} ordinary step(s) in the test case`;
   });
 
   const applyHealing = () => act('healing', async () => {
@@ -139,6 +149,118 @@ export default function ResultQuality({ runId, result, canEdit, onChanged }: Pro
               )}
             </div>
           ))}
+        </section>
+      )}
+
+      {aiActions.length > 0 && (
+        <section aria-label="AI actions">
+          <h4 className="mb-2">🧭 AI actions</h4>
+          {aiActions.map((r) => (
+            <div key={r.stepId} className="mb-3" data-testid={`ai-action-${r.stepId}`}>
+              <div className="text-sm">
+                <strong>Step {r.stepId}:</strong> {r.instruction}{' '}
+                <span className={r.done ? 'text-success' : 'text-danger'} style={{ fontWeight: 600 }}>{r.done ? 'done' : 'not completed'}</span>
+                <span className="text-muted">
+                  {' · '}{r.replayed ? 'replayed from earlier runs (no AI call)' : `${r.rounds} AI round(s)${r.provider ? ` · ${r.provider}` : ''}`}
+                  {r.cacheSaved ? ' · remembered for next runs' : ''}
+                </span>
+              </div>
+              {r.reason && <div className="text-sm text-muted">AI: {r.reason}</div>}
+              <ol className="text-sm" style={{ margin: '4px 0 6px 18px' }}>
+                {r.actions.map((a: any, i: number) => (
+                  <li key={i} style={a.ok ? undefined : { color: 'var(--danger)' }}>
+                    <span className="code">{a.action}</span>{a.target ? <> <span className="code">{a.target}</span></> : null}
+                    {a.value !== undefined ? <> = <span className="code">{a.value}</span></> : null}
+                    {a.cached ? <span className="text-muted"> (cached)</span> : null}
+                    {a.ok ? null : <> — {a.error}</>}
+                  </li>
+                ))}
+              </ol>
+              {r.applied ? (
+                <span className="badge badge-info">saved as steps</span>
+              ) : canEdit && r.done && r.actions.some((a: any) => a.ok) && (
+                <button type="button" className="btn btn-secondary btn-sm" disabled={busy !== null} onClick={() => saveAiSteps(r.stepId)}>
+                  {busy === `ai-${r.stepId}` ? 'Saving…' : 'Save as steps'}
+                </button>
+              )}
+            </div>
+          ))}
+          <p className="form-hint">“Save as steps” replaces the AI step in the test case with these actions: reviewable, and no AI needed any more.</p>
+        </section>
+      )}
+
+      {aiChecks.length > 0 && (
+        <section aria-label="AI checks">
+          <h4 className="mb-2">🤖 AI checks</h4>
+          <table className="data-table" style={{ fontSize: 13 }}>
+            <thead><tr><th>Expectation</th><th>Verdict</th><th>Why</th></tr></thead>
+            <tbody>
+              {aiChecks.map((c, i) => (
+                <tr key={i}>
+                  <td>{c.expectation}</td>
+                  <td>
+                    <span className={c.passed ? 'text-success' : 'text-danger'} style={{ fontWeight: 600 }}>{c.verdict}</span>
+                    <div className="text-muted">{Math.round(c.confidence * 100)}% confident{c.provider ? ` · ${c.provider}` : ''}</div>
+                  </td>
+                  <td>{c.reason}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="form-hint">Judged from the page&apos;s text and structure, not its pixels. AI verdicts can vary; keep classic assertions for what must never change.</p>
+        </section>
+      )}
+
+      {perf.length > 0 && (
+        <section aria-label="Page speed">
+          <h4 className="mb-2">⚡ Page speed</h4>
+          {perf.map((p, i) => (
+            <div key={i} className="mb-2">
+              <div className="text-sm text-muted">
+                {p.page}{p.throttle ? ` · throttled (${p.throttle})` : ''}{p.maxRegression ? ` · compared with ${p.baselineRuns} earlier run(s), max +${Math.round(p.maxRegression * 100)}%` : ''} ·{' '}
+                <span className={p.passed ? 'text-success' : 'text-danger'} style={{ fontWeight: 600 }}>{p.passed ? 'within budget' : `${p.violations.length} problem(s)`}</span>
+              </div>
+              <table className="data-table" style={{ fontSize: 13 }}>
+                <thead><tr><th>Metric</th><th>Value</th><th>Budget</th><th>Earlier runs</th></tr></thead>
+                <tbody>
+                  {['lcp', 'fcp', 'cls', 'tbt', 'ttfb', 'dom_content_loaded', 'load', 'transfer_kb', 'requests'].filter((k) => p.metrics[k] !== undefined).map((k) => {
+                    const v = p.violations.filter((x: any) => x.metric === k);
+                    const reg = v.find((x: any) => x.kind === 'regression');
+                    return (
+                      <tr key={k} style={v.length ? { color: 'var(--danger)', fontWeight: 600 } : undefined}>
+                        <td>{k.toUpperCase().replace(/_/g, ' ')}</td>
+                        <td>{fmt(k, p.metrics[k])}</td>
+                        <td>{p.budgets?.[k] !== undefined ? fmt(k, p.budgets[k]) : '—'}</td>
+                        <td>{reg ? `${fmt(k, reg.baseline)} (+${Math.round((reg.value / reg.baseline - 1) * 100)}%)` : ''}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ))}
+        </section>
+      )}
+
+      {testData && (
+        <section aria-label="Test data">
+          <h4 className="mb-2">🎲 Test data</h4>
+          {testData.row && (
+            <div className="text-sm mb-2">
+              <span className="text-muted">Data set row{result.metadata?.dataLabel ? ` “${result.metadata.dataLabel}”` : ''}: </span>
+              {Object.entries(testData.row).map(([k, v]) => (
+                <span key={k} className="code" style={{ marginRight: 10 }}>{k}={typeof v === 'object' ? JSON.stringify(v) : String(v)}</span>
+              ))}
+            </div>
+          )}
+          {testData.fake && (
+            <div className="text-sm">
+              <span className="text-muted">Generated values: </span>
+              {Object.entries(testData.fake).map(([k, v]) => (
+                <span key={k} className="code" style={{ marginRight: 10 }}>{`{{fake.${k}}}`}={String(v)}</span>
+              ))}
+            </div>
+          )}
         </section>
       )}
 

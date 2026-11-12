@@ -11,6 +11,10 @@ import { TestStep } from '../../core/domain/test-case.js';
 import { SalesforceSessions } from '../salesforce/session.js';
 import { A11yReport, describeA11y, scanAccessibility } from '../quality/accessibility.js';
 import { checkScreenshot, describeVisual, VisualEntry } from '../quality/visual.js';
+import { ApiState, checkJson, describeResponse, extractVars, mockRoute, sendRequest, statusMatches } from '../quality/api-testing.js';
+import { AiVerdict, describeVerdict, judgeExpectation, Judge } from '../quality/ai-assert.js';
+import { AiAction, AiActionError, AiActionRecord, describeActions, Planner, runAiAction, successfulActions } from '../quality/ai-actions.js';
+import { budgetFromSentence, checkPerformance, DEFAULT_BUDGETS, describePerformance, normalizeBudgets, PerfReport, performanceSettings } from '../quality/performance.js';
 
 export type StepKind =
   | 'navigate' | 'click' | 'fill' | 'select' | 'check' | 'uncheck' | 'press' | 'hover' | 'wait'
@@ -19,6 +23,8 @@ export type StepKind =
   | 'salesforce_login' | 'salesforce_logout' | 'wait_for_lightning'
   | 'assert_profile' | 'assert_object_access' | 'assert_field_access' | 'assert_record_access'
   | 'assert_accessible' | 'assert_screenshot'
+  | 'http_request' | 'assert_status' | 'assert_json' | 'assert_header' | 'assert_response_time' | 'mock_route' | 'block_route'
+  | 'assert_ai' | 'assert_performance' | 'ai_action'
   | 'manual';
 
 export interface StepOutcome {
@@ -38,6 +44,14 @@ export interface StepContext {
   persona?: string;
   /** Where quality checks (accessibility, visual) store baselines and report their findings. */
   quality?: QualityContext;
+  /** Last API response and variables captured by http_request steps of this test. */
+  api?: ApiState;
+  /** Data set row of this test execution ({{data.field}}) and its fake values ({{fake.kind}}) */
+  testData?: { row?: Record<string, any>; fake: { get(kind: string, label?: string): string; used(): Record<string, string> } };
+  /** AI action steps (instruction carried out by the AI). */
+  aiActions?: AiActionContext;
+  /** AI judge for assert_ai steps (cache shared across the run). */
+  ai?: { judge: Judge; outline: (page: Page) => Promise<string>; mask: (text: string) => string; cache: Map<string, Omit<AiVerdict, 'cached'>> };
 }
 
 export interface QualityContext {
@@ -48,6 +62,17 @@ export interface QualityContext {
   testCaseId: string;
   accessibility: A11yReport[];
   visual: VisualEntry[];
+  aiChecks?: AiVerdict[];
+  performance?: PerfReport[];
+  aiActions?: AiActionRecord[];
+}
+
+/** What AI action steps need from the run: the planner, the replay cache and placeholder resolution. */
+export interface AiActionContext {
+  plan?: Planner;
+  cache?: { get(stepId: number, instruction: string): Promise<AiAction[] | null>; save(stepId: number, instruction: string, actions: AiAction[]): Promise<void> };
+  /** Resolves {{secrets.X}} and other placeholders in the values the AI chose */
+  resolve: (text: string) => string;
 }
 
 /** Default text of Salesforce's "no access" pages. */
@@ -66,11 +91,34 @@ export function classifyAction(rawAction: string, step: Pick<TestStep, 'target' 
     'assert accessible': 'assert_accessible', 'assert accessibility': 'assert_accessible', 'check accessibility': 'assert_accessible',
     'accessibility check': 'assert_accessible', 'assert screenshot': 'assert_screenshot', 'compare screenshot': 'assert_screenshot',
     'visual check': 'assert_screenshot', 'assert visual': 'assert_screenshot',
+    'http request': 'http_request', 'api request': 'http_request', 'request': 'http_request',
+    'assert status': 'assert_status', 'assert json': 'assert_json', 'assert header': 'assert_header',
+    'assert response time': 'assert_response_time', 'mock route': 'mock_route', 'mock api': 'mock_route', 'block route': 'block_route',
+    'assert ai': 'assert_ai', 'ai assert': 'assert_ai', 'ai check': 'assert_ai', 'assert with ai': 'assert_ai',
+    'assert performance': 'assert_performance', 'check performance': 'assert_performance', 'measure performance': 'assert_performance',
+    'performance check': 'assert_performance', 'page speed': 'assert_performance', 'assert page speed': 'assert_performance',
+    'check page speed': 'assert_performance', 'web vitals': 'assert_performance', 'assert web vitals': 'assert_performance',
+    'ai': 'ai_action', 'ai action': 'ai_action', 'ai step': 'ai_action', 'do with ai': 'ai_action',
   };
   if (exact[a]) return exact[a];
+  // "GET /api/orders", "POST https://…"
+  // The method alone with a target, or followed by a path / URL (not "Get started")
+  const verb = rawAction.trim().match(/^(get|post|put|patch|delete|head|options)(?:\s+(\S+))?\s*$/i);
+  if (verb && (verb[2] ? /^(\/|https?:\/\/|[\w.{}-]+\/)/.test(verb[2]) : !!step.target)) return 'http_request';
+  if (/^(send|make|call|invoke)\b.*\b(request|api|endpoint)\b/.test(a)) return 'http_request';
+  if (/^(mock|stub|fake)\b/.test(a)) return 'mock_route';
+  if (/^(verify|check|assert|confirm|ensure|validate|judge)\s+(with|using|by)\s+(the\s+)?ai\b/.test(a)) return 'assert_ai';
+  if (/^(measure|check|test|audit)\b.*\b(performance|page ?speed|web vitals|load(ing)? time)\b/.test(a)) return 'assert_performance';
+  // "AI: add the cheapest product to the cart", "Do with AI: …"
+  if (/^(ai|ai action|ai step|with ai|using ai|do with (the )?ai)\s*:/.test(a) || /^(do|perform|complete|carry out)\s+(with|using)\s+(the\s+)?ai\b/.test(a)) return 'ai_action';
   if (/^(assert|verify|expect|validate|confirm|ensure|check that|should|observe|see)\b/.test(a)) {
     if (/\b(access denied|insufficient privileges|no access|not authori[sz]ed|forbidden|cannot access|can't access)\b/.test(a)) return 'assert_access_denied';
+    if (/\b(status code|http status|response status)\b/.test(a)) return 'assert_status';
+    if (/\bresponse time\b|\bresponds? (with)?in\b/.test(a)) return 'assert_response_time';
+    if (/\b(response|http) headers?\b/.test(a)) return 'assert_header';
+    if (/\bjson\b|\bresponse (body|field|contains)\b/.test(a)) return 'assert_json';
     if (/\b(accessib\w*|a11y|wcag)\b/.test(a)) return 'assert_accessible';
+    if (/\b(performance|page ?speed|web vitals|lcp|fcp|cls|ttfb|time to first byte|largest contentful paint|layout shift|blocking time)\b|\bloads? (with)?in (under |less than )?\d|\bload(ing)? time\b/.test(a)) return 'assert_performance';
     if (/\b(visual(ly)?|pixel|baseline|looks the same|screenshot match\w*|matches the screenshot)\b/.test(a)) return 'assert_screenshot';
     if (step.target && /\b(not (be )?(visible|displayed|shown|present)|hidden|absent|isn't (visible|shown|displayed)|is not shown|does not (appear|exist))\b/.test(a)) return 'assert_not_visible';
     if (/\burl\b/.test(a)) return 'assert_url';
@@ -297,6 +345,134 @@ export async function executeStep(step: TestStep, ctx: StepContext, targetOverri
       if (entry.status === 'failed') throw new Error(describeVisual(entry));
       return { status: 'passed', message: describeVisual(entry) };
     }
+    case 'http_request': {
+      if (!ctx.api) throw new Error('API steps need a run context');
+      const data = { ...(step.data ?? {}) };
+      const first = step.action.trim().split(/\s+/);
+      if (!data.method && /^(get|post|put|patch|delete|head|options)$/i.test(first[0])) data.method = first[0];
+      const url = target || (first.length > 1 ? first.slice(1).join(' ') : '') || String(data.url ?? '');
+      if (!url) need('the URL or path as target');
+      const response = await sendRequest(page, ctx.config, url, data, stepTimeout);
+      ctx.api.last = response;
+      const extracted = extractVars(response, data.extract, ctx.api.vars);
+      // Expected status given on the request itself
+      if (data.status !== undefined && !statusMatches(response.status, data.status)) {
+        throw new Error(`Expected status ${JSON.stringify(data.status)} but got ${describeResponse(response)}`);
+      }
+      return { status: 'passed', message: `${describeResponse(response)}${extracted.length ? ` · saved ${extracted.map((n) => `{{vars.${n}}}`).join(', ')}` : ''}` };
+    }
+    case 'assert_status': {
+      const r = lastResponse(ctx);
+      // "Verify the status code is 201" carries the expectation in the sentence
+      const expected = step.data?.status ?? step.data?.value ?? (target || step.action.match(/\b([1-5]\d\d|[1-5]xx)\b/i)?.[1]);
+      if (expected === undefined || expected === '') need('the expected status in data.value, e.g. 200 or "2xx"');
+      if (!statusMatches(r.status, expected)) throw new Error(`Expected status ${JSON.stringify(expected)} but got ${r.status} (${r.method} ${r.url})`);
+      return { status: 'passed', message: `Status ${r.status}` };
+    }
+    case 'assert_json': {
+      const r = lastResponse(ctx);
+      return { status: 'passed', message: checkJson(r.json, { ...(target && !step.data?.path ? { path: target } : {}), ...(step.data ?? {}) }) };
+    }
+    case 'assert_header': {
+      const r = lastResponse(ctx);
+      const name = String(target || step.data?.name || '').toLowerCase();
+      if (!name) need('the header name as target');
+      const actual = r.headers[name];
+      if (actual === undefined) throw new Error(`The response has no "${name}" header`);
+      const expected = step.data?.value ?? step.data?.contains;
+      if (expected !== undefined && !actual.toLowerCase().includes(String(expected).toLowerCase())) {
+        throw new Error(`Expected header ${name} to contain "${expected}" but it is "${actual}"`);
+      }
+      return { status: 'passed', message: `${name}: ${actual.slice(0, 120)}` };
+    }
+    case 'assert_response_time': {
+      const r = lastResponse(ctx);
+      const max = Number(step.data?.max_ms ?? step.data?.value ?? (target || step.action.match(/(\d+)\s*ms\b/i)?.[1]));
+      if (!Number.isFinite(max) || max <= 0) need('the maximum in milliseconds in data.value');
+      if (r.durationMs > max) throw new Error(`Response took ${r.durationMs} ms, more than ${max} ms (${r.method} ${r.url})`);
+      return { status: 'passed', message: `Responded in ${r.durationMs} ms (max ${max} ms)` };
+    }
+    case 'mock_route':
+    case 'block_route':
+      return { status: 'passed', message: await mockRoute(page, target || String(step.data?.url ?? ''), step.data ?? {}, kind === 'block_route') };
+    case 'assert_ai': {
+      if (!ctx.ai) throw new Error('AI checks need a run context');
+      const data = step.data ?? {};
+      // The expectation: data.value, else the sentence after "Verify with AI that …", else the expected result
+      const fromAction = step.action.replace(/^\s*(verify|check|assert|confirm|ensure|validate|judge)\s+(with|using|by)\s+(the\s+)?ai\s*(that|whether|if)?\s*/i, '').trim();
+      const expectation = String(data.value ?? data.expect ?? (fromAction && fromAction !== step.action.trim() ? fromAction : '') ?? '').trim()
+        || String(step.expectedResult ?? '').trim();
+      if (!expectation || /^assert[_ ]ai$/i.test(expectation)) need('the expectation in plain language in data.value');
+      const locator = target ? await resolveLocator(page, target) : null;
+      const minConfidence = data.min_confidence ?? data.minConfidence;
+      const verdict = await judgeExpectation(page, locator, expectation, {
+        ...ctx.ai, minConfidence, onUnsure: data.on_unsure ?? data.onUnsure,
+      });
+      ctx.quality?.aiChecks?.push(verdict);
+      const message = describeVerdict(verdict, Number(minConfidence ?? 0.7));
+      if (!verdict.passed) throw new Error(message);
+      return { status: 'passed', message };
+    }
+    case 'assert_performance': {
+      const data = step.data ?? {};
+      // A target loads that page fresh first; otherwise the last page load is measured
+      if (target) {
+        await page.goto(absoluteUrl(ctx.baseUrl, target), { waitUntil: 'load', timeout: Math.max(stepTimeout, 30000) });
+      }
+      const agent = performanceSettings(ctx.config);
+      const own = { ...normalizeBudgets(data), ...budgetFromSentence(step.action) };
+      const budgets = Object.keys(own).length ? own : agent.mode !== 'off' || ctx.config?.checks?.performance_budgets ? agent.budgets : { ...DEFAULT_BUDGETS };
+      const maxRegression = Number(data.max_regression ?? agent.maxRegression);
+      const report = await checkPerformance(page, {
+        budgets,
+        ...(Number.isFinite(maxRegression) && maxRegression > 0 ? { maxRegression } : {}),
+        throttle: agent.throttle,
+        agentId: ctx.quality?.agentId,
+        runId: ctx.quality?.runId,
+      });
+      ctx.quality?.performance?.push(report);
+      const message = describePerformance(report);
+      if (!report.passed && data.report_only !== true) throw new Error(message);
+      return { status: 'passed', message };
+    }
+    case 'ai_action': {
+      const ai = ctx.aiActions;
+      if (!ai) throw new Error('AI action steps need a run context');
+      const data = step.data ?? {};
+      const fromAction = step.action.replace(/^\s*(ai|ai[ _]action|ai[ _]step|with ai|using ai|do with (the )?ai)\s*:\s*/i, '')
+        .replace(/^\s*(do|perform|complete|carry out)\s+(with|using)\s+(the\s+)?ai\s*:?\s*/i, '').trim();
+      const instruction = String(data.value ?? data.instruction ?? (fromAction && fromAction !== step.action.trim() ? fromAction : '')).trim();
+      if (!instruction) need('the instruction in data.value, or written as "AI: …"');
+      const useCache = data.cache !== false && ctx.config?.ai?.action_cache !== false && !!ai.cache;
+      const cached = useCache ? await ai.cache!.get(step.stepId, instruction).catch(() => null) : null;
+      const inner: StepContext = { ...ctx, aiActions: undefined };
+      const execute = async (a: AiAction) => {
+        const v = a.value !== undefined ? ai.resolve(a.value) : undefined;
+        const sub: TestStep = {
+          stepId: step.stepId,
+          action: a.action,
+          ...(a.target ? { target: ai.resolve(a.target) } : {}),
+          ...(v !== undefined ? { data: a.action === 'wait' ? { ms: v } : { value: v } } : {}),
+        };
+        await executeStep(sub, inner);
+      };
+      let record: AiActionRecord;
+      try {
+        record = await runAiAction(page, instruction, {
+          stepId: step.stepId, baseUrl: ctx.baseUrl, plan: ai.plan, outline: ctx.ai?.outline ?? (async () => ''), mask: ctx.ai?.mask ?? ((t) => t),
+          execute, cached, maxActions: data.max_actions,
+        });
+      } catch (e: any) {
+        if (e instanceof AiActionError) ctx.quality?.aiActions?.push(e.record);
+        throw e;
+      }
+      if (useCache && !record.replayed) {
+        await ai.cache!.save(step.stepId, instruction, successfulActions(record)).then(() => { record.cacheSaved = true; }).catch(() => undefined);
+      }
+      ctx.quality?.aiActions?.push(record);
+      const how = record.replayed ? 'replayed from earlier runs, no AI call' : `${record.rounds} AI round(s)${record.provider ? `, ${record.provider}` : ''}`;
+      return { status: 'passed', message: `AI did "${instruction}" (${how}): ${describeActions(record.actions) || 'nothing to do'}` };
+    }
     case 'salesforce_login': {
       const sessions = requireSalesforce(ctx);
       const persona = step.data?.persona ?? (target && !/^(https?:|\/)/.test(target) ? target : undefined) ?? ctx.persona;
@@ -354,6 +530,11 @@ export async function executeStep(step: TestStep, ctx: StepContext, targetOverri
     default:
       return { status: 'skipped', message: `Not automatable (no recognised action): "${step.action}"` };
   }
+}
+
+function lastResponse(ctx: StepContext) {
+  if (!ctx.api?.last) throw new Error('No API response yet: send one with an http_request step first');
+  return ctx.api.last;
 }
 
 function requireSalesforce(ctx: StepContext): SalesforceSessions {

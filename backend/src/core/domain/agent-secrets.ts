@@ -128,12 +128,41 @@ export function secretValues(decrypted: any): string[] {
   return values.filter(Boolean);
 }
 
-/** Replace {{secrets.NAME}} and {{env.NAME}} placeholders. Unknown secrets throw. */
-export function resolvePlaceholders(text: string, secrets: Record<string, string>): string {
-  return text.replace(/\{\{\s*(secrets|env)\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g, (_m, kind, name) => {
+/**
+ * Replace {{secrets.NAME}}, {{env.NAME}}, {{vars.NAME}}, {{data.FIELD}} and {{fake.KIND[:label]}}
+ * placeholders. Unknown secrets, variables and fields throw. Variables come from earlier steps
+ * of the test (http_request extract), data fields from the test's data set row, fake values
+ * from the test data generator (the same kind and label give the same value within a test).
+ */
+export function resolvePlaceholders(
+  text: string,
+  secrets: Record<string, string>,
+  vars?: Record<string, string>,
+  extra: { data?: Record<string, any> | null; fake?: { get(kind: string, label?: string): string }; keepSecrets?: boolean } = {},
+): string {
+  return text.replace(/\{\{\s*(secrets|env|vars|data|fake)\.([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*)(?::([\w-]{1,40}))?\s*\}\}/g, (match, kind, name, label) => {
+    if (label !== undefined && kind !== 'fake') return match;
+    if (kind === 'fake') {
+      if (!extra.fake) throw new Error('{{fake.…}} values are only available while a test runs');
+      return extra.fake.get(name, label ?? '');
+    }
+    if (kind === 'data') {
+      if (!extra.data) throw new Error(`{{data.${name}}} needs a data set: set data.dataset on the test case`);
+      let cur: any = extra.data;
+      for (const part of name.split('.')) cur = cur !== null && typeof cur === 'object' && part in cur ? cur[part] : undefined;
+      if (cur === undefined) throw new Error(`Unknown data field "${name}" — the row has: ${Object.keys(extra.data).join(', ') || '(no fields)'}`);
+      return cur === null ? '' : typeof cur === 'object' ? JSON.stringify(cur) : String(cur);
+    }
+    if (name.includes('.')) return match;
+    // Text for the AI: secrets and environment values stay placeholders, resolved only when an action runs
+    if (extra.keepSecrets && (kind === 'secrets' || kind === 'env')) return match;
     if (kind === 'secrets') {
       if (!(name in secrets)) throw new Error(`Unknown secret "${name}" — define it in the agent's secrets`);
       return secrets[name];
+    }
+    if (kind === 'vars') {
+      if (!vars || !(name in vars)) throw new Error(`Unknown variable "${name}" — capture it first with http_request data.extract`);
+      return vars[name];
     }
     const allowed = (process.env.STEP_ENV_ALLOWLIST || '').split(',').map((s) => s.trim()).filter(Boolean);
     if (!allowed.includes(name)) throw new Error(`Environment variable "${name}" is not in STEP_ENV_ALLOWLIST`);
