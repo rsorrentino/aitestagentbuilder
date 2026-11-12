@@ -139,7 +139,7 @@ export default function TestCaseEditor({ initial, onSaved, onCancel }: TestCaseE
           <div className="form-group">
             <label className="form-label" htmlFor="tc-personas">Run as personas</label>
             <input id="tc-personas" className="form-control" value={personas} onChange={(e) => setPersonas(e.target.value)} placeholder="admin, rep, viewer — or all" />
-            <div className="form-hint">Salesforce agents: the test runs once per persona.</div>
+            <div className="form-hint">Salesforce personas or login profiles: the test runs once per user, signed in.</div>
           </div>
           <div className="form-group">
             <label className="form-label" htmlFor="tc-dataset">Data set</label>

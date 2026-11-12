@@ -266,6 +266,13 @@ describe('Salesforce personas (integration)', () => {
 
     const all = JSON.stringify(run.results);
     for (const secret of ['Rep-Pass-1!', 'Viewer-Pass-1!', 'JBSWY3DPEHPK3PXP']) assert.ok(!all.includes(secret));
+
+    // The next run starts from the session saved (encrypted) by this one: no new login, no MFA
+    const saved = await call('GET', `/api/v1/agents/${agentId}/auth/sessions`);
+    assert.ok(saved.data.some((x: any) => x.kind === 'salesforce' && x.identity === 'rep' && !x.expired), saved.text);
+    const next = await runAndWait(agentId, [tests.reuse]);
+    assert.equal(next.results[0].status, 'passed', next.results[0].error);
+    assert.match(next.results[0].metadata.steps[0].message, /reused session/);
   });
 
   it('"Log in as" personas are checked through the admin API', async (t) => {

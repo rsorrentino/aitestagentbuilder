@@ -156,7 +156,7 @@ export const TOOLS = [
         },
         expectedResults: { type: 'array', items: { type: 'string' } },
         tags: { type: 'array', items: { type: 'string' } },
-        personas: { type: 'array', items: { type: 'string' }, description: 'Salesforce personas to run the test as' },
+        personas: { type: 'array', items: { type: 'string' }, description: 'Salesforce personas or login profiles to run the test as (once per user, signed in)' },
         dataset: { type: 'string', description: 'Name of a test data set: the test runs once per row, steps use {{data.column}}' },
       },
       required: ['title', 'module', 'steps'],

@@ -32,6 +32,7 @@ import { seedDemo } from '../../demo/seed-demo.js';
 import { registerAutomationRoutes } from './automation.js';
 import { registerQualityRoutes } from './quality.js';
 import { registerRecorderRoutes } from './recorder.js';
+import { registerAuthSessionRoutes } from './auth-sessions.js';
 import { AgentRepository } from '../../core/repositories/agent.repository.js';
 
 const router = Router();
@@ -196,6 +197,7 @@ scoped.post('/demo/seed', editor, audit('demo.seed', 'agent'), async (req: Authe
 registerAutomationRoutes(scoped, { viewer, editor, projectAdmin });
 registerQualityRoutes(scoped, { viewer, editor });
 registerRecorderRoutes(scoped, { editor });
+registerAuthSessionRoutes(scoped, { viewer, editor });
 
 router.use(scoped);
 

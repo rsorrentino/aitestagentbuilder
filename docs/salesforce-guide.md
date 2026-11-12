@@ -86,6 +86,14 @@ The access token is turned into a browser session with a single-use frontdoor UR
   profile's *Login IP Ranges* / *Network Access*.
 - "Register your phone" prompts are skipped automatically.
 
+### Saved sessions (fewer logins, fewer verification codes)
+
+Persona sessions are saved, encrypted, and reused by later tests **and runs** (`salesforce.session_max_age_hours`,
+default 8), together with Salesforce's device-activation cookies: once a persona has verified the browser,
+Salesforce stops sending *Verify your identity* emails for it. The agent page (**Sign-in & MFA**) shows each persona's
+saved session and can forget it; it is also forgotten when the persona's user name, auth method or the login URL
+changes. Applications other than Salesforce (SSO portals, other SaaS) use *login profiles*: see docs/agents.md, Sign-in & MFA.
+
 ### Steps
 
 | Action | Target | Data | What it does |

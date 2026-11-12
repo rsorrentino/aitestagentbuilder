@@ -204,4 +204,23 @@ export const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    version: 8,
+    name: 'saved sign-in sessions',
+    sql: `
+      CREATE TABLE IF NOT EXISTS auth_sessions (
+        agent_id VARCHAR(255) NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+        kind VARCHAR(20) NOT NULL,
+        identity VARCHAR(100) NOT NULL,
+        state TEXT NOT NULL,
+        cookies INTEGER NOT NULL DEFAULT 0,
+        captured_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        expires_at TIMESTAMP NOT NULL,
+        last_used_at TIMESTAMP,
+        captured_by VARCHAR(20) NOT NULL DEFAULT 'auto',
+        captured_by_user VARCHAR(255),
+        PRIMARY KEY (agent_id, kind, identity)
+      );
+    `,
+  },
 ];

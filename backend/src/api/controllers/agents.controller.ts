@@ -5,6 +5,7 @@
 
 import { LOCALE_RE } from '../../modules/quality/test-data-gen.js';
 import { validatePerformanceConfig } from '../../modules/quality/performance.js';
+import { SessionVault } from '../../modules/auth/session-vault.js';
 import { Response } from 'express';
 import { AgentRepository } from '../../core/repositories/agent.repository.js';
 import { TestCaseRepository } from '../../core/repositories/test-case.repository.js';
@@ -95,7 +96,24 @@ export function publicAgent(agent: Agent): Agent {
   return { ...agent, config: redactAgentConfig(agent.config) };
 }
 
-const badSecret = (e: any) => /Invalid secret name|persona|salesforce\./i.test(e?.message ?? '');
+const badSecret = (e: any) => /Invalid secret name|persona|salesforce\.|login profile|auth\./i.test(e?.message ?? '');
+
+/** Identities whose saved session no longer fits (removed, or another user name / sign-in URL). */
+function staleIdentities(before: any, after: any): Array<{ kind: 'app' | 'salesforce'; identity: string }> {
+  const out: Array<{ kind: 'app' | 'salesforce'; identity: string }> = [];
+  const check = (kind: 'app' | 'salesforce', prev: any[] = [], next: any[] = [], keys: string[]) => {
+    for (const p of prev) {
+      const n = next.find((x: any) => x?.name === p?.name);
+      if (!n || keys.some((k) => (n[k] ?? '') !== (p[k] ?? ''))) out.push({ kind, identity: p.name });
+    }
+  };
+  check('app', before?.auth?.profiles, after?.auth?.profiles, ['username', 'login_url']);
+  check('salesforce', before?.salesforce?.personas, after?.salesforce?.personas, ['username', 'auth_method']);
+  if ((before?.salesforce?.login_url ?? '') !== (after?.salesforce?.login_url ?? '')) {
+    for (const p of before?.salesforce?.personas ?? []) if (!out.some((o) => o.kind === 'salesforce' && o.identity === p.name)) out.push({ kind: 'salesforce', identity: p.name });
+  }
+  return out;
+}
 
 export class AgentsController {
   private agentRepo = new AgentRepository();
@@ -243,7 +261,13 @@ export class AgentsController {
         status: req.body?.status,
       }, projectId);
 
-      const changedSecrets = req.body?.config?.secrets !== undefined || req.body?.config?.salesforce !== undefined;
+      // A saved session belongs to a user name: forget it when the profile or persona changes
+      const stale = config ? staleIdentities(existing.config, agent!.config) : [];
+      if (stale.length) {
+        const vault = new SessionVault();
+        await Promise.all(stale.map((x) => vault.forget(existing.id, x.kind, x.identity).catch(() => 0)));
+      }
+      const changedSecrets = req.body?.config?.secrets !== undefined || req.body?.config?.salesforce !== undefined || req.body?.config?.auth !== undefined;
       res.locals.audit = {
         details: {
           fields: Object.keys(req.body ?? {}),

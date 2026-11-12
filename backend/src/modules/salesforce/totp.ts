@@ -70,3 +70,35 @@ export function verifyTotp(secretBase32: string, code: string, at: number = Date
 export function secondsRemaining(at: number = Date.now(), step = 30): number {
   return step - (Math.floor(at / 1000) % step);
 }
+
+/** The secret and parameters of a TOTP key given as Base32 or as an otpauth://totp/… link (QR code content). */
+export function parseTotpKey(value: string): { secret: string; digits: number; period: number; issuer?: string; account?: string } {
+  const v = String(value ?? '').trim();
+  if (!/^otpauth:\/\//i.test(v)) {
+    base32Decode(v);
+    return { secret: v.toUpperCase().replace(/[\s=-]/g, ''), digits: 6, period: 30 };
+  }
+  const url = new URL(v);
+  if (url.hostname.toLowerCase() !== 'totp') throw new Error('Only time-based (otpauth://totp/…) keys are supported, not counter-based (hotp)');
+  const secret = (url.searchParams.get('secret') ?? '').toUpperCase().replace(/[\s=-]/g, '');
+  base32Decode(secret);
+  const algorithm = (url.searchParams.get('algorithm') ?? 'SHA1').toUpperCase();
+  if (algorithm !== 'SHA1') throw new Error(`TOTP algorithm ${algorithm} is not supported (SHA1 only, like most authenticator apps)`);
+  const label = decodeURIComponent(url.pathname.replace(/^\//, ''));
+  const [labelIssuer, account] = label.includes(':') ? label.split(/:(.*)/s) : [undefined, label];
+  const digits = Number(url.searchParams.get('digits') ?? 6);
+  const period = Number(url.searchParams.get('period') ?? 30);
+  return {
+    secret,
+    digits: [6, 7, 8].includes(digits) ? digits : 6,
+    period: period > 0 && period <= 300 ? period : 30,
+    issuer: url.searchParams.get('issuer') ?? labelIssuer ?? undefined,
+    account: account?.trim() || undefined,
+  };
+}
+
+/** Current code for a Base32 key or otpauth:// link. */
+export function totpFor(key: string, at: number = Date.now()): string {
+  const k = parseTotpKey(key);
+  return totp(k.secret, at, { step: k.period, digits: k.digits });
+}
