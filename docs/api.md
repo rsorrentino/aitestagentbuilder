@@ -132,6 +132,16 @@ Screenshots are served at `GET /artifacts/<path from evidence.screenshots>`.
 | POST | `/demo/seed` | Creates/updates the *Demo Shop* agent and its 3 tests → `{ agentId, created }` |
 | GET | `/demo/` (outside `/api/v1`) | The demo web app itself (login `demo` / `demo123`) |
 
+## AI action steps
+
+| Method | Path | Role | Description |
+|---|---|---|---|
+| POST | `/runs/:runId/results/:resultId/ai-actions/apply` | editor | `{ stepId }`: replace that AI step of the test case with the ordinary steps the AI performed (409 when the test case changed since) |
+| DELETE | `/agents/:id/ai-action-cache?testCaseId=` | editor | Forget remembered AI action sequences → `{ cleared }` |
+
+Results carry the actions in `metadata.aiActions` (`stepId`, `instruction`, `actions[]` with `ok`/`error`/`cached`,
+`done`, `reason`, `rounds`, `replayed`, `provider`).
+
 ## Page speed
 
 `GET /agents/:id/performance?days=30` (viewer) → `{ pages: [{ page, samples: [{ runId, at, metrics }], latest, median }] }`:

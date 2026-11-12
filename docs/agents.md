@@ -22,6 +22,7 @@ retries: 1                             # re-run failed tests (0–3)
 ai:
   auto_apply_healing: false            # write AI-repaired selectors back into the test cases
   triage: false                        # explain failed runs with AI (rules-based triage always runs)
+  action_cache: true                   # replay AI action steps that worked before, without calling the AI
 quarantine:
   auto: false                          # quarantine flaky tests automatically
   flips: 3                             # pass↔fail changes in the last `window` runs of a test
@@ -158,6 +159,7 @@ use `{{data.<column>}}` (nested: `{{data.address.city}}`).
 | `assert_accessible` | optional element to scan | `{"level": "wcag21aa", "min_impact": "serious", "ignore": ["color-contrast"], "exclude": [".chat-widget"], "report_only": false}` |
 | `assert_screenshot` | optional element (whole viewport if empty) | `{"name": "cart", "max_diff_ratio": 0.001, "threshold": 0.1, "mask": [".clock"], "full_page": false, "on_missing": "create"}` |
 | `assert_performance` | optional page to load fresh (else the last page load is measured) | budgets `{"lcp": 2500, "fcp": 1800, "cls": 0.1, "tbt": 200, "ttfb": 800, "load": 3000, "transfer_kb": 1500, "requests": 80, "max_regression": 0.25, "report_only": false}`; also “Verify the page loads in under 2 seconds” |
+| `ai` | — | the instruction: `{"value": "Add the cheapest product to the cart", "max_actions": 12, "cache": true}`; also written as “AI: add the cheapest product to the cart” |
 | `assert_ai` | optional element to judge | the expectation in plain language; `{"value": "…", "min_confidence": 0.7, "on_unsure": "fail"}` — or write the action as "Verify with AI that …" |
 | `http_request` | path (relative to `api_base_url`, else `base_url`) or URL; also `"GET orders"` as the action | `{"method": "POST", "json": {...}, "query": {...}, "headers": {...}, "extract": {"orderId": "$.id"}, "status": 201}` |
 | `assert_status` | | `201`, `"2xx"` or `[200, 204]` (or in the sentence: "Verify the status code is 201") |
@@ -250,6 +252,26 @@ A healed step passes with the note `(self-healed from "<old selector>")`. The ru
 - **Where results show:** the run page and the HTML report; failures over budget are triaged as app bugs. The agent page's
   **Page speed** card shows each page's latest values against its 30-day median, with an LCP trend
   (`GET /agents/:id/performance`).
+
+**AI action steps.** A step written as an instruction is carried out by the AI on the live page:
+`{ "action": "AI: add the cheapest product to the cart" }` or `{ "action": "ai", "data": { "value": "…" } }`.
+- **How it works:** in rounds, the AI sees the instruction, what it did so far and the page (visible text, controls with
+  selectors), and answers with the next few actions: click, fill, select, check, uncheck, press, hover, navigate (only
+  within the application) or wait. It stops when it reports the instruction done, gives up (the step fails with its
+  reason, triaged as *unknown*), or reaches `max_actions` (default 12).
+- **Secrets:** `{{secrets.NAME}}` stays a placeholder in what the AI sees; the AI copies it into values and it is
+  resolved only when the action runs. Page content is masked as everywhere else. `{{data.*}}` and `{{fake.*}}` are
+  resolved before, so the AI can reason with them.
+- **Replay:** a sequence that completed the instruction is remembered per agent, test, step, persona/data row and
+  instruction, and replayed in later runs without calling the AI. If the replay breaks (the page changed), the AI
+  continues from where it stopped and the new sequence is remembered. Turn it off with `ai.action_cache: false` or the
+  step's `"cache": false`; forget remembered sequences with **Forget remembered AI actions** on the agent page
+  (`DELETE /agents/:id/ai-action-cache`).
+- **Save as steps:** the run page lists every action. **Save as steps** replaces the AI step in the test case with
+  ordinary steps: reviewable, and no AI needed any more. Values that came from the data set row or fake values go back
+  to placeholders (`{{data.email}}`), and `only_personas` / `skip_personas` carry over.
+- **When to use it:** for flows that are tedious to script or change often (e.g. setting up state); keep classic steps
+  and assertions for what the test checks. AI actions do not assert; follow them with `assert_*` or `assert_ai`.
 
 **Kept self-healing.** With `ai.self_healing`, a broken selector is repaired by the AI from the live page.
 - **Within a run:** the repair is reused for the rest of the run without another AI call.

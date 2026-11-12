@@ -18,6 +18,7 @@ import type { TestCaseCreateInput } from '../../core/domain/test-case.js';
 import { AgentRepository } from '../../core/repositories/agent.repository.js';
 import { getLLMRouter } from '../../infra/llm/router.js';
 import { performanceTrend } from '../../modules/quality/performance.js';
+import { AiActionCache, expandAiStep, successfulActions } from '../../modules/quality/ai-actions.js';
 
 type Handler = (req: AuthenticatedRequest, res: Response) => Promise<void>;
 const wrap = (fn: Handler): RequestHandler => (req, res) => {
@@ -212,6 +213,35 @@ export function registerQualityRoutes(router: Router, roles: { viewer: RequestHa
 
   // ── Self-healing ──────────────────────────────────────────────────────────
   /** Write the selectors the AI repaired in this result back into the test case. Body: { stepIds?: number[] } */
+  // ── AI action steps ─────────────────────────────────────────────────────────
+  router.post('/runs/:runId/results/:resultId/ai-actions/apply', editor, audit('testcase.ai_actions.apply', 'testcase'), wrap(async (req, res) => {
+    const found = await loadResult(req, res);
+    if (!found) return;
+    const { result } = found;
+    const stepId = Number(req.body?.stepId);
+    const records: any[] = result.metadata?.aiActions ?? [];
+    const record = records.find((r) => r.stepId === stepId && r.done);
+    if (!record) return void res.status(400).json({ error: 'This result has no completed AI action for that step' });
+    const actions = successfulActions(record);
+    if (!actions.length) return void res.status(400).json({ error: 'The AI action did nothing that could be saved' });
+    const testCase = await testCases.findById(result.testCaseId, req.project!.id);
+    if (!testCase) return void res.status(404).json({ error: 'The test case no longer exists' });
+    const original = (result.metadata?.steps ?? []).find((s: any) => s.stepId === stepId)?.action;
+    const steps = original ? expandAiStep(testCase.steps, stepId, original, actions, result.metadata?.testData) : null;
+    if (!steps) return void res.status(409).json({ error: 'The test case changed: that step is no longer the AI step of this run' });
+    const updated = await testCases.update(testCase.id, { steps } as any, req.project!.id);
+    await runs.updateResult(result.id, { metadata: { ...result.metadata, aiActions: records.map((r) => (r.stepId === stepId ? { ...r, applied: true } : r)) } });
+    res.locals.audit = { entityId: testCase.id, details: { stepId, actions: actions.length, resultId: result.id } };
+    res.json({ testCaseId: testCase.id, steps: updated?.steps ?? steps, added: actions.length });
+  }));
+
+  router.delete('/agents/:id/ai-action-cache', editor, audit('agent.ai_action_cache.clear', 'agent'), wrap(async (req, res) => {
+    const agent = await new AgentRepository().findById(req.params.id, req.project!.id);
+    if (!agent) return void res.status(404).json({ error: 'Agent not found' });
+    const testCaseId = typeof req.query.testCaseId === 'string' ? req.query.testCaseId : undefined;
+    res.json({ cleared: await new AiActionCache().clear(agent.id, testCaseId) });
+  }));
+
   router.post('/runs/:runId/results/:resultId/apply-healing', editor, audit('testcase.healing.apply', 'testcase'), wrap(async (req, res) => {
     const found = await loadResult(req, res);
     if (!found) return;

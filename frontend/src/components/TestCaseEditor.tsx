@@ -183,6 +183,8 @@ export default function TestCaseEditor({ initial, onSaved, onCancel }: TestCaseE
             mock_route / block_route (target: URL pattern, e.g. <code>**/api/payments/**</code>; value <code>{'{"status": 500}'}</code>) to stub calls in UI tests.
             AI: assert_ai (value: the expectation in plain language, e.g. “the answer explains how to reset a password”; optional target element), or write
             the action as “Verify with AI that …”.
+            AI actions: write the step as “AI: add the cheapest product to the cart” (or action <code>ai</code> with the instruction as value): the AI
+            carries it out on the live page and later runs replay what worked; use <code>{'{{secrets.NAME}}'}</code> for passwords, the AI never sees them.
             Speed: assert_performance (optional target page to load fresh; value <code>{'{"lcp": 2500, "cls": 0.1, "tbt": 200, "max_regression": 0.25}'}</code>),
             or “Verify the page loads in under 2 seconds”.
             Test data: <code>{'{{data.column}}'}</code> (row of the data set), <code>{'{{fake.email}}'}</code> or <code>{'{{fake.email:buyer}}'}</code> (fictitious

@@ -13,6 +13,7 @@ import { A11yReport, describeA11y, scanAccessibility } from '../quality/accessib
 import { checkScreenshot, describeVisual, VisualEntry } from '../quality/visual.js';
 import { ApiState, checkJson, describeResponse, extractVars, mockRoute, sendRequest, statusMatches } from '../quality/api-testing.js';
 import { AiVerdict, describeVerdict, judgeExpectation, Judge } from '../quality/ai-assert.js';
+import { AiAction, AiActionError, AiActionRecord, describeActions, Planner, runAiAction, successfulActions } from '../quality/ai-actions.js';
 import { budgetFromSentence, checkPerformance, DEFAULT_BUDGETS, describePerformance, normalizeBudgets, PerfReport, performanceSettings } from '../quality/performance.js';
 
 export type StepKind =
@@ -23,7 +24,7 @@ export type StepKind =
   | 'assert_profile' | 'assert_object_access' | 'assert_field_access' | 'assert_record_access'
   | 'assert_accessible' | 'assert_screenshot'
   | 'http_request' | 'assert_status' | 'assert_json' | 'assert_header' | 'assert_response_time' | 'mock_route' | 'block_route'
-  | 'assert_ai' | 'assert_performance'
+  | 'assert_ai' | 'assert_performance' | 'ai_action'
   | 'manual';
 
 export interface StepOutcome {
@@ -47,6 +48,8 @@ export interface StepContext {
   api?: ApiState;
   /** Data set row of this test execution ({{data.field}}) and its fake values ({{fake.kind}}) */
   testData?: { row?: Record<string, any>; fake: { get(kind: string, label?: string): string; used(): Record<string, string> } };
+  /** AI action steps (instruction carried out by the AI). */
+  aiActions?: AiActionContext;
   /** AI judge for assert_ai steps (cache shared across the run). */
   ai?: { judge: Judge; outline: (page: Page) => Promise<string>; mask: (text: string) => string; cache: Map<string, Omit<AiVerdict, 'cached'>> };
 }
@@ -61,6 +64,15 @@ export interface QualityContext {
   visual: VisualEntry[];
   aiChecks?: AiVerdict[];
   performance?: PerfReport[];
+  aiActions?: AiActionRecord[];
+}
+
+/** What AI action steps need from the run: the planner, the replay cache and placeholder resolution. */
+export interface AiActionContext {
+  plan?: Planner;
+  cache?: { get(stepId: number, instruction: string): Promise<AiAction[] | null>; save(stepId: number, instruction: string, actions: AiAction[]): Promise<void> };
+  /** Resolves {{secrets.X}} and other placeholders in the values the AI chose */
+  resolve: (text: string) => string;
 }
 
 /** Default text of Salesforce's "no access" pages. */
@@ -86,6 +98,7 @@ export function classifyAction(rawAction: string, step: Pick<TestStep, 'target' 
     'assert performance': 'assert_performance', 'check performance': 'assert_performance', 'measure performance': 'assert_performance',
     'performance check': 'assert_performance', 'page speed': 'assert_performance', 'assert page speed': 'assert_performance',
     'check page speed': 'assert_performance', 'web vitals': 'assert_performance', 'assert web vitals': 'assert_performance',
+    'ai': 'ai_action', 'ai action': 'ai_action', 'ai step': 'ai_action', 'do with ai': 'ai_action',
   };
   if (exact[a]) return exact[a];
   // "GET /api/orders", "POST https://…"
@@ -96,6 +109,8 @@ export function classifyAction(rawAction: string, step: Pick<TestStep, 'target' 
   if (/^(mock|stub|fake)\b/.test(a)) return 'mock_route';
   if (/^(verify|check|assert|confirm|ensure|validate|judge)\s+(with|using|by)\s+(the\s+)?ai\b/.test(a)) return 'assert_ai';
   if (/^(measure|check|test|audit)\b.*\b(performance|page ?speed|web vitals|load(ing)? time)\b/.test(a)) return 'assert_performance';
+  // "AI: add the cheapest product to the cart", "Do with AI: …"
+  if (/^(ai|ai action|ai step|with ai|using ai|do with (the )?ai)\s*:/.test(a) || /^(do|perform|complete|carry out)\s+(with|using)\s+(the\s+)?ai\b/.test(a)) return 'ai_action';
   if (/^(assert|verify|expect|validate|confirm|ensure|check that|should|observe|see)\b/.test(a)) {
     if (/\b(access denied|insufficient privileges|no access|not authori[sz]ed|forbidden|cannot access|can't access)\b/.test(a)) return 'assert_access_denied';
     if (/\b(status code|http status|response status)\b/.test(a)) return 'assert_status';
@@ -419,6 +434,44 @@ export async function executeStep(step: TestStep, ctx: StepContext, targetOverri
       const message = describePerformance(report);
       if (!report.passed && data.report_only !== true) throw new Error(message);
       return { status: 'passed', message };
+    }
+    case 'ai_action': {
+      const ai = ctx.aiActions;
+      if (!ai) throw new Error('AI action steps need a run context');
+      const data = step.data ?? {};
+      const fromAction = step.action.replace(/^\s*(ai|ai[ _]action|ai[ _]step|with ai|using ai|do with (the )?ai)\s*:\s*/i, '')
+        .replace(/^\s*(do|perform|complete|carry out)\s+(with|using)\s+(the\s+)?ai\s*:?\s*/i, '').trim();
+      const instruction = String(data.value ?? data.instruction ?? (fromAction && fromAction !== step.action.trim() ? fromAction : '')).trim();
+      if (!instruction) need('the instruction in data.value, or written as "AI: …"');
+      const useCache = data.cache !== false && ctx.config?.ai?.action_cache !== false && !!ai.cache;
+      const cached = useCache ? await ai.cache!.get(step.stepId, instruction).catch(() => null) : null;
+      const inner: StepContext = { ...ctx, aiActions: undefined };
+      const execute = async (a: AiAction) => {
+        const v = a.value !== undefined ? ai.resolve(a.value) : undefined;
+        const sub: TestStep = {
+          stepId: step.stepId,
+          action: a.action,
+          ...(a.target ? { target: ai.resolve(a.target) } : {}),
+          ...(v !== undefined ? { data: a.action === 'wait' ? { ms: v } : { value: v } } : {}),
+        };
+        await executeStep(sub, inner);
+      };
+      let record: AiActionRecord;
+      try {
+        record = await runAiAction(page, instruction, {
+          stepId: step.stepId, baseUrl: ctx.baseUrl, plan: ai.plan, outline: ctx.ai?.outline ?? (async () => ''), mask: ctx.ai?.mask ?? ((t) => t),
+          execute, cached, maxActions: data.max_actions,
+        });
+      } catch (e: any) {
+        if (e instanceof AiActionError) ctx.quality?.aiActions?.push(e.record);
+        throw e;
+      }
+      if (useCache && !record.replayed) {
+        await ai.cache!.save(step.stepId, instruction, successfulActions(record)).then(() => { record.cacheSaved = true; }).catch(() => undefined);
+      }
+      ctx.quality?.aiActions?.push(record);
+      const how = record.replayed ? 'replayed from earlier runs, no AI call' : `${record.rounds} AI round(s)${record.provider ? `, ${record.provider}` : ''}`;
+      return { status: 'passed', message: `AI did "${instruction}" (${how}): ${describeActions(record.actions) || 'nothing to do'}` };
     }
     case 'salesforce_login': {
       const sessions = requireSalesforce(ctx);

@@ -138,7 +138,7 @@ export function resolvePlaceholders(
   text: string,
   secrets: Record<string, string>,
   vars?: Record<string, string>,
-  extra: { data?: Record<string, any> | null; fake?: { get(kind: string, label?: string): string } } = {},
+  extra: { data?: Record<string, any> | null; fake?: { get(kind: string, label?: string): string }; keepSecrets?: boolean } = {},
 ): string {
   return text.replace(/\{\{\s*(secrets|env|vars|data|fake)\.([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*)(?::([\w-]{1,40}))?\s*\}\}/g, (match, kind, name, label) => {
     if (label !== undefined && kind !== 'fake') return match;
@@ -154,6 +154,8 @@ export function resolvePlaceholders(
       return cur === null ? '' : typeof cur === 'object' ? JSON.stringify(cur) : String(cur);
     }
     if (name.includes('.')) return match;
+    // Text for the AI: secrets and environment values stay placeholders, resolved only when an action runs
+    if (extra.keepSecrets && (kind === 'secrets' || kind === 'env')) return match;
     if (kind === 'secrets') {
       if (!(name in secrets)) throw new Error(`Unknown secret "${name}" — define it in the agent's secrets`);
       return secrets[name];

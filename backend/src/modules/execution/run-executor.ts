@@ -28,6 +28,7 @@ import { Quarantine, QuarantineRepository } from '../quality/quarantine.js';
 import { salesforceSettings, testPersonas } from '../salesforce/personas.js';
 import { SalesforceSessions } from '../salesforce/session.js';
 import { TestDataRepository } from '../../core/repositories/test-data.repository.js';
+import { AiActionCache } from '../quality/ai-actions.js';
 import { applyThrottling, checkPerformance, pageKey, describePerformance, PERF_INIT_SCRIPT, performanceSettings } from '../quality/performance.js';
 import { createFaker, datasetRows, FakeValues, MAX_DATASET_ROWS, rowLabel, seedFor, testDataSettings } from '../quality/test-data-gen.js';
 
@@ -78,6 +79,8 @@ export class RunExecutor {
   private quarantined = new Map<string, Quarantine>();
   /** Selectors healed earlier in this run: reused without another model call. */
   private healingCache = new HealingCache();
+  /** Action sequences that completed AI action steps, replayed without the AI */
+  private aiActionCache = new AiActionCache();
 
   constructor(private runId: string, private agent: Agent, private testCases: TestCase[]) {
     this.config = decryptAgentConfig(agent.config);
@@ -148,7 +151,9 @@ export class RunExecutor {
    */
   private resolveStep(step: TestStep, ctx: StepContext): TestStep {
     const persona = ctx.persona;
-    const extra = { data: ctx.testData?.row ?? null, fake: ctx.testData?.fake };
+    // AI action steps: the instruction goes to the AI, so secrets stay placeholders until an action runs
+    const keepSecrets = classifyAction(step.action, step) === 'ai_action';
+    const extra = { data: ctx.testData?.row ?? null, fake: ctx.testData?.fake, keepSecrets };
     const resolve = (v: any): any => {
       if (typeof v === 'string') return resolvePlaceholders(v, this.secrets, ctx.api?.vars, extra);
       if (Array.isArray(v)) return v.map(resolve);
@@ -284,6 +289,7 @@ export class RunExecutor {
       visual: [],
       aiChecks: [],
       performance: [],
+      aiActions: [],
     };
     const perf = performanceSettings(config);
     const measuresSpeed = perf.mode !== 'off' || (testCase.steps ?? []).some((s) => classifyAction(s.action, s) === 'assert_performance');
@@ -313,6 +319,8 @@ export class RunExecutor {
         : Array.isArray(v) ? v.map(resolveRow)
           : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, resolveRow(x)])) : v;
       testData = { fake, ...(row ? { row: resolveRow(row.values) } : {}) };
+      const variant = `${persona ?? ''}#${row?.index ?? ''}`;
+      const ctxRef: { api?: StepContext['api'] } = {};
       const ctx: StepContext = {
         page,
         baseUrl: config.base_url,
@@ -323,6 +331,19 @@ export class RunExecutor {
         quality,
         testData,
         api: { vars: {} },
+        aiActions: {
+          plan: getLLMRouter().hasAnyProvider()
+            ? async (system, user) => {
+              const r = await getLLMRouter().chat([{ role: 'system', content: system }, { role: 'user', content: user }], 'analysis', { preferred: config.ai?.provider, maxTokens: 600 });
+              return { content: r.content, provider: r.provider };
+            }
+            : undefined,
+          cache: {
+            get: (stepId, instruction) => this.aiActionCache.get({ agentId: this.agent.id, testCaseId: testCase.id, stepId, variant, instruction }),
+            save: (stepId, instruction, actions) => this.aiActionCache.save({ agentId: this.agent.id, testCaseId: testCase.id, stepId, variant, instruction }, actions),
+          },
+          resolve: (text) => resolvePlaceholders(text, this.secrets, ctxRef.api?.vars, { data: testData?.row ?? null, fake: testData?.fake }),
+        },
         ai: {
           judge: async (system, user) => {
             const router = getLLMRouter();
@@ -336,6 +357,7 @@ export class RunExecutor {
         },
       };
 
+      ctxRef.api = ctx.api;
       const steps: TestStep[] = testCase.steps ?? [];
       if (steps.length === 0) throw new Error('Test case has no steps');
 
@@ -443,6 +465,7 @@ export class RunExecutor {
         ...(quality.visual.length ? { visual: quality.visual } : {}),
         ...(quality.aiChecks?.length ? { aiChecks: quality.aiChecks } : {}),
         ...(quality.performance?.length ? { performance: quality.performance } : {}),
+        ...(quality.aiActions?.length ? { aiActions: JSON.parse(this.mask(JSON.stringify(quality.aiActions))) } : {}),
         ...(healed.length ? { healing: { steps: healed, applied: healingApplied } } : {}),
         ...(kept.traceMasked ? { traceRedactions: kept.traceMasked } : {}),
         ...this.testDataMeta(row, testData),

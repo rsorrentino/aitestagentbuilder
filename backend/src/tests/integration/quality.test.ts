@@ -21,6 +21,7 @@ const ARTIFACTS = join(workDir, 'artifacts');
 // Fake Copilot CLI: answers selector-healing prompts with "#new-id" and counts its calls.
 const isWindows = process.platform === 'win32';
 const callsFile = join(workDir, 'copilot-calls.txt');
+const promptsFile = join(workDir, 'copilot-prompts.txt');
 const fakeScript = isWindows ? join(workDir, 'node_modules', 'fake-copilot', 'index.js') : join(workDir, 'copilot');
 const fakeCli = isWindows ? join(workDir, 'copilot.cmd') : fakeScript;
 mkdirSync(dirname(fakeScript), { recursive: true });
@@ -36,6 +37,12 @@ else if (prompt.includes('You are a strict QA judge')) {
   if (expectation.includes('unsure')) console.log('{"verdict": "unsure", "confidence": 0.3, "reason": "The content does not say"}');
   else if (expectation.includes('everything has a name') && prompt.includes('Everything here has a name')) console.log('{"verdict": "pass", "confidence": 0.92, "reason": "The page says everything has a name"}');
   else console.log('{"verdict": "fail", "confidence": 0.85, "reason": "No shopping cart is shown on the page"}');
+}
+else if (prompt.includes('You operate a web page for an automated UI test')) {
+  fs.appendFileSync(${JSON.stringify(promptsFile)}, prompt + '\\n----\\n');
+  if (prompt.includes('unicorn')) console.log('{"actions": [], "done": true, "failed": true, "reason": "The shop sells no unicorns"}');
+  else if (prompt.includes('Cart: Pen')) console.log('{"actions": [], "done": true, "reason": "The cheapest product is in the cart"}');
+  else console.log('{"actions": [{"action": "fill", "target": "#pw", "value": "{{secrets.SHOP_PW}}"}, {"action": "click", "target": "#add-2"}], "done": false, "reason": "The pen is the cheapest"}');
 }
 else if (prompt.includes('You generate test data for software tests')) console.log(JSON.stringify([
   { _label: 'valid', email: 'ada@example.com', qty: 2 }, { _label: 'empty email', email: '', qty: 1, 'bad key': 'x' }, 'not a row']));
@@ -148,6 +155,11 @@ const PAGES: Record<string, (q: URLSearchParams) => string> = {
       .then((d) => { document.getElementById('price').textContent = 'Price: ' + d.price; })
       .catch(() => { document.getElementById('price').textContent = 'Price unavailable'; });
   </script>`),
+  // AI action steps: the pen is the cheapest product; the password field shows what was typed (masked by the run)
+  '/shop': () => page('Shop', `<p id="cart">Cart: empty</p>
+    <div>Lamp 40 € <button id="add-1" type="button" onclick="document.getElementById('cart').textContent='Cart: Lamp'">Add lamp</button></div>
+    <div>Pen 2 € <button id="add-2" type="button" onclick="document.getElementById('cart').textContent='Cart: Pen'">Add pen</button></div>
+    <label for="pw">Password</label><input id="pw" type="password">`),
   // Page speed: '/speed' answers after ?delay ms (time to first byte); '/heavy' blocks the main thread
   '/heavy': () => page('Heavy', '<p>Busy</p><script>const t = Date.now(); while (Date.now() - t < 300) {}</script>'),
   // Echoes a form back: data-driven tests fill it and check the result
@@ -716,6 +728,63 @@ describe('quality extensions (integration)', () => {
     assert.ok(agentWide.metrics.load >= 140, `150 ms of added latency: ${JSON.stringify(agentWide.metrics)}`);
     const bad = await call('PUT', `/api/v1/agents/${throttled}`, { config: { checks: { performance: 'always' } } });
     assert.equal(bad.status, 400);
+  });
+
+  it('carries out AI action steps, replays them without the AI and saves them as steps', async (t) => {
+    if (!dbAvailable) return t.skip('database not available');
+    const agent = await newAgent('AI actions', { evidence: { trace: 'off', video: 'off' }, secrets: { SHOP_PW: 'Sh0p-S3cret' } });
+    const buy = await newTest('Buy the cheapest product', [
+      { action: 'navigate', target: '/shop' },
+      { action: 'AI: add the cheapest product to the cart, after entering the password {{secrets.SHOP_PW}}' },
+      { action: 'assert_text', target: '#cart', data: { value: 'Cart: Pen' } },
+    ]);
+    const unicorn = await newTest('Buy a unicorn', [{ action: 'navigate', target: '/shop' }, { action: 'ai', data: { value: 'Add a unicorn to the cart' } }]);
+
+    const before = copilotCalls();
+    const first = await run(agent, [buy, unicorn]);
+    const bought = first.results.find((x: any) => x.testCaseId === buy);
+    assert.equal(bought.status, 'passed', bought.error);
+    assert.equal(copilotCalls() - before, 3, 'two rounds for the purchase, one for the unicorn');
+    const record = bought.metadata.aiActions[0];
+    assert.equal(record.stepId, 2);
+    assert.equal(record.rounds, 2);
+    assert.equal(record.cacheSaved, true);
+    assert.deepEqual(record.actions.map((a: any) => [a.action, a.target, a.value, a.ok]), [['fill', '#pw', '{{secrets.SHOP_PW}}', true], ['click', '#add-2', undefined, true]]);
+    assert.match(bought.metadata.steps[1].message, /AI did .* \(2 AI round\(s\)/);
+    const prompts = readFileSync(promptsFile, 'utf8');
+    assert.ok(prompts.includes('{{secrets.SHOP_PW}}'), 'the AI sees the placeholder');
+    assert.ok(!prompts.includes('Sh0p-S3cret'), 'the AI never sees the secret');
+    assert.ok(!JSON.stringify(bought).includes('Sh0p-S3cret'), 'nor does the result');
+
+    const failed = first.results.find((x: any) => x.testCaseId === unicorn);
+    assert.equal(failed.status, 'failed');
+    assert.match(failed.error, /The AI could not complete "Add a unicorn to the cart": The shop sells no unicorns/);
+    assert.equal(first.metadata.triage.groups[0].category, 'unknown');
+    assert.equal(failed.metadata.aiActions[0].done, false);
+
+    // The next run replays the cached actions: no AI call
+    const callsBefore = copilotCalls();
+    const second = await run(agent, [buy]);
+    assert.equal(second.results[0].status, 'passed', second.results[0].error);
+    assert.equal(second.results[0].metadata.aiActions[0].replayed, true);
+    assert.equal(copilotCalls(), callsBefore);
+
+    // Save the AI step as ordinary steps
+    const apply = await call('POST', `/api/v1/runs/${second.id}/results/${second.results[0].id}/ai-actions/apply`, { stepId: 2 });
+    assert.equal(apply.status, 200, apply.text);
+    const tc = (await call('GET', `/api/v1/testcases/${buy}`)).data;
+    assert.deepEqual(tc.steps.map((s: any) => [s.stepId, s.action, s.target, s.data?.value]), [
+      [1, 'navigate', '/shop', undefined], [2, 'fill', '#pw', '{{secrets.SHOP_PW}}'], [3, 'click', '#add-2', undefined], [4, 'assert_text', '#cart', 'Cart: Pen'],
+    ]);
+    const again = await call('POST', `/api/v1/runs/${second.id}/results/${second.results[0].id}/ai-actions/apply`, { stepId: 2 });
+    assert.equal(again.status, 409, 'the step is no longer the AI step');
+    const third = await run(agent, [buy]);
+    assert.equal(third.results[0].status, 'passed', third.results[0].error);
+    assert.equal(third.results[0].metadata.aiActions, undefined);
+
+    const cleared = await call('DELETE', `/api/v1/agents/${agent}/ai-action-cache`);
+    assert.equal(cleared.status, 200, cleared.text);
+    assert.equal(cleared.data.cleared, 1);
   });
 });
 

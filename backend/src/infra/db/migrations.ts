@@ -186,4 +186,22 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_quarantine_project ON test_quarantine(project_id);
     `,
   },
+  {
+    version: 7,
+    name: 'AI action cache',
+    sql: `
+      CREATE TABLE IF NOT EXISTS ai_action_cache (
+        agent_id VARCHAR(255) NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+        test_case_id VARCHAR(255) NOT NULL REFERENCES test_cases(id) ON DELETE CASCADE,
+        step_id INTEGER NOT NULL,
+        variant VARCHAR(200) NOT NULL DEFAULT '',
+        instruction_hash VARCHAR(64) NOT NULL,
+        actions JSONB NOT NULL,
+        uses INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (agent_id, test_case_id, step_id, variant, instruction_hash)
+      );
+    `,
+  },
 ];

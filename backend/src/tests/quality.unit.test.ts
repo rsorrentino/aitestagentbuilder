@@ -593,3 +593,110 @@ describe('page speed', () => {
     ] as Array<[string, string]>) assert.equal(classifyAction(action, {}), kind, action);
   });
 });
+
+describe('AI action steps', () => {
+  it('parses plans and keeps only valid primitive actions', async () => {
+    const { parsePlan, allowedNavigation } = await import('../modules/quality/ai-actions.js');
+    const p = parsePlan('```json\n{"actions":[{"action":"Click","target":"#buy"},{"action":"rm -rf","target":"/"},{"action":"fill","value":"x"},{"action":"press","value":"Enter"}],"done":false,"reason":"buying"}\n```');
+    assert.deepEqual(p.actions, [{ action: 'click', target: '#buy' }, { action: 'press', value: 'Enter' }]);
+    assert.equal(p.reason, 'buying');
+    assert.deepEqual(parsePlan('{"actions": [], "done": true, "failed": true, "reason": "no such product"}'), { actions: [], done: true, failed: true, reason: 'no such product' });
+    assert.deepEqual(parsePlan('I would click the button'), { actions: [], done: false, failed: false, reason: '' });
+    assert.equal(allowedNavigation('/cart', 'https://shop.example.com/'), true);
+    assert.equal(allowedNavigation('https://shop.example.com/cart', 'https://shop.example.com/'), true);
+    assert.equal(allowedNavigation('https://evil.example.net/', 'https://shop.example.com/'), false);
+    assert.equal(allowedNavigation('javascript:alert(1)', 'https://shop.example.com/'), false);
+  });
+
+  it('turns row and fake values back into placeholders when saving steps', async () => {
+    const { templatize, expandAiStep } = await import('../modules/quality/ai-actions.js');
+    const td = { row: { email: 'ada@example.com', qty: 2, pw: '{{secrets.PW}}' }, fake: { 'fullName:buyer': 'Ada Rossi' } };
+    assert.equal(templatize('Ada Rossi <ada@example.com>', td), '{{fake.fullName:buyer}} <{{data.email}}>');
+    assert.equal(templatize('2', td), '2', 'short values are left alone');
+    const steps = [
+      { stepId: 1, action: 'navigate', target: '/shop' },
+      { stepId: 2, action: 'AI: buy the cheapest', data: { only_personas: ['rep'] } },
+      { stepId: 3, action: 'assert_text', target: '#cart', data: { value: '1 item' } },
+    ];
+    const out = expandAiStep(steps, 2, 'AI: buy the cheapest', [{ action: 'click', target: '#add-2' }, { action: 'fill', target: '#mail', value: 'ada@example.com' }], td)!;
+    assert.deepEqual(out, [
+      { action: 'navigate', target: '/shop' },
+      { action: 'click', target: '#add-2', data: { only_personas: ['rep'] } },
+      { action: 'fill', target: '#mail', data: { value: '{{data.email}}', only_personas: ['rep'] } },
+      { action: 'assert_text', target: '#cart', data: { value: '1 item' } },
+    ]);
+    assert.equal(expandAiStep(steps, 2, 'AI: something else', [{ action: 'click', target: '#x' }]), null, 'the step changed since the run');
+  });
+
+  it('carries out an instruction on a live page, replays it, and keeps secrets from the AI', async () => {
+    const { launchBrowser, outlinePage } = await import('../modules/execution/browser.js');
+    const { runAiAction, successfulActions, AiActionError } = await import('../modules/quality/ai-actions.js');
+    const { executeStep } = await import('../modules/execution/step-runner.js');
+    const { resolvePlaceholders } = await import('../core/domain/agent-secrets.js');
+    const browser = await launchBrowser();
+    try {
+      const page = await browser.newPage();
+      const shop = `<h1>Shop</h1><p id="cart">Cart: empty</p>
+        <div>Lamp 40 € <button id="add-1" onclick="document.getElementById('cart').textContent='Cart: Lamp'">Add</button></div>
+        <div>Pen 2 € <button id="add-2" onclick="document.getElementById('cart').textContent='Cart: Pen'">Add</button></div>
+        <label for="pw">Password</label><input id="pw" type="password">`;
+      await page.setContent(shop);
+      const prompts: string[] = [];
+      const plan = async (_system: string, user: string) => {
+        prompts.push(user);
+        if (user.includes('Cart: Pen')) return { content: '{"actions": [], "done": true, "reason": "The pen is in the cart"}', provider: 'stub' };
+        return { content: '{"actions": [{"action": "fill", "target": "#pw", "value": "{{secrets.PW}}"}, {"action": "click", "target": "#add-2"}], "done": false, "reason": "Pen is cheapest"}', provider: 'stub' };
+      };
+      const ctx: any = { page, baseUrl: 'http://localhost/', stepTimeout: 2000, config: {} };
+      const execute = async (a: any) => {
+        const v = a.value !== undefined ? resolvePlaceholders(a.value, { PW: 'S3cr3t!' }) : undefined;
+        await executeStep({ stepId: 1, action: a.action, target: a.target, ...(v !== undefined ? { data: { value: v } } : {}) }, ctx);
+      };
+      const mask = (t: string) => t.split('S3cr3t!').join('••••');
+      const opts = { stepId: 1, baseUrl: 'http://localhost/', plan, outline: (p: any) => outlinePage(p, 40), mask, execute };
+      const rec = await runAiAction(page, 'Add the cheapest product to the cart', opts);
+      assert.equal(rec.done, true);
+      assert.equal(rec.rounds, 2);
+      assert.equal(rec.replayed, false);
+      assert.equal(await page.inputValue('#pw'), 'S3cr3t!', 'the secret is typed');
+      assert.ok(prompts.every((p) => !p.includes('S3cr3t!')), 'the AI never sees the secret');
+      assert.match(prompts[1], /1\. fill #pw "\{\{secrets\.PW\}\}" → ok/);
+      assert.deepEqual(successfulActions(rec), [{ action: 'fill', target: '#pw', value: '{{secrets.PW}}' }, { action: 'click', target: '#add-2' }]);
+
+      // Replay: no AI call
+      await page.setContent(shop);
+      const replay = await runAiAction(page, 'Add the cheapest product to the cart', { ...opts, cached: successfulActions(rec), plan: undefined });
+      assert.equal(replay.replayed, true);
+      assert.equal(await page.textContent('#cart'), 'Cart: Pen');
+      assert.equal(prompts.length, 2);
+
+      // A broken replay falls back to the AI
+      await page.setContent(shop);
+      const fallback = await runAiAction(page, 'Add the cheapest product to the cart', { ...opts, cached: [{ action: 'click', target: '#gone' }] });
+      assert.equal(fallback.replayed, false);
+      assert.equal(fallback.actions[0].ok, false);
+      assert.equal(fallback.actions[0].cached, true);
+      assert.equal(await page.textContent('#cart'), 'Cart: Pen');
+
+      // The AI gives up, or runs out of rounds
+      await assert.rejects(runAiAction(page, 'Buy a unicorn', { ...opts, plan: async () => ({ content: '{"actions": [], "done": true, "failed": true, "reason": "No unicorns sold here"}' }) }),
+        (e: any) => e instanceof AiActionError && /could not complete "Buy a unicorn": No unicorns sold here/.test(e.message));
+      await assert.rejects(runAiAction(page, 'Loop', { ...opts, maxActions: 2, plan: async () => ({ content: '{"actions": [{"action": "click", "target": "#add-1"}], "done": false}' }) }),
+        /did not complete "Loop" within 2 round\(s\) and 2 action\(s\)/);
+      await assert.rejects(runAiAction(page, 'Leave', { ...opts, plan: async () => ({ content: '{"actions": [{"action": "navigate", "target": "https://evil.example.net/"}], "done": false}' }), maxActions: 1 }),
+        (e: any) => /outside the application/.test(e.record.actions[0].error));
+      await assert.rejects(runAiAction(page, 'No provider', { ...opts, plan: undefined }), /need an AI provider/);
+    } finally {
+      await browser.close();
+    }
+  });
+
+  it('classifies AI action steps and keeps secrets out of their instruction', async () => {
+    for (const [action, kind] of [
+      ['ai', 'ai_action'], ['AI: add the cheapest product to the cart', 'ai_action'], ['Do with AI: fill the form', 'ai_action'],
+      ['Perform using the AI the checkout', 'ai_action'], ['Verify with AI that the cart has 1 item', 'assert_ai'], ['Click the AI assistant', 'click'],
+    ] as Array<[string, string]>) assert.equal(classifyAction(action, {}), kind, action);
+    const { resolvePlaceholders } = await import('../core/domain/agent-secrets.js');
+    assert.equal(resolvePlaceholders('log in with {{secrets.PW}} as {{data.user}}', { PW: 'x' }, {}, { data: { user: 'ada' }, keepSecrets: true }), 'log in with {{secrets.PW}} as ada');
+  });
+});

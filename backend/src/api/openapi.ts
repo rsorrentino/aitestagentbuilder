@@ -137,6 +137,12 @@ export function buildOpenApi(serverUrl: string) {
       '/agents/{id}/performance': {
         get: op('Quality', 'Page speed trend of an agent: per page, samples (oldest first), latest and median metrics', { parameters: [id(), q('days', { type: 'integer' })] }),
       },
+      '/runs/{runId}/results/{resultId}/ai-actions/apply': {
+        post: op('Quality', 'Replace an AI action step of the test case with the ordinary steps the AI performed ({ stepId })', { parameters: [id('runId'), id('resultId')] }),
+      },
+      '/agents/{id}/ai-action-cache': {
+        delete: op('Quality', 'Forget cached AI action sequences of an agent (optionally ?testCaseId=): the AI decides again next run', { parameters: [id(), q('testCaseId', { type: 'string' })] }),
+      },
       '/quarantine': { get: op('Quality', 'Quarantined (flaky) test cases of the project') },
       '/testcases/{id}/quarantine': {
         post: op('Quality', 'Quarantine a test case: it runs, but its failures do not fail runs', { parameters: [id()] }),

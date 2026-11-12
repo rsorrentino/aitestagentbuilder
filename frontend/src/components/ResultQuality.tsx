@@ -29,7 +29,8 @@ export default function ResultQuality({ runId, result, canEdit, onChanged }: Pro
   const aiChecks: any[] = result.metadata?.aiChecks ?? [];
   const testData = result.metadata?.testData;
   const perf: any[] = result.metadata?.performance ?? [];
-  if (!ev.trace && !ev.video && !a11y.length && !visual.length && !healing?.steps?.length && !aiChecks.length && !testData && !perf.length) return null;
+  const aiActions: any[] = result.metadata?.aiActions ?? [];
+  if (!ev.trace && !ev.video && !a11y.length && !visual.length && !healing?.steps?.length && !aiChecks.length && !testData && !perf.length && !aiActions.length) return null;
 
   const act = async (key: string, fn: () => Promise<string>) => {
     setBusy(key);
@@ -47,6 +48,11 @@ export default function ResultQuality({ runId, result, canEdit, onChanged }: Pro
   const approve = (v: any) => act(`visual-${v.name}`, async () => {
     await api.post(`/runs/${runId}/results/${result.id}/visual/approve`, { name: v.name, persona: v.persona, viewport: v.viewport });
     return `New baseline saved for “${v.name}”`;
+  });
+
+  const saveAiSteps = (stepId: number) => act(`ai-${stepId}`, async () => {
+    const res = await api.post(`/runs/${runId}/results/${result.id}/ai-actions/apply`, { stepId });
+    return `Step ${stepId} replaced by ${res.data.added} ordinary step(s) in the test case`;
   });
 
   const applyHealing = () => act('healing', async () => {
@@ -143,6 +149,43 @@ export default function ResultQuality({ runId, result, canEdit, onChanged }: Pro
               )}
             </div>
           ))}
+        </section>
+      )}
+
+      {aiActions.length > 0 && (
+        <section aria-label="AI actions">
+          <h4 className="mb-2">🧭 AI actions</h4>
+          {aiActions.map((r) => (
+            <div key={r.stepId} className="mb-3" data-testid={`ai-action-${r.stepId}`}>
+              <div className="text-sm">
+                <strong>Step {r.stepId}:</strong> {r.instruction}{' '}
+                <span className={r.done ? 'text-success' : 'text-danger'} style={{ fontWeight: 600 }}>{r.done ? 'done' : 'not completed'}</span>
+                <span className="text-muted">
+                  {' · '}{r.replayed ? 'replayed from earlier runs (no AI call)' : `${r.rounds} AI round(s)${r.provider ? ` · ${r.provider}` : ''}`}
+                  {r.cacheSaved ? ' · remembered for next runs' : ''}
+                </span>
+              </div>
+              {r.reason && <div className="text-sm text-muted">AI: {r.reason}</div>}
+              <ol className="text-sm" style={{ margin: '4px 0 6px 18px' }}>
+                {r.actions.map((a: any, i: number) => (
+                  <li key={i} style={a.ok ? undefined : { color: 'var(--danger)' }}>
+                    <span className="code">{a.action}</span>{a.target ? <> <span className="code">{a.target}</span></> : null}
+                    {a.value !== undefined ? <> = <span className="code">{a.value}</span></> : null}
+                    {a.cached ? <span className="text-muted"> (cached)</span> : null}
+                    {a.ok ? null : <> — {a.error}</>}
+                  </li>
+                ))}
+              </ol>
+              {r.applied ? (
+                <span className="badge badge-info">saved as steps</span>
+              ) : canEdit && r.done && r.actions.some((a: any) => a.ok) && (
+                <button type="button" className="btn btn-secondary btn-sm" disabled={busy !== null} onClick={() => saveAiSteps(r.stepId)}>
+                  {busy === `ai-${r.stepId}` ? 'Saving…' : 'Save as steps'}
+                </button>
+              )}
+            </div>
+          ))}
+          <p className="form-hint">“Save as steps” replaces the AI step in the test case with these actions: reviewable, and no AI needed any more.</p>
         </section>
       )}
 

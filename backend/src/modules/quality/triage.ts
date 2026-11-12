@@ -64,6 +64,7 @@ const RULES: Array<{ category: FailureCategory; test: RegExp; reason: string }> 
   // App bug: the application behaved differently from what the test expects
   { category: 'app_bug', test: /Expected .* to contain|Expected the page to contain|Expected URL to contain|Expected title to contain|Expected access to be denied|Unexpected access to|Expected profile|is missing permission set|must not have permission set|not to be visible|differs from the baseline|exceeds the performance budget|slower than the baseline .* of earlier runs|changed size compared with the baseline|accessibility violation/i, reason: 'The application did not show or allow what the test expects' },
   { category: 'app_bug', test: /AI judged .*: fail\b/i, reason: 'The AI judged that the page does not meet the expectation' },
+  { category: 'unknown', test: /The AI (could not|did not) complete/i, reason: 'An AI action step did not reach its goal: read the AI\'s reason and the evidence (app change or unclear instruction)' },
   { category: 'unknown', test: /AI judged .*: (unsure|pass, confidence)/i, reason: 'The AI could not decide with enough confidence: check the evidence' },
 ];
 

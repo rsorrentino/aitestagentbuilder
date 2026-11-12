@@ -30,6 +30,7 @@ export default function AgentQualityCard({ agentId, config, canEdit, onSaved }: 
     selfHealing: !!config.ai?.self_healing,
     autoApply: !!config.ai?.auto_apply_healing,
     aiTriage: !!config.ai?.triage,
+    actionCache: config.ai?.action_cache !== false,
     qAuto: !!config.quarantine?.auto,
     qFlips: Number(config.quarantine?.flips ?? 3),
     qRelease: Number(config.quarantine?.release_after ?? 5),
@@ -59,7 +60,7 @@ export default function AgentQualityCard({ agentId, config, canEdit, onSaved }: 
           checks: { ...(config.checks ?? {}), accessibility: form.accessibility, accessibility_options: { level: form.level, minImpact: form.minImpact } },
           evidence: { trace: form.trace, video: form.video },
           quarantine: { ...(config.quarantine ?? {}), auto: form.qAuto, flips: form.qFlips, release_after: form.qRelease },
-          ai: { ...(config.ai ?? {}), self_healing: form.selfHealing, auto_apply_healing: form.selfHealing && form.autoApply, triage: form.aiTriage },
+          ai: { ...(config.ai ?? {}), self_healing: form.selfHealing, auto_apply_healing: form.selfHealing && form.autoApply, triage: form.aiTriage, action_cache: form.actionCache },
         },
       });
       onSaved(res.data);
@@ -145,6 +146,20 @@ export default function AgentQualityCard({ agentId, config, canEdit, onSaved }: 
                 <input type="checkbox" checked={form.aiTriage} onChange={(e) => set({ aiTriage: e.target.checked })} />
                 Explain failed runs with AI automatically (one call per failed run; rules-based triage always runs)
               </label>
+              <label className="flex gap-2 mt-2" style={{ alignItems: 'center' }}>
+                <input type="checkbox" checked={form.actionCache} onChange={(e) => set({ actionCache: e.target.checked })} />
+                Replay AI action steps that worked before (no AI call while the page still fits)
+              </label>
+              {canEdit && (
+                <button type="button" className="btn btn-ghost btn-sm mt-1" onClick={async () => {
+                  try {
+                    const res = await api.delete(`/agents/${agentId}/ai-action-cache`);
+                    setMessage({ ok: true, text: `Forgot ${res.data.cleared} remembered AI action(s): the AI decides again next run` });
+                  } catch (err) {
+                    setMessage({ ok: false, text: errorMessage(err) });
+                  }
+                }}>Forget remembered AI actions</button>
+              )}
             </div>
             <div className="form-group">
               <label className="flex gap-2" style={{ alignItems: 'center' }}>

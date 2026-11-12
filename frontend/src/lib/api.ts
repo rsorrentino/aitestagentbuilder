@@ -150,6 +150,7 @@ export const STEP_ACTIONS = [
   'http_request', 'assert_status', 'assert_json', 'assert_header', 'assert_response_time', 'mock_route', 'block_route',
   'assert_ai',
   'assert_performance',
+  'ai',
 ];
 export const AI_PROVIDERS = [
   { value: '', label: 'Automatic (best available)' },
