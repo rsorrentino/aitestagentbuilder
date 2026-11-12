@@ -9,6 +9,7 @@
  *   config.auth.profiles[].password / totp_secret                (login profiles of any application)
  *   config.code_sources[].password / auth_token                  (mailboxes / phone numbers for verification codes)
  *   config.grid.access_key                                        (BrowserStack, LambdaTest, Sauce Labs)
+ *   config.databases[].password / url                            (database steps)
  */
 
 import { decryptSecret, isEncrypted, REDACTED, sealSecret } from '../../infra/security/secrets.js';
@@ -118,6 +119,21 @@ function sealSalesforce(next: any, previous: any): any {
   return out;
 }
 
+const DB_SECRET_FIELDS = ['password', 'url'];
+const dbSecretSpots = (list: any): Array<{ obj: any; fields: Fields }> => (Array.isArray(list) ? list.map((x: any) => ({ obj: x, fields: DB_SECRET_FIELDS })) : []);
+const transformDbs = (list: any, fn: (value: any, field: string) => any) => (Array.isArray(list) ? list.map((x: any) => mapFields(x, DB_SECRET_FIELDS, fn)) : list);
+/** Seal databases: password / url kept by name (or position when renamed) when sent back redacted. */
+function sealDbs(next: any, previous: any): any {
+  if (next === undefined) return previous;
+  if (!Array.isArray(next)) return next;
+  const prev: any[] = Array.isArray(previous) ? previous : [];
+  return next.map((x: any, i: number) => {
+    const before = prev.find((p) => p.name === (x.previous_name ?? x.name)) ?? (x.previous_name === undefined ? prev[i] : undefined);
+    const { previous_name: _ignored, ...db } = x;
+    return mapFields(db, DB_SECRET_FIELDS, (_v, f) => sealSecret(db[f], before?.[f]));
+  });
+}
+
 const GRID_SECRET_FIELDS = ['access_key'];
 const gridSecretSpots = (grid: any): Array<{ obj: any; fields: Fields }> => (grid && typeof grid === 'object' ? [{ obj: grid, fields: GRID_SECRET_FIELDS }] : []);
 const transformGrid = (grid: any, fn: (value: any, field: string) => any) => (grid && typeof grid === 'object' ? mapFields(grid, GRID_SECRET_FIELDS, fn) : grid);
@@ -125,7 +141,7 @@ const transformGrid = (grid: any, fn: (value: any, field: string) => any) => (gr
 /** Whether a stored config still holds plaintext secrets (written before encryption existed). */
 export function hasPlaintextSecrets(config: any): boolean {
   if (Object.values(config?.secrets ?? {}).some((v) => !isEncrypted(v))) return true;
-  return [...salesforceSecretSpots(config?.salesforce), ...authSecretSpots(config?.auth), ...sourceSecretSpots(config?.code_sources), ...gridSecretSpots(config?.grid)]
+  return [...salesforceSecretSpots(config?.salesforce), ...authSecretSpots(config?.auth), ...sourceSecretSpots(config?.code_sources), ...gridSecretSpots(config?.grid), ...dbSecretSpots(config?.databases)]
     .some(({ obj, fields }) => fields.some((f) => obj?.[f] && !isEncrypted(obj[f])));
 }
 
@@ -158,6 +174,7 @@ export function sealAgentConfig(next: any, previous?: any): any {
   if (next.code_sources !== undefined || previous?.code_sources) {
     out.code_sources = sealSources(next.code_sources, previous?.code_sources);
   }
+  if (next.databases !== undefined || previous?.databases) out.databases = sealDbs(next.databases, previous?.databases);
   // The grid keeps its access key when sent back redacted or left out, unless the provider changed
   if (next.grid !== undefined || previous?.grid) {
     const grid = next.grid === undefined ? previous.grid : next.grid;
@@ -180,6 +197,7 @@ export function redactAgentConfig(config: any): any {
   if (config.auth) out.auth = transformAuth(config.auth, (v) => (v ? REDACTED : undefined));
   if (config.code_sources) out.code_sources = transformSources(config.code_sources, (v) => (v ? REDACTED : undefined));
   if (config.grid) out.grid = transformGrid(config.grid, (v) => (v ? REDACTED : undefined));
+  if (config.databases) out.databases = transformDbs(config.databases, (v) => (v ? REDACTED : undefined));
   return out;
 }
 
@@ -194,13 +212,14 @@ export function decryptAgentConfig(config: any): any {
   if (config.auth) out.auth = transformAuth(config.auth, (v) => (v ? decryptSecret(String(v)) : undefined));
   if (config.code_sources) out.code_sources = transformSources(config.code_sources, (v) => (v ? decryptSecret(String(v)) : undefined));
   if (config.grid) out.grid = transformGrid(config.grid, (v) => (v ? decryptSecret(String(v)) : undefined));
+  if (config.databases) out.databases = transformDbs(config.databases, (v) => (v ? decryptSecret(String(v)) : undefined));
   return out;
 }
 
 /** All plaintext secret values of a decrypted config (for log masking). */
 export function secretValues(decrypted: any): string[] {
   const values: string[] = Object.values(decrypted?.secrets ?? {}).map(String);
-  for (const { obj, fields } of [...salesforceSecretSpots(decrypted?.salesforce), ...authSecretSpots(decrypted?.auth), ...sourceSecretSpots(decrypted?.code_sources), ...gridSecretSpots(decrypted?.grid)]) {
+  for (const { obj, fields } of [...salesforceSecretSpots(decrypted?.salesforce), ...authSecretSpots(decrypted?.auth), ...sourceSecretSpots(decrypted?.code_sources), ...gridSecretSpots(decrypted?.grid), ...dbSecretSpots(decrypted?.databases)]) {
     for (const f of fields) if (obj?.[f]) values.push(String(obj[f]));
   }
   return values.filter(Boolean);

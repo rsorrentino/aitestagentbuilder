@@ -3,6 +3,7 @@
  * results in the database, and streams progress over WebSocket.
  */
 
+import { DbConnections } from '../database/db.js';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -117,6 +118,8 @@ export class RunExecutor {
   /** Library of the project: reusable step blocks and named elements (loaded at the start of the run) */
   private blocks = new Map<string, StepBlock>();
   private elements = new Map<string, LibraryElement>();
+  /** The agent's databases (database steps), opened on first use */
+  private db = new DbConnections([]);
 
   /** Agent config with decrypted secrets — kept in memory only for this run. */
   private config: any;
@@ -314,6 +317,7 @@ export class RunExecutor {
   /** Runs every test; resolves with the final run status. */
   async execute(): Promise<'completed' | 'failed' | 'cancelled'> {
     await this.loadDatasets();
+    this.db = new DbConnections(Array.isArray(this.config.databases) ? this.config.databases : []);
     [this.blocks, this.elements] = await Promise.all([
       new BlockRepository().byName(this.agent.projectId).catch(() => new Map<string, StepBlock>()),
       new ElementRepository().byName(this.agent.projectId).catch(() => new Map<string, LibraryElement>()),
@@ -408,6 +412,7 @@ export class RunExecutor {
       throw error;
     } finally {
       await this.closeBrowser(state.passed);
+      await this.db.closeAll();
     }
   }
 
@@ -496,6 +501,7 @@ export class RunExecutor {
         salesforce: this.salesforce,
         auth: this.appAuth,
         codes: this.codes,
+        db: this.db,
         testStartedAt: startedAt,
         persona,
         quality,

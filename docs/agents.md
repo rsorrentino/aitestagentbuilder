@@ -388,6 +388,38 @@ exactly on every run, without the AI.
   are listed for you to rephrase.
 - API: `POST /steps/from-text { text, agentId?, path? }`. MCP: `steps_from_text`.
 
+## Database steps
+
+Check what the application wrote, prepare data before a test and clean it up after. Agent page → **Databases**, or:
+
+```json
+"databases": [
+  { "name": "shop", "type": "postgres", "host": "db.internal", "database": "shop", "user": "qa_reader", "password": "…" },
+  { "name": "crm", "type": "sqlserver", "url": "Server=…;Database=crm;User Id=qa;Password=…", "read_only": false }
+]
+```
+
+Types: `postgres`, `mysql` (also MariaDB), `sqlserver` (also Azure SQL), `oracle` (no Oracle client needed). Host, port,
+database (Oracle: service name), user and password, or a connection `url`; `ssl` for TLS. Passwords and URLs are encrypted,
+never returned by the API and masked in logs.
+
+| Step | Data | |
+|---|---|---|
+| `db_query` | `sql`, `params`, `save_as`, `extract` | Run a query; `save_as` keeps the first value as `{{vars.name}}`, `extract: { "id": "order_id" }` keeps columns of the first row |
+| `assert_db` | `sql`, `params`, `rows` (`1`, `">0"`), `equals` (`{ "status": "paid" }`, first row), `contains`, `empty` | Check the result; without expectations, at least one row |
+| `db_execute` | `sql`, `params` | INSERT / UPDATE / DELETE, only on a database with `"read_only": false` |
+
+```json
+{ "action": "assert_db", "target": "shop", "data": { "sql": "SELECT status, total FROM orders WHERE email = ?", "params": ["{{fake.email:buyer}}"], "equals": { "status": "new", "total": "42.00" } } }
+```
+
+- Write `?` for parameters in every database (they become `$1`, `@p1`, `:1`); put `{{vars.x}}`, `{{data.x}}` and
+  `{{fake.x}}` values in `params`, never in the SQL text.
+- Databases are **read-only** unless `read_only` is `false`: only one SELECT-like statement runs, inside a read-only
+  transaction on PostgreSQL, MySQL and Oracle. Use a database account with only the rights the tests need.
+- Every statement stops after 30 seconds; connections are opened on first use and closed at the end of the run.
+- The target is the database name; it can be left out when the agent has one database.
+
 ## Library: blocks and elements
 
 **Library** (left menu) keeps what many tests share, so a change in the application is fixed once.

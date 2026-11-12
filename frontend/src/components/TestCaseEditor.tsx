@@ -138,6 +138,8 @@ export default function TestCaseEditor({ initial, onSaved, onCancel }: TestCaseE
             Test data: <code>{'{{data.column}}'}</code> (row of the data set), <code>{'{{fake.email}}'}</code> or <code>{'{{fake.email:buyer}}'}</code> (fictitious
             values: the same kind and label give the same value within a test, so a later step can check it), <code>{'{{secrets.NAME}}'}</code>,
             <code>{'{{totp.NAME}}'}</code> (current authenticator code of a login profile, persona or secret).
+            Databases: db_query / assert_db / db_execute (target: the agent&apos;s database; value <code>{'{"sql": "SELECT status FROM orders WHERE email = ?", "params": ["{{fake.email}}"], "equals": {"status": "new"}}'}</code>,
+            <code>{'"save_as": "orderId"'}</code> keeps the first value as <code>{'{{vars.orderId}}'}</code>).
             Emailed / texted codes: wait_for_code (target: the mailbox or phone number, value <code>{'{"save_as": "otp", "to": "qa@example.com"}'}</code>), then <code>{'{{vars.otp}}'}</code>.
             Targets can be CSS selectors (#id, .class), <code>text=Visible text</code>, React-friendly <code>[data-testid="total"]</code> or
             <code>role=button[name="Save"]</code> (also inside Salesforce Lightning components), or a plain label like “Sign in button”.
