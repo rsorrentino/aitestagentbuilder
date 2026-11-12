@@ -190,6 +190,7 @@ export default function TestCaseEditor({ initial, onSaved, onCancel }: TestCaseE
             Test data: <code>{'{{data.column}}'}</code> (row of the data set), <code>{'{{fake.email}}'}</code> or <code>{'{{fake.email:buyer}}'}</code> (fictitious
             values: the same kind and label give the same value within a test, so a later step can check it), <code>{'{{secrets.NAME}}'}</code>,
             <code>{'{{totp.NAME}}'}</code> (current authenticator code of a login profile, persona or secret).
+            Emailed / texted codes: wait_for_code (target: the mailbox or phone number, value <code>{'{"save_as": "otp", "to": "qa@example.com"}'}</code>), then <code>{'{{vars.otp}}'}</code>.
             Targets can be CSS selectors (#id, .class), <code>text=Visible text</code>, or a plain label like “Sign in button”.
             Salesforce: salesforce_login (target = persona), assert_object_access (target = Account, value <code>{'{"read": true, "delete": false}'}</code>),
             assert_field_access (Account.AnnualRevenue), assert_record_access (record Id), assert_profile, assert_access_denied.

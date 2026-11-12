@@ -8,6 +8,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api, errorMessage, formatDate, REDACTED } from '../lib/api';
 import SignInOnce from './SignInOnce';
 import TotpKeyHelper from './TotpKeyHelper';
+import CodeSources from './CodeSources';
 
 interface Profile {
   name: string;
@@ -20,6 +21,7 @@ interface Profile {
   landing_path?: string;
   success?: { url_contains?: string; selector?: string };
   session?: { reuse?: boolean; max_age_hours?: number };
+  codes?: { source?: string; to?: string };
 }
 
 interface Props {
@@ -149,7 +151,11 @@ export default function SignInCard({ agentId, config, canAdmin, canEdit, onSaved
                         <div className="text-sm text-muted code">{p.login_url || 'login'}</div>
                       </td>
                       <td className="text-sm">{p.username}</td>
-                      <td className="text-sm">{p.totp_secret ? '🔑 authenticator key' : <span className="text-muted">none</span>}</td>
+                      <td className="text-sm">
+                        {p.totp_secret && <div>🔑 authenticator key</div>}
+                        {p.codes?.source && <div>📨 codes from {p.codes.source}</div>}
+                        {!p.totp_secret && !p.codes?.source && <span className="text-muted">none</span>}
+                      </td>
                       <td className="text-sm" data-testid={`session-${p.name}`}>
                         {s ? <>{s.expired ? <span className="text-danger">expired</span> : until(s.expiresAt)}<div className="text-muted">since {formatDate(s.capturedAt)}</div></> : <span className="text-muted">none yet</span>}
                         {r && (
@@ -216,6 +222,19 @@ export default function SignInCard({ agentId, config, canAdmin, canEdit, onSaved
                     ? async () => (await api.get(`/agents/${agentId}/auth/totp`, { params: { kind: 'app', identity: editing.previous_name } })).data
                     : undefined} />
               </div>
+              {(config.code_sources ?? []).length > 0 && (
+                <div>
+                  <label className="form-label" htmlFor="lp-codes">Codes by email / SMS from</label>
+                  <select id="lp-codes" className="form-control" value={editing.codes?.source ?? ''} onChange={(e) => setEditing({ ...editing, codes: e.target.value ? { ...editing.codes, source: e.target.value } : undefined })}>
+                    <option value="">none</option>
+                    {(config.code_sources ?? []).map((c: any) => <option key={c.name}>{c.name}</option>)}
+                  </select>
+                  {editing.codes?.source && (
+                    <input className="form-control mt-1" aria-label="Sent to (optional)" value={editing.codes?.to ?? ''} placeholder="sent to (optional): qa+buyer@example.com"
+                      onChange={(e) => setEditing({ ...editing, codes: { source: editing.codes!.source, to: e.target.value || undefined } })} />
+                  )}
+                </div>
+              )}
               <div>
                 <label className="form-label" htmlFor="lp-landing">Page after sign-in (optional)</label>
                 <input id="lp-landing" className="form-control" value={editing.landing_path ?? ''} onChange={(e) => setEditing({ ...editing, landing_path: e.target.value })} placeholder="/dashboard" />
@@ -249,6 +268,8 @@ export default function SignInCard({ agentId, config, canAdmin, canEdit, onSaved
             if (saved) setNotice(`Session of ${who} saved: runs now start signed in as ${who}`);
           }} />
         )}
+
+        <CodeSources agentId={agentId} sources={config.code_sources ?? []} canAdmin={canAdmin} canEdit={canEdit} onSaved={onSaved} />
 
         {sfPersonas.length > 0 && (
           <div className="mt-3">

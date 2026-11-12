@@ -15,6 +15,7 @@ import { AddressInfo } from 'net';
 import { mkdtempSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { emailSource, startMailFixture } from './mail-fixture.js';
 
 const DB_URL = process.env.TEST_DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/aitestagentbuilder_test';
 const workDir = mkdtempSync(join(tmpdir(), 'atab-sf-'));
@@ -322,4 +323,48 @@ describe('Salesforce personas (integration)', () => {
     assert.equal(run.status, 'failed');
     assert.match(run.results[0].error, /Unknown Salesforce persona "ghost"/);
   });
+
+  it('answers Salesforce\'s emailed "Verify your identity" code from a mailbox, then trusts the browser', async (t) => {
+    if (!dbAvailable) return t.skip('database not available');
+    const mail = await startMailFixture();
+    const { setSimulatorMailer } = await import('../../demo/salesforce-simulator.js');
+    setSimulatorMailer((m) => mail.sendEmail(m.to, m.subject, m.text));
+    try {
+      const created = await call('POST', '/api/v1/agents', {
+        name: 'Acme ops',
+        config: {
+          base_url: sfUrl,
+          evidence: { trace: 'off', video: 'off' },
+          code_sources: [emailSource(mail.imapPort, 'sf_inbox')],
+          salesforce: { login_url: sfUrl, instance_url: sfUrl, personas: [
+            { name: 'ops', auth_method: 'password', username: 'ops@acme.sim', password: 'Ops-Pass-1!', codes: { source: 'sf_inbox', to: 'ops@acme.sim' } },
+          ] },
+        },
+      });
+      assert.equal(created.status, 201, created.text);
+      const agent = created.data.id;
+      const tc = await call('POST', '/api/v1/testcases', {
+        title: 'Ops sees the home page', module: 'Security', priority: 'High', data: { personas: 'ops' },
+        steps: [{ action: 'navigate', target: 'lightning/page/home' }, { action: 'assert_text', target: '#profile-name', data: { value: 'Standard User' } }],
+        expectedResults: ['home'],
+      });
+      const first = await runAndWait(agent, [tc.data.id]);
+      assert.equal(first.results[0].status, 'passed', first.results[0].error);
+      assert.match(first.results[0].metadata.steps[0].message, /username\/password \+ emailed verification code/);
+
+      // Next run: the saved session (with the device cookie) is reused
+      const second = await runAndWait(agent, [tc.data.id]);
+      assert.equal(second.results[0].status, 'passed', second.results[0].error);
+      assert.match(second.results[0].metadata.steps[0].message, /reused session/);
+
+      // A fresh login from a new browser (persona check) is verified by email too
+      const verify = await call('POST', `/api/v1/agents/${agent}/salesforce/personas/ops/verify`);
+      assert.equal(verify.data.ok, true, verify.text);
+      assert.match(verify.data.message, /emailed verification code/);
+    } finally {
+      setSimulatorMailer(() => undefined);
+      await mail.close();
+    }
+  });
 });
+

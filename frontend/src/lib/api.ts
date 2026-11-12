@@ -151,6 +151,7 @@ export const STEP_ACTIONS = [
   'assert_ai',
   'assert_performance',
   'ai',
+  'wait_for_code',
 ];
 export const AI_PROVIDERS = [
   { value: '', label: 'Automatic (best available)' },

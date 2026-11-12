@@ -48,6 +48,8 @@ export interface Persona {
   landing_path?: string;
   expected_profile?: string;
   expected_permission_sets?: string[];
+  /** Emailed / SMS verification codes (device activation) from a code source */
+  codes?: { source: string; to?: string };
 }
 
 export interface SalesforceSettings {

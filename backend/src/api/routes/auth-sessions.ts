@@ -17,6 +17,7 @@ import { CODE_SELECTORS } from '../../modules/auth/app-login.js';
 import { Identity, profileIdentity, SignInError, SignInManager, SignInSession } from '../../modules/auth/interactive.js';
 import { findPersona, salesforceSettings } from '../../modules/salesforce/personas.js';
 import { parseTotpKey, secondsRemaining, totpFor } from '../../modules/salesforce/totp.js';
+import { checkSource, codeFetcher, codeSources } from '../../modules/auth/code-sources.js';
 
 type Handler = (req: AuthenticatedRequest, res: Response) => Promise<void>;
 const wrap = (fn: Handler): RequestHandler => (req, res) => {
@@ -46,6 +47,21 @@ export function registerAuthSessionRoutes(router: Router, roles: { viewer: Reque
     const forgotten = await vault.forget(agent.id, kind, identity);
     res.locals.audit = { entityId: agent.id, details: { kind, identity, forgotten } };
     res.json({ forgotten });
+  }));
+
+  // Check a code source: it connects, and shows the newest message's time and subject (never its content)
+  router.post('/agents/:id/code-sources/:name/check', editor, audit('agent.code_source.check', 'agent'), wrap(async (req, res) => {
+    const agent = await agents.findById(req.params.id, req.project!.id);
+    if (!agent) return void res.status(404).json({ error: 'Agent not found' });
+    const config = decryptAgentConfig(agent.config);
+    const source = codeSources(config).find((x) => x.name === req.params.name);
+    if (!source) return void res.status(404).json({ error: `Unknown code source "${req.params.name}"` });
+    const mask = (t: string) => maskSecrets(t, secretValues(config));
+    try {
+      res.json(await checkSource(source));
+    } catch (e: any) {
+      res.json({ ok: false, error: mask(String(e?.message ?? e)).split('\n')[0] });
+    }
   }));
 
   // Current authenticator code of a saved key (to compare with the phone), never the key itself
@@ -146,7 +162,7 @@ export function registerAuthSessionRoutes(router: Router, roles: { viewer: Reque
     const config = decryptAgentConfig(agent.config);
     const settings = authSettings(config);
     if (!settings) return void res.status(400).json({ error: 'This agent has no login profiles' });
-    const sessions = new AppSessions(settings, config.base_url, { agentId: agent.id, vault });
+    const sessions = new AppSessions(settings, config.base_url, { agentId: agent.id, vault, codes: codeFetcher(config) });
     let profile;
     try {
       profile = sessions.profile(req.params.name);

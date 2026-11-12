@@ -29,6 +29,7 @@ import { salesforceSettings, testPersonas } from '../salesforce/personas.js';
 import { AppSessions } from '../auth/app-login.js';
 import { authSettings } from '../auth/profiles.js';
 import { totpFor } from '../salesforce/totp.js';
+import { codeFetcher, CodeFetcher } from '../auth/code-sources.js';
 import { SessionVault } from '../auth/session-vault.js';
 import { SalesforceSessions } from '../salesforce/session.js';
 import { TestDataRepository } from '../../core/repositories/test-data.repository.js';
@@ -91,13 +92,15 @@ export class RunExecutor {
     this.secrets = this.config.secrets ?? {};
     this.secretList = secretValues(this.config);
     const vault = new SessionVault();
+    // Emailed / SMS verification codes: one fetcher per run, so a message is used once
+    this.codes = Array.isArray(this.config.code_sources) && this.config.code_sources.length ? codeFetcher(this.config) : undefined;
     const sf = salesforceSettings(this.config);
     if (sf) {
       const maxAge = Number(this.config.salesforce?.session_max_age_hours);
-      this.salesforce = new SalesforceSessions(sf, { agentId: agent.id, vault, maxAgeHours: maxAge > 0 ? maxAge : 8 });
+      this.salesforce = new SalesforceSessions(sf, { agentId: agent.id, vault, maxAgeHours: maxAge > 0 ? maxAge : 8, codes: this.codes });
     }
     const auth = authSettings(this.config);
-    if (auth) this.appAuth = new AppSessions(auth, this.config.base_url, { agentId: agent.id, vault });
+    if (auth) this.appAuth = new AppSessions(auth, this.config.base_url, { agentId: agent.id, vault, codes: this.codes });
   }
 
   /** {{totp.NAME}}: current code of a login profile's, a Salesforce persona's, or a secret's authenticator key. */
@@ -111,6 +114,7 @@ export class RunExecutor {
 
   /** Login profiles of other applications (agent config auth). */
   private appAuth?: AppSessions;
+  private codes?: CodeFetcher;
 
   /** Who a test starts signed in as: its persona, data.login_as, or the default login profile. */
   private loginFor(testCase: TestCase, persona?: string): string | undefined {
@@ -360,6 +364,8 @@ export class RunExecutor {
         config,
         salesforce: this.salesforce,
         auth: this.appAuth,
+        codes: this.codes,
+        testStartedAt: startedAt,
         persona,
         quality,
         testData,

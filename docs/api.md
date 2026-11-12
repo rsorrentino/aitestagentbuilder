@@ -140,6 +140,7 @@ Screenshots are served at `GET /artifacts/<path from evidence.screenshots>`.
 | DELETE | `/agents/:id/auth/sessions?kind=&identity=` | editor | Forget saved sessions (all, or one) → `{ forgotten }` |
 | POST | `/agents/:id/auth/profiles/:name/verify` | editor | Sign in as a login profile now (`{ fresh: true }` ignores the saved session) and save the session → `{ ok, message, reused, usedMfa, landedUrl, session }` or `{ ok: false, error }` |
 
+| POST | `/agents/:id/code-sources/:name/check` | editor | Connect to a mailbox / phone number → `{ ok, recent, newest: { at, from, subject } }` (never message content) or `{ ok: false, error }` |
 | GET | `/agents/:id/auth/totp?kind=app\|salesforce&identity=` | editor | Current code of a saved authenticator key `{ code, secondsLeft, digits, issuer, account }` (the key is never returned) |
 | POST | `/agents/:id/auth/interactive` | editor | *Sign in once*: `{ kind: app\|salesforce, identity }` opens the sign-in page in a server browser → `{ id, url, title, viewport, canFill }` |
 | GET | `/auth/interactive/:sid`, `/auth/interactive/:sid/screenshot` | editor | State / current screen (JPEG) |
@@ -148,7 +149,7 @@ Screenshots are served at `GET /artifacts/<path from evidence.screenshots>`.
 | DELETE | `/auth/interactive/:sid` | editor | Close without saving |
 
 Login profiles are part of the agent config (`config.auth`), with `password` and `totp_secret` encrypted and returned
-as `••••••••`.
+as `••••••••`. Code sources are in `config.code_sources` (`password` / `auth_token` encrypted the same way).
 
 ## Recorder
 

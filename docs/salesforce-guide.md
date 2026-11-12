@@ -92,7 +92,10 @@ Persona sessions are saved, encrypted, and reused by later tests **and runs** (`
 default 8), together with Salesforce's device-activation cookies: once a persona has verified the browser,
 Salesforce stops sending *Verify your identity* emails for it. The agent page (**Sign-in & MFA**) shows each persona's
 saved session and can forget it; it is also forgotten when the persona's user name, auth method or the login URL
-changes. Applications other than Salesforce (SSO portals, other SaaS) use *login profiles*: see docs/agents.md, Sign-in & MFA.
+changes. For the first verification (or personas whose verification method is email or SMS), set the persona's
+**Emailed / SMS verification codes from** to a connected mailbox or phone number (docs/agents.md, *Codes by email or
+SMS*) and the code is read and typed automatically. The Salesforce simulator has a user for this, `ops@acme.sim`; its
+emails are at `/demo/salesforce/_sim/outbox`. Applications other than Salesforce (SSO portals, other SaaS) use *login profiles*: see docs/agents.md, Sign-in & MFA.
 
 ### Steps
 

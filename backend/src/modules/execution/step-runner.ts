@@ -10,6 +10,7 @@ import type { Locator, Page } from 'playwright';
 import { TestStep } from '../../core/domain/test-case.js';
 import { SalesforceSessions } from '../salesforce/session.js';
 import { AppSessions } from '../auth/app-login.js';
+import type { CodeFetcher } from '../auth/code-sources.js';
 import { A11yReport, describeA11y, scanAccessibility } from '../quality/accessibility.js';
 import { checkScreenshot, describeVisual, VisualEntry } from '../quality/visual.js';
 import { ApiState, checkJson, describeResponse, extractVars, mockRoute, sendRequest, statusMatches } from '../quality/api-testing.js';
@@ -25,7 +26,7 @@ export type StepKind =
   | 'assert_profile' | 'assert_object_access' | 'assert_field_access' | 'assert_record_access'
   | 'assert_accessible' | 'assert_screenshot'
   | 'http_request' | 'assert_status' | 'assert_json' | 'assert_header' | 'assert_response_time' | 'mock_route' | 'block_route'
-  | 'assert_ai' | 'assert_performance' | 'ai_action'
+  | 'assert_ai' | 'assert_performance' | 'ai_action' | 'wait_for_code'
   | 'manual';
 
 export interface StepOutcome {
@@ -43,6 +44,10 @@ export interface StepContext {
   salesforce?: SalesforceSessions;
   /** Login profiles of any application (agent config auth), with saved sessions. */
   auth?: AppSessions;
+  /** Verification codes from the agent's mailboxes / phone numbers (code sources). */
+  codes?: CodeFetcher;
+  /** When the test started: codes sent before are ignored. */
+  testStartedAt?: Date;
   /** Persona this test runs as (persona matrix), used when a step names none. */
   persona?: string;
   /** Where quality checks (accessibility, visual) store baselines and report their findings. */
@@ -103,6 +108,8 @@ export function classifyAction(rawAction: string, step: Pick<TestStep, 'target' 
     'performance check': 'assert_performance', 'page speed': 'assert_performance', 'assert page speed': 'assert_performance',
     'check page speed': 'assert_performance', 'web vitals': 'assert_performance', 'assert web vitals': 'assert_performance',
     'ai': 'ai_action', 'ai action': 'ai_action', 'ai step': 'ai_action', 'do with ai': 'ai_action',
+    'wait for code': 'wait_for_code', 'read code': 'wait_for_code', 'read email code': 'wait_for_code', 'read sms code': 'wait_for_code',
+    'get verification code': 'wait_for_code', 'wait for verification code': 'wait_for_code',
   };
   if (exact[a]) return exact[a];
   // "Log in as buyer", "Sign in as the admin user"
@@ -478,6 +485,21 @@ export async function executeStep(step: TestStep, ctx: StepContext, targetOverri
       ctx.quality?.aiActions?.push(record);
       const how = record.replayed ? 'replayed from earlier runs, no AI call' : `${record.rounds} AI round(s)${record.provider ? `, ${record.provider}` : ''}`;
       return { status: 'passed', message: `AI did "${instruction}" (${how}): ${describeActions(record.actions) || 'nothing to do'}` };
+    }
+    case 'wait_for_code': {
+      if (!ctx.codes) throw new Error('This agent has no code sources (Agent → Sign-in & MFA → mailboxes and phone numbers)');
+      const source = String(step.data?.source ?? target ?? '').trim();
+      if (!source) need('the code source (target), e.g. qa_inbox');
+      const saveAs = String(step.data?.save_as ?? 'code');
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(saveAs)) throw new Error('data.save_as must be a variable name');
+      const timeoutS = Math.min(Math.max(Number(step.data?.timeout_s) || 90, 5), 600);
+      const { message } = await ctx.codes(source, { since: ctx.testStartedAt ?? new Date(Date.now() - 120_000), to: step.data?.to, timeoutMs: timeoutS * 1000 })
+        .then((r) => {
+          if (ctx.api) ctx.api.vars[saveAs] = r.code;
+          return r;
+        });
+      if (!ctx.api) throw new Error('Codes need a run context');
+      return { status: 'passed', message: `Code received ${message.subject ? `by email ("${message.subject}")` : 'by SMS'} at ${message.at.toISOString().slice(11, 19)} UTC: use {{vars.${saveAs}}}` };
     }
     case 'salesforce_login': {
       const named = step.action.match(/^\s*(?:log ?in|sign ?in) as\s+(?:the\s+)?([A-Za-z0-9][\w.-]*)/i)?.[1];

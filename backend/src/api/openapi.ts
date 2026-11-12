@@ -150,6 +150,9 @@ export function buildOpenApi(serverUrl: string) {
       '/agents/{id}/auth/profiles/{name}/verify': {
         post: op('Sign-in', 'Sign in as a login profile now and save the session ({ fresh: true } ignores the saved one)', { parameters: [id(), id('name', 'Login profile name')] }),
       },
+      '/agents/{id}/code-sources/{name}/check': {
+        post: op('Sign-in', 'Check a mailbox / phone number for verification codes: connects and returns the newest message time and subject', { parameters: [id(), id('name', 'Code source name')] }),
+      },
       '/agents/{id}/auth/totp': {
         get: op('Sign-in', 'Current code of a saved authenticator key, to compare with the phone (the key is never returned)', { parameters: [id(), q('kind', { type: 'string' }), q('identity', { type: 'string' })] }),
       },

@@ -13,6 +13,7 @@ import { mkdtempSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { totp } from '../../modules/salesforce/totp.js';
+import { emailSource, MailFixture, smsSource, startMailFixture } from './mail-fixture.js';
 
 const DB_URL = process.env.TEST_DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/aitestagentbuilder_test';
 const workDir = mkdtempSync(join(tmpdir(), 'atab-auth-'));
@@ -24,7 +25,14 @@ Object.assign(process.env, {
 for (const k of ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'AZURE_OPENAI_API_KEY', 'GITHUB_TOKEN', 'GH_TOKEN', 'COPILOT_GITHUB_TOKEN', 'LLM_PROVIDER', 'EVIDENCE_TRACE', 'EVIDENCE_VIDEO']) delete process.env[k];
 
 // ---- a small identity provider and two applications ----
-const USERS: Record<string, string> = { 'alice@example.com': 'alice-pw', 'carol@example.com': 'carol-pw', 'erin@example.com': 'erin-pw', bob: 'bob-pw' };
+const USERS: Record<string, string> = {
+  'alice@example.com': 'alice-pw', 'carol@example.com': 'carol-pw', 'erin@example.com': 'erin-pw', bob: 'bob-pw',
+  // Codes by email (frank) and by text message (gina) instead of an authenticator app
+  'frank@example.com': 'frank-pw', 'gina@example.com': 'gina-pw',
+};
+const GINA_PHONE = '+15550001111';
+let mail: MailFixture;
+const pendingCodes = new Map<string, string>();
 const sessions = new Map<string, string>();
 const devices = new Set<string>();
 const counts = { passwords: 0, mfaPrompts: 0, codesAccepted: 0 };
@@ -72,6 +80,15 @@ async function idp(req: http.IncomingMessage, res: http.ServerResponse, url: URL
       if (USERS[u] !== b.get('passwd')) return send(200, html('Password', '<h1>Enter password</h1><p class="error">Your account or password is incorrect.</p><input type="password" name="passwd">'));
       if (devices.has(c.device ?? '')) return send(200, kmsi(u));
       counts.mfaPrompts++;
+      if (u === 'frank@example.com' || u === 'gina@example.com') {
+        const code = String(100000 + Math.floor(Math.random() * 900000));
+        pendingCodes.set(u, code);
+        if (u === 'frank@example.com') await mail.sendEmail(u, 'Your sign-in code', `Hello,\n\nUse the code ${code} to sign in. It expires in 10 minutes.\nReference 2026-11-12.`);
+        else mail.sendSms(GINA_PHONE, `${code} is your Example verification code.`);
+        return send(200, html('Verify', `<h1>Enter code</h1><p>We sent a code to your ${u.startsWith('frank') ? 'email' : 'phone (text message)'}.</p>
+          <form method="post" action="/idp/msgcode"><input type="hidden" name="user" value="${u}">
+          <input name="otc" autocomplete="one-time-code" inputmode="numeric" maxlength="6"><button type="submit">Verify</button></form>`));
+      }
       return send(200, html('Verify', `<h1>Enter code</h1><p>Enter the code displayed in your authenticator app</p>
         <form method="post" action="/idp/mfa"><input type="hidden" name="user" value="${u}">
         <input name="otc" autocomplete="one-time-code" inputmode="numeric" maxlength="6">
@@ -90,6 +107,27 @@ async function idp(req: http.IncomingMessage, res: http.ServerResponse, url: URL
       }
       res.writeHead(200, { 'Content-Type': 'text/html', ...(cookies.length ? { 'Set-Cookie': cookies } : {}) });
       return void res.end(kmsi(String(b.get('user'))));
+    }
+    case 'POST /idp/msgcode': {
+      const b = await body(req);
+      const u = String(b.get('user'));
+      if (!pendingCodes.get(u) || pendingCodes.get(u) !== b.get('otc')) return send(200, html('Verify', '<p>That code is incorrect.</p><input name="otc" autocomplete="one-time-code">'));
+      pendingCodes.delete(u);
+      counts.codesAccepted++;
+      return send(200, kmsi(u));
+    }
+    // "Confirm your email" during a flow: a code is emailed, then typed
+    case 'GET /verify-email':
+      return send(200, html('Verify email', `<form method="post" action="/verify-email/send"><button type="submit">Send code</button></form>`));
+    case 'POST /verify-email/send': {
+      const code = String(100000 + Math.floor(Math.random() * 900000));
+      pendingCodes.set('qa@example.com', code);
+      await mail.sendEmail('qa@example.com', 'Confirm your email address', `Your confirmation code: ${code}`);
+      return send(200, html('Verify email', `<p>Code sent.</p><form method="post" action="/verify-email/check"><input id="code" name="code" aria-label="Code"><button type="submit">Confirm</button></form>`));
+    }
+    case 'POST /verify-email/check': {
+      const b = await body(req);
+      return send(200, html('Verify email', pendingCodes.get('qa@example.com') === b.get('code') ? '<h1>Email verified</h1>' : '<h1>Wrong code</h1>'));
     }
     case 'POST /idp/kmsi': {
       const b = await body(req);
@@ -159,6 +197,7 @@ before(async () => {
     await probe.end().catch(() => undefined);
   }
   if (!dbAvailable) return;
+  mail = await startMailFixture();
   fixture = http.createServer((req, res) => void idp(req, res, new URL(req.url || '/', 'http://x')));
   await new Promise<void>((r) => fixture.listen(0, '127.0.0.1', () => r()));
   base = `http://127.0.0.1:${(fixture.address() as AddressInfo).port}`;
@@ -179,6 +218,7 @@ before(async () => {
     fixture.closeAllConnections();
     await new Promise((r) => api.close(r));
     await new Promise((r) => fixture.close(r));
+    await mail.close();
     await getDatabaseClient().close();
   };
 });
@@ -368,6 +408,55 @@ describe('sign-in & MFA for any application (integration)', () => {
     assert.match(ok.metadata.steps[1].message, /\d{6}-\d{6}/);
     const bad = r.results.find((x: any) => x.testCaseId === unknown);
     assert.match(bad.error, /Unknown authenticator "nobody"/);
+  });
+
+  it('reads emailed and SMS verification codes, at sign-in and during a test', async (t) => {
+    if (!dbAvailable) return t.skip('database not available');
+    const created = await call('POST', '/agents', {
+      name: 'Codes by message',
+      config: {
+        base_url: base, evidence: { trace: 'off', video: 'off' },
+        code_sources: [emailSource(mail.imapPort), smsSource(mail.twilioUrl, GINA_PHONE), { ...emailSource(mail.imapPort, 'broken'), password: 'wrong' }],
+        auth: { profiles: [
+          { name: 'frank', login_url: '/idp/login', username: 'frank@example.com', password: 'frank-pw', landing_path: '/idp/home', codes: { source: 'inbox', to: 'frank@example.com' } },
+          { name: 'gina', login_url: '/idp/login', username: 'gina@example.com', password: 'gina-pw', landing_path: '/idp/home', codes: { source: 'phone' } },
+        ] },
+      },
+    });
+    assert.equal(created.status, 201, created.text);
+    const agent = created.data.id;
+    assert.equal(created.data.config.code_sources[0].password, '••••••••');
+    assert.equal(created.data.config.code_sources[1].auth_token, '••••••••');
+
+    const frank = await newTest('Frank signs in with an emailed code', [{ action: 'assert_text', target: 'h1', data: { value: 'Welcome frank@example.com' } }], { login_as: 'frank' });
+    const gina = await newTest('Gina signs in with a texted code', [{ action: 'assert_text', target: 'h1', data: { value: 'Welcome gina@example.com' } }], { login_as: 'gina' });
+    const flow = await newTest('Email confirmation in a flow', [
+      { action: 'navigate', target: '/verify-email' },
+      { action: 'click', target: 'text=Send code' },
+      { action: 'Wait for code', target: 'inbox', data: { to: 'qa@example.com', save_as: 'otp', timeout_s: 30 } },
+      { action: 'fill', target: '#code', data: { value: '{{vars.otp}}' } },
+      { action: 'click', target: 'text=Confirm' },
+      { action: 'assert_text', target: 'h1', data: { value: 'Email verified' } },
+    ], { login_as: false });
+    const r = await run(agent, [frank, gina, flow]);
+    for (const x of r.results) assert.equal(x.status, 'passed', `${x.metadata.title}: ${x.error}`);
+    const byTitle = (title: string) => r.results.find((x: any) => x.metadata.title === title);
+    assert.match(byTitle('Email confirmation in a flow').metadata.steps[2].message, /Code received by email \("Confirm your email address"\).*\{\{vars\.otp\}\}/);
+
+    // Checking a source shows what arrived, never the content; wrong credentials are reported
+    const ok = await call('POST', `/agents/${agent}/code-sources/inbox/check`);
+    assert.equal(ok.data.ok, true, ok.text);
+    assert.ok(ok.data.recent >= 2);
+    assert.ok(!('text' in (ok.data.newest ?? {})));
+    const sms = await call('POST', `/agents/${agent}/code-sources/phone/check`);
+    assert.equal(sms.data.ok, true, sms.text);
+    const broken = await call('POST', `/agents/${agent}/code-sources/broken/check`);
+    assert.equal(broken.data.ok, false);
+    assert.ok(!broken.text.includes('imap-pass-123') && !broken.text.includes('wrong'), 'no credentials in errors');
+
+    const invalid = await call('PUT', `/agents/${agent}`, { config: { code_sources: [{ name: 'x', type: 'sms', account_sid: 'nope', phone_number: '123' }] } });
+    assert.equal(invalid.status, 400);
+    assert.match(invalid.data.error, /account_sid/);
   });
 });
 

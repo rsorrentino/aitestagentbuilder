@@ -12,6 +12,7 @@ import type { Page } from 'playwright';
 import { secondsRemaining, totpFor, parseTotpKey } from '../salesforce/totp.js';
 import { AuthSettings, findProfile, LoginProfile } from './profiles.js';
 import { applyState, captureState, SessionVault } from './session-vault.js';
+import type { CodeFetcher } from './code-sources.js';
 
 export const USERNAME_SELECTORS = [
   'input[autocomplete="username"]', 'input[type="email"]', 'input[name="loginfmt"]', 'input[name="identifier"]', 'input[name="username" i]',
@@ -30,7 +31,7 @@ const REMEMBER_LABEL = /remember|trust|don'?t ask|do not ask|keep me signed in|s
 const STAY_SIGNED_IN_TEXT = /stay signed in\?|trust this (device|browser)\?|remember this (device|browser)\?/i;
 const ERROR_TEXT = /(incorrect|invalid|wrong|not recognized|doesn'?t match|failed|locked|try again)[^.\n]{0,80}(password|user ?name|credentials|email|code|account)|(password|user ?name|credentials|code)[^.\n]{0,40}(incorrect|invalid|wrong|not correct)/i;
 
-export type CodeSource = (profile: LoginProfile, page: Page) => Promise<string | null>;
+export type CodeSource = (profile: LoginProfile, page: Page, since: Date) => Promise<string | null>;
 
 export interface AppLoginResult {
   profile: LoginProfile;
@@ -64,7 +65,7 @@ export class AppSessions {
   constructor(
     readonly settings: AuthSettings,
     private baseUrl: string,
-    private opts: { agentId?: string; vault?: SessionVault; codeSources?: CodeSource[] } = {},
+    private opts: { agentId?: string; vault?: SessionVault; codeSources?: CodeSource[]; codes?: CodeFetcher } = {},
   ) {}
 
   profile(name?: string): LoginProfile {
@@ -115,9 +116,19 @@ export class AppSessions {
     }
   }
 
-  private async code(p: LoginProfile, page: Page): Promise<string | null> {
-    for (const source of [totpCode, ...(this.opts.codeSources ?? [])]) {
-      const c = await source(p, page);
+  /** Codes by email / SMS from the profile's code source. */
+  private messageCode: CodeSource = async (p, _page, since) => {
+    if (!p.codes || !this.opts.codes) return null;
+    return (await this.opts.codes(p.codes.source, { since, to: p.codes.to })).code;
+  };
+
+  private async code(p: LoginProfile, page: Page, since: Date): Promise<string | null> {
+    // A page that says the code was emailed / texted is answered from the mailbox or phone first
+    const body = await page.locator('body').innerText({ timeout: 5_000 }).catch(() => '');
+    const messageFirst = !!p.codes && (!p.totp_secret || /e-?mail|sent (it )?to|text message|\bsms\b|phone/i.test(body));
+    const sources = messageFirst ? [this.messageCode, totpCode] : [totpCode, this.messageCode];
+    for (const source of [...sources, ...(this.opts.codeSources ?? [])]) {
+      const c = await source(p, page, since);
       if (c) return c;
     }
     return null;
@@ -126,6 +137,7 @@ export class AppSessions {
   /** Fill the sign-in pages until signed in (or stuck). */
   private async formLogin(page: Page, p: LoginProfile): Promise<{ usedMfa: boolean }> {
     if (!p.username || !p.password) throw new Error(`Login profile "${p.name}" needs a username and a password (or sign in once interactively)`);
+    const since = new Date();
     await page.goto(this.loginUrl(p), { waitUntil: 'domcontentloaded', timeout: 30_000 });
     await this.settle(page);
     let usedMfa = false;
@@ -150,10 +162,10 @@ export class AppSessions {
       const codeSel = await visible(page, [p.selectors.code ?? '', ...CODE_SELECTORS].filter(Boolean));
       const passSel = await visible(page, [p.selectors.password ?? '', ...PASSWORD_SELECTORS].filter(Boolean));
       if (codeSel && !passSel) {
-        const code = await this.code(p, page);
+        const code = await this.code(p, page, since);
         if (!code) {
           throw new Error(`${new URL(page.url()).hostname} asked ${p.name} for a verification code. Set the profile's authenticator (TOTP) key, `
-            + 'connect a mailbox or phone number for codes, or sign in once interactively so runs reuse the session');
+            + 'connect a mailbox or phone number for codes (code source), or sign in once interactively so runs reuse the session');
         }
         await this.rememberDevice(page);
         await page.locator(codeSel).first().fill(code, { timeout: 10_000 });

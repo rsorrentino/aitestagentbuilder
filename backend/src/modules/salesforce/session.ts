@@ -13,6 +13,7 @@ import { secondsRemaining, totp } from './totp.js';
 import { FieldAccess, ObjectAccess, RecordAccess, SalesforceAdminChecks, SalesforceApi, SfIdentity } from './sf-api.js';
 import { findPersona, Persona, SalesforceSettings } from './personas.js';
 import type { SessionVault } from '../auth/session-vault.js';
+import type { CodeFetcher } from '../auth/code-sources.js';
 
 type Cookie = Awaited<ReturnType<BrowserContext['cookies']>>[number];
 
@@ -46,7 +47,7 @@ export class SalesforceSessions {
    * With a vault, persona sessions are also kept across runs (encrypted), with the device-activation cookies
    * that keep Salesforce from asking for an emailed verification code at every new login.
    */
-  constructor(public settings: SalesforceSettings, private store?: { agentId: string; vault: SessionVault; maxAgeHours?: number }) {}
+  constructor(public settings: SalesforceSettings, private store?: { agentId?: string; vault?: SessionVault; maxAgeHours?: number; codes?: CodeFetcher }) {}
 
   /** Session credentials obtained during the run (access tokens, session ids), for redaction. */
   sessionSecrets(): string[] {
@@ -108,7 +109,7 @@ export class SalesforceSessions {
     this.active.delete(context);
 
     if (this.settings.reuseSessions && !opts.fresh && persona.auth_method !== 'login_as') {
-      if (!this.cookies.has(persona.name) && this.store) {
+      if (!this.cookies.has(persona.name) && this.store?.vault && this.store.agentId) {
         const stored = await this.store.vault.load(this.store.agentId, 'salesforce', persona.name).catch(() => null);
         if (stored?.state.cookies?.length) this.cookies.set(persona.name, stored.state.cookies as Cookie[]);
       }
@@ -150,7 +151,7 @@ export class SalesforceSessions {
     if (this.settings.reuseSessions && persona.auth_method !== 'login_as') {
       const cookies = await context.cookies();
       this.cookies.set(persona.name, cookies);
-      if (this.store) {
+      if (this.store?.vault && this.store.agentId) {
         await this.store.vault.save(this.store.agentId, 'salesforce', persona.name, { cookies: cookies as any, origins: [] }, { maxAgeHours: this.store.maxAgeHours ?? 8 }).catch(() => undefined);
       }
     }
@@ -187,6 +188,8 @@ export class SalesforceSessions {
 
   private async uiLogin(page: Page, persona: Persona, landing?: string): Promise<string> {
     if (!persona.password) throw new Error(`Persona "${persona.name}" has no password`);
+    const loginStarted = new Date();
+    let codeBy = 'authenticator code (TOTP)';
     const startUrl = new URL(this.settings.loginUrl.includes('://') ? this.settings.loginUrl : `https://${this.settings.loginUrl}`);
     const target = landing || persona.landing_path;
     if (target) startUrl.searchParams.set('startURL', target);
@@ -205,13 +208,26 @@ export class SalesforceSessions {
       if (error) throw new Error(`Salesforce login as ${persona.name} failed: ${error}`);
 
       const codeSelector = await this.firstVisible(page, this.settings.mfa.code_selector ? [this.settings.mfa.code_selector] : CODE_SELECTORS);
+      const emailedOrSms = !!codeSelector && /emc|smc/.test(codeSelector);
+      // Emailed / SMS code (device activation, or email / SMS as the verification method): read it from the code source
+      if (codeSelector && persona.codes && this.store?.codes && (emailedOrSms || !persona.totp_secret)) {
+        const { code, message } = await this.store.codes(persona.codes.source, { since: loginStarted, to: persona.codes.to });
+        await page.locator(codeSelector).first().fill(code, { timeout: 10000 });
+        const submit = await this.firstVisible(page, this.settings.mfa.submit_selector ? [this.settings.mfa.submit_selector] : SUBMIT_SELECTORS);
+        if (!submit) throw new Error('Could not find the Verify button on the Salesforce verification page (set salesforce.mfa.submit_selector)');
+        await page.locator(submit).first().click({ timeout: 10000 });
+        await page.waitForLoadState('load', { timeout: 30000 }).catch(() => undefined);
+        usedMfa = true;
+        codeBy = message.subject ? 'emailed verification code' : 'SMS verification code';
+        continue;
+      }
       if (codeSelector) {
         if (!persona.totp_secret) {
           const emailed = /emc|smc/.test(codeSelector);
           throw new Error(
             `Salesforce asked ${persona.name} for ${emailed ? 'an emailed/SMS' : 'a'} verification code. ` +
             (emailed
-              ? 'Add the test runner\'s IP range to the profile\'s Login IP Ranges or Network Access, or register an authenticator app and set the persona\'s TOTP secret.'
+              ? 'Connect the mailbox (or phone number) that receives it as a code source and set it on the persona, sign in once interactively, add the test runner\'s IP range to the profile\'s Login IP Ranges or Network Access, or register an authenticator app and set the persona\'s TOTP secret.'
               : 'Set the persona\'s TOTP secret (auth method password_totp), or use the JWT bearer method.'),
           );
         }
@@ -239,7 +255,7 @@ export class SalesforceSessions {
     }
     const error = await this.loginError(page);
     if (error) throw new Error(`Salesforce login as ${persona.name} failed: ${error}`);
-    return usedMfa ? 'username/password + authenticator code (TOTP)' : 'username/password';
+    return usedMfa ? `username/password + ${codeBy}` : 'username/password';
   }
 
   private async tokenLogin(page: Page, persona: Persona, landing?: string): Promise<string> {

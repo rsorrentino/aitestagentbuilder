@@ -53,3 +53,30 @@ describe('TOTP keys', () => {
     assert.throws(() => parseTotpKey('otpauth://totp/x?secret=JBSWY3DPEHPK3PXP&algorithm=SHA256'), /SHA1 only/);
   });
 });
+
+describe('verification codes by email / SMS', () => {
+  it('finds the code in common message formats', async () => {
+    const { extractCode } = await import('../modules/auth/code-sources.js');
+    assert.equal(extractCode('Verification Code: 482913\nIf you didn’t try to log in…'), '482913');
+    assert.equal(extractCode('Use the code 271828 to sign in. It expires in 10 minutes. Reference 2026-11-12.'), '271828');
+    assert.equal(extractCode('G-845201 is your Google verification code.'), '845201');
+    assert.equal(extractCode('Your one-time passcode is 12345678'), '12345678');
+    assert.equal(extractCode('Il tuo codice di verifica è 314159'), '314159');
+    assert.equal(extractCode('Order 2026-11-12 total 120.50, call 555-1234'), null, 'dates, amounts and phone numbers are not codes');
+    assert.equal(extractCode('Token: AB12-CD34', 'Token: ([A-Z0-9-]+)'), 'AB12-CD34');
+  });
+
+  it('validates sources and keeps their secrets encrypted', async () => {
+    const { validateSources } = await import('../modules/auth/code-sources.js');
+    assert.doesNotThrow(() => validateSources([{ name: 'inbox', type: 'email', host: 'imap.example.com', username: 'qa' }, { name: 'phone', type: 'sms', account_sid: `AC${'a'.repeat(32)}`, phone_number: '+15550001111' }]));
+    assert.throws(() => validateSources([{ name: 'x', type: 'email' }]), /host and username/);
+    assert.throws(() => validateSources([{ name: 'x', type: 'pigeon' }]), /type must be email or sms/);
+    assert.throws(() => validateSources([{ name: 'x', type: 'email', host: 'h', username: 'u', code_pattern: '(' }]), /not a valid regular expression/);
+    const sealed = sealAgentConfig({ code_sources: [{ name: 'inbox', type: 'email', host: 'h', username: 'u', password: 'imap-secret-1' }] });
+    assert.notEqual(sealed.code_sources[0].password, 'imap-secret-1');
+    assert.equal(redactAgentConfig(sealed).code_sources[0].password, REDACTED);
+    const kept = sealAgentConfig({ code_sources: [{ name: 'inbox', type: 'email', host: 'h2', username: 'u', password: REDACTED }] }, sealed);
+    assert.equal(decryptAgentConfig(kept).code_sources[0].password, 'imap-secret-1');
+    assert.ok(secretValues(decryptAgentConfig(kept)).includes('imap-secret-1'));
+  });
+});

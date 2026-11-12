@@ -30,12 +30,15 @@ interface Persona {
   landing_path?: string;
   expected_profile?: string;
   expected_permission_sets?: string[];
+  codes?: { source?: string; to?: string };
 }
 
 interface Props {
   agentId: string;
   baseUrl: string;
   salesforce: any;
+  /** Mailboxes / phone numbers for emailed or SMS codes (agent config code_sources) */
+  codeSources?: Array<{ name: string }>;
   canAdmin: boolean;
   canVerify: boolean;
   onSaved: (agent: any) => void;
@@ -43,7 +46,7 @@ interface Props {
 
 const EMPTY: Persona = { name: '', auth_method: 'password_totp', username: '' };
 
-export default function SalesforcePersonasCard({ agentId, baseUrl, salesforce, canAdmin, canVerify, onSaved }: Props) {
+export default function SalesforcePersonasCard({ agentId, baseUrl, salesforce, codeSources = [], canAdmin, canVerify, onSaved }: Props) {
   const sf = salesforce ?? {};
   const personas: Persona[] = sf.personas ?? [];
   const app = sf.connected_app ?? {};
@@ -282,6 +285,16 @@ export default function SalesforcePersonasCard({ agentId, baseUrl, salesforce, c
               {['password', 'password_totp', 'oauth_password'].includes(editing.auth_method) && secretField('password', 'Password')}
               {editing.auth_method === 'password_totp' && secretField('totp_secret', 'Authenticator (TOTP) secret', 'The Base32 key shown when registering an authenticator app for this user (“Can’t scan the QR code?”).')}
               {editing.auth_method === 'oauth_password' && secretField('security_token', 'Security token')}
+              {['password', 'password_totp'].includes(editing.auth_method) && codeSources.length > 0 && (
+                <div className="form-group">
+                  <label className="form-label" htmlFor="persona-codes">Emailed / SMS verification codes from</label>
+                  <select id="persona-codes" className="form-control" value={editing.codes?.source ?? ''} onChange={(e) => set({ codes: e.target.value ? { ...editing.codes, source: e.target.value } : undefined })}>
+                    <option value="">none</option>
+                    {codeSources.map((c) => <option key={c.name}>{c.name}</option>)}
+                  </select>
+                  <div className="form-hint">Answers Salesforce’s “Verify your identity” email (new browser) or SMS without a person. The session is then kept, so it is rarely asked again.</div>
+                </div>
+              )}
               {editing.auth_method === 'login_as' && (
                 <div className="form-group">
                   <label className="form-label" htmlFor="persona-via">Administrator persona *</label>

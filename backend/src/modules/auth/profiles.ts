@@ -8,6 +8,7 @@
  *                       selectors: { username, password, submit, code, code_submit },
  *                       success: { url_contains, selector },
  *                       session: { reuse (default true), max_age_hours (default 12) },
+ *                       codes: { source, to }   emailed / SMS codes from a code source (see code-sources.ts),
  *                       landing_path }
  *   (* = secret, encrypted at rest)
  *
@@ -33,6 +34,8 @@ export interface LoginProfile {
   selectors: { username?: string; password?: string; submit?: string; code?: string; code_submit?: string };
   success: { url_contains?: string; selector?: string };
   session: { reuse: boolean; maxAgeHours: number };
+  /** Verification codes by email / SMS: a code source, and optionally the recipient to match (shared mailboxes) */
+  codes?: { source: string; to?: string };
 }
 
 export interface AuthSettings {
@@ -58,6 +61,7 @@ export function normalizeProfile(raw: any): LoginProfile {
     },
     success: { url_contains: str(raw?.success?.url_contains), selector: str(raw?.success?.selector) },
     session: { reuse: raw?.session?.reuse !== false, maxAgeHours: Number.isFinite(maxAge) && maxAge > 0 ? Math.min(maxAge, 24 * 90) : 12 },
+    ...(str(raw?.codes?.source) ? { codes: { source: str(raw.codes.source)!, ...(str(raw.codes.to) ? { to: str(raw.codes.to) } : {}) } } : {}),
   };
 }
 

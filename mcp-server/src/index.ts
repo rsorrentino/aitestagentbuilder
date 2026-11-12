@@ -140,6 +140,7 @@ export const TOOLS = [
       'Values may use {{data.column}} (row of the data set named in the test case data.dataset: the test runs once per row), ' +
       '{{fake.email}} / {{fake.email:label}} (fictitious values, the same within a test for the same label), {{secrets.NAME}} and ' +
       '{{totp.NAME}} (current authenticator code of a login profile, Salesforce persona or secret). ' +
+      'wait_for_code (target: a mailbox / phone number code source, data { save_as, to }) waits for an emailed or texted code, then {{vars.<save_as>}}. ' +
       'Targets are CSS selectors, text=…, or plain labels ("Sign in button"); data.value holds text to type or expect.',
     inputSchema: {
       type: 'object',

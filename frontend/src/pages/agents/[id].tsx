@@ -224,6 +224,7 @@ export default function AgentDetailPage() {
         agentId={agent.id}
         baseUrl={cfg.base_url}
         salesforce={cfg.salesforce}
+        codeSources={cfg.code_sources ?? []}
         canAdmin={session.can('admin')}
         canVerify={canEdit}
         onSaved={setAgent}

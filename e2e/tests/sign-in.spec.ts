@@ -115,3 +115,39 @@ test('an authenticator key is read from a QR code screenshot and checked against
   await form.getByRole('button', { name: 'Show the current code of the saved key' }).click();
   await expect(form.getByTestId('totp-helper')).toContainText(/\d{3} \d{3}/);
 });
+
+test('a mailbox for emailed codes is added, checked and used by a login profile', async ({ page, request }) => {
+  const auth = await (await request.get(`${API_URL}/auth/config`)).json();
+  test.skip(auth.authEnabled, 'runs in local mode (no login)');
+  const agent = await (await request.post(`${API_URL}/agents`, {
+    data: { name: unique('Codes'), config: { base_url: `${BACKEND}/demo/`, auth: { profiles: [{ name: 'shopper', login_url: 'login', username: 'demo', password: 'demo123' }] } } },
+  })).json();
+
+  await page.goto(`/agents/${agent.id}`);
+  const region = page.getByRole('region', { name: 'Code sources' });
+  await region.getByRole('button', { name: '＋ Mailbox' }).click();
+  const form = page.getByRole('form', { name: 'Code source' });
+  await form.getByLabel('Name', { exact: true }).fill('qa_inbox');
+  await form.getByLabel('IMAP server').fill('127.0.0.1');
+  await form.getByLabel('Port').fill('9');
+  await form.getByLabel('User name').fill('qa');
+  await form.getByLabel('Password / app password').fill('imap-secret-xyz');
+  await form.getByLabel('TLS').uncheck();
+  await form.getByRole('button', { name: 'Save' }).click();
+  await expect(region).toContainText('IMAP qa@127.0.0.1');
+
+  await region.getByRole('button', { name: 'Check' }).click();
+  await expect(page.getByTestId('source-check-qa_inbox')).toContainText('✗');
+  await expect(page.getByTestId('source-check-qa_inbox')).not.toContainText('imap-secret-xyz');
+
+  const row = page.getByRole('table', { name: 'Login profiles' }).locator('tr', { hasText: 'shopper' });
+  await row.getByRole('button', { name: 'Edit' }).click();
+  await page.getByLabel('Codes by email / SMS from').selectOption('qa_inbox');
+  await page.getByLabel('Sent to (optional)').fill('qa+shopper@example.com');
+  await page.getByRole('button', { name: 'Save profile' }).click();
+  await expect(row).toContainText('📨 codes from qa_inbox');
+
+  const saved = await (await request.get(`${API_URL}/agents/${agent.id}`)).json();
+  expect(saved.config.code_sources[0].password).toBe('••••••••');
+  expect(saved.config.auth.profiles[0].codes).toEqual({ source: 'qa_inbox', to: 'qa+shopper@example.com' });
+});
