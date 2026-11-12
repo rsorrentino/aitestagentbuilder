@@ -87,7 +87,7 @@ export class RunExecutor {
   /** Action sequences that completed AI action steps, replayed without the AI */
   private aiActionCache = new AiActionCache();
 
-  constructor(private runId: string, private agent: Agent, private testCases: TestCase[]) {
+  constructor(private runId: string, private agent: Agent, private testCases: TestCase[], private options: { rerunFailed?: boolean } = {}) {
     this.config = decryptAgentConfig(agent.config);
     this.secrets = this.config.secrets ?? {};
     this.secretList = secretValues(this.config);
@@ -238,6 +238,7 @@ export class RunExecutor {
     const config = this.config;
     this.quarantined = await new QuarantineRepository().ids(this.agent.projectId).catch(() => new Map());
     const retries = Math.min(Math.max(Number(config.retries ?? 0), 0), 3);
+    const failedItems: PlanItem[] = [];
 
     emitRunEvent(this.runId, 'run_started', { total, agentId: this.agent.id, agentName: this.agent.name });
     this.log(`Starting run for agent "${this.agent.name}" — ${total} test(s) against ${config.base_url}`);
@@ -265,9 +266,30 @@ export class RunExecutor {
         else if (this.quarantined.has(testCase.id)) {
           counts.quarantined++;
           this.log(`  🧪 "${title}" is quarantined: its failure does not fail the run`, { testId: testCase.id }, 'warn');
-        } else counts.failed++;
+        } else {
+          counts.failed++;
+          failedItems.push(plan[i]);
+        }
 
         emitRunEvent(this.runId, 'run_progress', { status: 'running', completed: i + 1, total, ...counts });
+      }
+
+      // Unattended runs: failed tests get one more chance at the end, in a fresh browser
+      // (a transient outage or a stuck browser should not wake anyone up)
+      if (this.options.rerunFailed && failedItems.length && !this.cancelled) {
+        this.log(`Re-running ${failedItems.length} failed test(s) once, in a fresh browser`, {}, 'warn');
+        await this.browser.close().catch(() => undefined);
+        this.browser = await launchBrowser();
+        for (const item of failedItems) {
+          if (this.cancelled) throw new CancelledError();
+          const status = await this.runTestCase(item, retries + 1, { rerun: true });
+          if (status === 'passed') {
+            counts.failed--;
+            counts.passed++;
+            this.log(`  ↻ "${titleOf(item)}" passed when re-run: likely flaky or a transient problem`, { testId: item.testCase.id }, 'warn');
+          }
+        }
+        emitRunEvent(this.runId, 'run_progress', { status: 'running', completed: total, total, ...counts });
       }
 
       return counts.failed > 0 ? 'failed' : 'completed';
@@ -284,7 +306,7 @@ export class RunExecutor {
     }
   }
 
-  private async runTestCase(item: PlanItem, attempt: number): Promise<string> {
+  private async runTestCase(item: PlanItem, attempt: number, extra: { rerun?: boolean } = {}): Promise<string> {
     const { testCase, persona, row } = item;
     const config = this.config;
     const startedAt = new Date();
@@ -293,6 +315,7 @@ export class RunExecutor {
       title, module: testCase.module, priority: testCase.priority, attempt: attempt + 1,
       ...(persona ? { persona } : {}),
       ...(row ? { dataRow: row.index, dataLabel: row.label } : {}),
+      ...(extra.rerun ? { rerun: true } : {}),
       ...(this.quarantined.has(testCase.id) ? { quarantined: true } : {}),
     };
     const result = await this.runRepo.createResult({

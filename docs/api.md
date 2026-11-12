@@ -132,6 +132,25 @@ Screenshots are served at `GET /artifacts/<path from evidence.screenshots>`.
 | POST | `/demo/seed` | Creates/updates the *Demo Shop* agent and its 3 tests → `{ agentId, created }` |
 | GET | `/demo/` (outside `/api/v1`) | The demo web app itself (login `demo` / `demo123`) |
 
+## Unattended runs and digest
+
+Run metadata for unattended runs:
+- `preflight` (`{ ok, attempts, checks: [{ name, ok, detail, blocking }] }`)
+- `resumedFrom` / `resumedAs` (runs started again after a restart)
+- `testIds` (when given)
+
+Re-run results carry `metadata.rerun: true`.
+
+| Method | Path | Role | Description |
+|---|---|---|---|
+| POST | `/notifications/:id/digest` | project admin | Send the daily digest of a channel now |
+
+Notification events:
+- `run.completed`, `run.failed`, `run.cancelled`
+- `auth.session_expiring`
+- `digest.daily`, with channel config `digest_time` (HH:MM) and `digest_timezone`; the webhook payload's `run.digest`
+  has the per-agent details
+
 ## Sign-in & MFA
 
 | Method | Path | Role | Description |

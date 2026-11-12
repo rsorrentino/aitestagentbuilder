@@ -23,7 +23,7 @@ import { runEvents, RunFinishedEvent } from './run-events.js';
 export type ChannelType = 'webhook' | 'slack' | 'teams' | 'email';
 export const CHANNEL_TYPES: ChannelType[] = ['webhook', 'slack', 'teams', 'email'];
 /** Run events, and a warning before a session saved by a person expires (it cannot be renewed unattended). */
-export const RUN_EVENTS = ['run.completed', 'run.failed', 'run.cancelled', 'auth.session_expiring'] as const;
+export const RUN_EVENTS = ['run.completed', 'run.failed', 'run.cancelled', 'auth.session_expiring', 'digest.daily'] as const;
 export type RunEventName = typeof RUN_EVENTS[number];
 
 export interface NotificationChannel {
@@ -76,6 +76,14 @@ export function validateChannel(type: any, config: any, events: any, partial = f
     }
   }
   if (!partial && type !== 'email' && !url) errors.push(`${type === 'webhook' ? 'config.url' : 'config.webhookUrl'} is required`);
+  if (config.digest_time !== undefined && !/^([01]\d|2[0-3]):[0-5]\d$/.test(String(config.digest_time))) errors.push('config.digest_time must be HH:MM (24 h)');
+  if (config.digest_timezone !== undefined) {
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone: String(config.digest_timezone) });
+    } catch {
+      errors.push('config.digest_timezone must be a time zone such as Europe/Rome');
+    }
+  }
   if (type === 'email' && (config.recipients !== undefined || !partial)) {
     const r = config.recipients;
     if (!Array.isArray(r) || r.length === 0 || r.some((x: any) => !EMAIL_RE.test(String(x)))) {
@@ -256,6 +264,13 @@ export class NotificationService {
     );
     await Promise.all(result.rows.map((row) =>
       this.deliver(this.map(row, true), event, runSummary(run, row.project_name))));
+  }
+
+  /** Sends a prepared message (digest) through one channel. */
+  async deliverMessage(channelId: string, event: RunEventName, summary: any): Promise<{ ok: boolean; status: string; error?: string }> {
+    const row = (await this.db.query('SELECT * FROM notification_channels WHERE id = $1', [channelId])).rows[0];
+    if (!row) return { ok: false, status: 'failed', error: 'Channel not found' };
+    return this.deliver(this.map(row, true), event, summary);
   }
 
   /** Warns the project's subscribed channels that a saved sign-in session will expire soon. */

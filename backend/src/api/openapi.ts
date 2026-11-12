@@ -249,6 +249,7 @@ export function buildOpenApi(serverUrl: string) {
         delete: op('Notifications', 'Delete a channel', { parameters: [id()], responses: { 204: { description: 'Deleted' } } }),
       },
       '/notifications/{id}/test': { post: op('Notifications', 'Send a test notification', { parameters: [id()] }) },
+      '/notifications/{id}/digest': { post: op('Notifications', 'Send the daily digest of a channel now (channel subscribed to digest.daily)', { parameters: [id()] }) },
       '/notifications/{id}/deliveries': { get: op('Notifications', 'Recent deliveries', { parameters: [id()] }) },
 
       // ── Analytics, audit, AI ─────────────────────────────────────────────

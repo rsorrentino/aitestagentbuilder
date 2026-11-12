@@ -35,6 +35,13 @@ checks:
   performance: report                  # off | report | fail — page speed of the page each test ends on
   performance_budgets: { lcp: 2500, cls: 0.1, tbt: 200, load: 4000, max_regression: 0.25 }
   performance_options: { throttle: slow4g, cpu_slowdown: 4 }   # throttle: none | slow4g | fast3g
+unattended:                            # scheduled / CI / API runs, e.g. at night (see "Unattended runs")
+  preflight: true                      # check the application answers first; retry, then fail once
+  preflight_retries: 3
+  preflight_wait_seconds: 300
+  rerun_failed: auto                   # re-run failed tests once at the end: auto (unattended runs) | true | false
+  max_run_minutes: 240                 # stop a run that takes longer
+  resume_interrupted: true             # start a scheduled / CI run again after a server restart
 test_data:
   locale: it                           # names, addresses, phone numbers of {{fake.*}} values (default en)
   seed: 42                             # optional: the same values in every run (per test, row and persona)
@@ -84,6 +91,35 @@ The agent page shows **Tests in the next run**: exactly what the planner will ex
   "expectedResults": ["User reaches the dashboard"]
 }
 ```
+
+## Unattended runs
+
+Scheduled, CI and API runs (anything not started by a person in the UI) are built to run at night with nobody watching:
+
+- **Pre-flight.** Before running, the application (and the Salesforce login page, when there is one) must answer.
+  - If it doesn't, the run waits and retries (`preflight_retries` × `preflight_wait_seconds`), e.g. while a deploy or a
+    nightly restart finishes.
+  - Then it fails **once**, with the reason and without running the tests. Instead of 200 failures you get one clear
+    alert.
+  - Tests with AI steps also check that an AI provider is configured, as a warning.
+- **Re-run failures at the end.** Failed tests run once more, in a fresh browser, after all the others.
+  - A test that passes then counts as passed, is marked **↻ re-run**, and feeds the flaky-test quarantine.
+  - Runs started by a person are not re-run unless `rerun_failed: true`.
+- **Maximum duration.** A run stops after `max_run_minutes` (hung application, endless waits) and fails with the reason.
+- **Restarts.** A scheduled / CI / API run interrupted by a server restart (or a Windows service restart) is started
+  again once, with the same tests, when the server is back (within 12 hours).
+- **Daily digest.** A notification channel subscribed to **Daily digest** gets one message every morning at its time
+  and time zone, also with several servers. For each agent it lists:
+  - the last 24 hours: runs, passed and failed tests;
+  - new vs still-failing tests;
+  - tests that passed only when re-run;
+  - pre-flight failures;
+  - test users that need a person to sign in.
+
+  **Send digest now** on the notifications page sends it immediately.
+
+A typical night: a schedule at 02:00, saved sign-ins (Sign-in & MFA), triage and quarantine on, and a daily digest at
+07:30 to Slack / Teams / email.
 
 ## Sign-in & MFA
 

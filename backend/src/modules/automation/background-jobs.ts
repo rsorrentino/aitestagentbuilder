@@ -4,6 +4,7 @@
  *   - retention once an hour (and shortly after start)
  *   - notifications subscribed to run events
  *   - sign-in health: warnings before sessions saved by a person expire (hourly)
+ *   - daily digests at each channel's time (checked every 5 minutes)
  *
  * Every job is safe to run on several replicas at once.
  */
@@ -13,6 +14,7 @@ import { ScheduleService } from './schedule.service.js';
 import { applyRetention } from './retention.service.js';
 import { wireNotifications } from './notification.service.js';
 import { warnExpiringSessions } from '../auth/health.js';
+import { sendDueDigests } from './digest.js';
 
 const timers: NodeJS.Timeout[] = [];
 let wired = false;
@@ -47,6 +49,8 @@ export function startBackgroundJobs(): void {
   const sessions = () => warnExpiringSessions().catch((e) => logger.error('Session expiry check failed', { error: e.message }));
   timers.push(setTimeout(sessions, 120_000));
   timers.push(setInterval(sessions, 3_600_000));
+  const digests = () => sendDueDigests().catch((e) => logger.error('Digest check failed', { error: e.message }));
+  timers.push(setInterval(digests, 300_000));
   timers.forEach((t) => t.unref());
 }
 

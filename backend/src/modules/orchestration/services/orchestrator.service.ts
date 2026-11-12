@@ -13,6 +13,8 @@ import { TestRun, TestRunCreateInput } from '../../../core/domain/run.js';
 import { AgentRepository } from '../../../core/repositories/agent.repository.js';
 import { RunRepository } from '../../../core/repositories/run.repository.js';
 import { PlannerAgentService, TestPlan } from '../../agents/services/planner-agent.service.js';
+import { decryptAgentConfig } from '../../../core/domain/agent-secrets.js';
+import { describePreflight, isUnattended, runPreflight, unattendedSettings } from '../../automation/unattended.js';
 import { RunExecutor } from '../../execution/run-executor.js';
 import { emitRunEvent } from '../../../infra/websocket/server.js';
 import { REPO_ROOT } from '../../../infra/config/env.js';
@@ -32,6 +34,8 @@ interface QueuedRun {
   runId: string;
   agent: Agent;
   plan: TestPlan;
+  /** Who started it: schedule, api, cli, ci, … (unattended) or user (a person in the UI) */
+  triggeredBy?: string;
 }
 
 export class OrchestratorService {
@@ -75,13 +79,17 @@ export class OrchestratorService {
     const run = await this.runRepo.createRun({
       agentId: agent.id,
       projectId: agent.projectId,
-      metadata: { ...(input.metadata ?? {}), strategy: plan.strategy, environment: agent.config.environment },
+      metadata: {
+        ...(input.metadata ?? {}), strategy: plan.strategy, environment: agent.config.environment,
+        // Kept so an interrupted run can be started again with the same tests
+        ...(input.testIds?.length ? { testIds: input.testIds.slice(0, 1000) } : {}),
+      },
     });
     await this.runRepo.updateRun(run.id, { totalTests: plan.tests.length });
     run.totalTests = plan.tests.length;
     run.agentName = agent.name;
 
-    this.queue.push({ runId: run.id, agent, plan });
+    this.queue.push({ runId: run.id, agent, plan, triggeredBy: input.metadata?.triggeredBy });
     this.pump();
     return run;
   }
@@ -108,6 +116,30 @@ export class OrchestratorService {
     return cancelled;
   }
 
+  /**
+   * Unattended runs interrupted by a server restart (within 12 hours) are started again once,
+   * unless the agent says unattended.resume_interrupted: false.
+   */
+  async resumeInterruptedRuns(runs: Array<{ id: string; agentId: string; projectId: string; startedAt: Date; metadata: Record<string, any> }>): Promise<string[]> {
+    const started: string[] = [];
+    for (const r of runs) {
+      const m = r.metadata ?? {};
+      if (!isUnattended(m.triggeredBy) || m.resumedFrom || Date.now() - r.startedAt.getTime() > 12 * 3_600_000) continue;
+      try {
+        const agent = await this.agentRepo.findById(r.agentId, r.projectId);
+        if (!agent || !unattendedSettings(agent.config, m.triggeredBy).resumeInterrupted) continue;
+        const { error: _e, preflight: _p, strategy: _s, environment: _env, testIds, ...keep } = m;
+        const run = await this.startRun({ agentId: r.agentId, projectId: r.projectId, testIds: Array.isArray(testIds) ? testIds : undefined, metadata: { ...keep, resumedFrom: r.id } });
+        await this.runRepo.updateRun(r.id, { metadata: { resumedAs: run.id } as any });
+        logger.warn('Interrupted run started again', { interrupted: r.id, run: run.id });
+        started.push(run.id);
+      } catch (e: any) {
+        logger.error('Could not start an interrupted run again', { runId: r.id, error: e.message });
+      }
+    }
+    return started;
+  }
+
   getConcurrencyStats(): { running: number; queued: number; maxConcurrent: number } {
     return { running: this.active.size, queued: this.queue.length, maxConcurrent: this.maxConcurrent };
   }
@@ -129,31 +161,69 @@ export class OrchestratorService {
     }
   }
 
-  private async executeRun({ runId, agent, plan }: QueuedRun): Promise<void> {
+  private async executeRun({ runId, agent, plan, triggeredBy }: QueuedRun): Promise<void> {
     const useLegacyPython = (process.env.EXECUTOR || 'node').toLowerCase() === 'python';
-    const executor = useLegacyPython ? null : new RunExecutor(runId, agent, plan.testCases);
+    const unattended = unattendedSettings(agent.config, triggeredBy);
+    const executor = useLegacyPython ? null : new RunExecutor(runId, agent, plan.testCases, { rerunFailed: unattended.rerunFailed });
     let pythonCancel: (() => void) | undefined;
+    let cancelled = false;
     let markDone: () => void = () => undefined;
     const done = new Promise<void>((resolve) => { markDone = resolve; });
-    this.active.set(runId, { cancel: () => { executor?.cancel(); pythonCancel?.(); }, done });
+    this.active.set(runId, { cancel: () => { cancelled = true; executor?.cancel(); pythonCancel?.(); }, done });
 
     let finalStatus: 'completed' | 'failed' | 'cancelled' = 'failed';
     let error: string | undefined;
+    // Watchdog: a run that takes too long (hung application, endless waits) is stopped and fails
+    let timedOut = false;
+    const watchdog = setTimeout(() => {
+      timedOut = true;
+      logger.warn('Run exceeded its maximum duration, stopping it', { runId, maxRunMinutes: unattended.maxRunMinutes });
+      executor?.cancel();
+      pythonCancel?.();
+    }, unattended.maxRunMinutes * 60_000);
+    watchdog.unref?.();
 
     try {
       await this.runRepo.updateRun(runId, { status: 'running' });
       logger.info('Run started', { runId, agent: agent.name, tests: plan.tests.length });
 
-      if (executor) {
-        finalStatus = await executor.execute();
-      } else {
-        finalStatus = await this.executeWithPython(runId, agent, plan, (cancel) => { pythonCancel = cancel; });
+      // Pre-flight: is the application there? Retried, so a restart or deploy at night does not fail every test
+      let preflightOk = true;
+      if (unattended.preflight) {
+        const config = decryptAgentConfig(agent.config);
+        const pre = await runPreflight(config, plan.testCases, unattended, {
+          cancelled: () => cancelled,
+          onRetry: (checks, attempt) => emitRunEvent(runId, 'run_log', {
+            level: 'warn',
+            message: `Pre-flight attempt ${attempt} failed (${checks.filter((c) => c.blocking && !c.ok).map((c) => c.detail).join('; ')}): retrying in ${Math.round(unattended.waitMs / 1000)} s`,
+          }),
+        });
+        await this.runRepo.updateRun(runId, { metadata: { preflight: pre } as any });
+        emitRunEvent(runId, 'run_log', { level: pre.ok ? 'info' : 'error', message: describePreflight(pre) });
+        if (!pre.ok) {
+          preflightOk = false;
+          finalStatus = cancelled ? 'cancelled' : 'failed';
+          error = describePreflight(pre);
+        }
+      }
+
+      if (preflightOk && !cancelled) {
+        if (executor) {
+          finalStatus = await executor.execute();
+        } else {
+          finalStatus = await this.executeWithPython(runId, agent, plan, (cancel) => { pythonCancel = cancel; });
+        }
+      }
+      if (timedOut) {
+        finalStatus = 'failed';
+        error = `Stopped after ${unattended.maxRunMinutes} minutes (unattended.max_run_minutes): the run took too long`;
       }
     } catch (e: any) {
       error = e.message;
       finalStatus = 'failed';
       logger.error('Run failed', { runId, error });
     } finally {
+      clearTimeout(watchdog);
       this.active.delete(runId);
     }
 

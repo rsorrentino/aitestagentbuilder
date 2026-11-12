@@ -228,4 +228,9 @@ export const MIGRATIONS: Migration[] = [
     name: 'session expiry warnings',
     sql: `ALTER TABLE auth_sessions ADD COLUMN IF NOT EXISTS warned_at TIMESTAMP;`,
   },
+  {
+    version: 10,
+    name: 'daily digest',
+    sql: `ALTER TABLE notification_channels ADD COLUMN IF NOT EXISTS last_digest_at TIMESTAMP;`,
+  },
 ];
