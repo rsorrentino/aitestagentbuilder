@@ -140,6 +140,7 @@ Screenshots are served at `GET /artifacts/<path from evidence.screenshots>`.
 | DELETE | `/agents/:id/auth/sessions?kind=&identity=` | editor | Forget saved sessions (all, or one) → `{ forgotten }` |
 | POST | `/agents/:id/auth/profiles/:name/verify` | editor | Sign in as a login profile now (`{ fresh: true }` ignores the saved session) and save the session → `{ ok, message, reused, usedMfa, landedUrl, session }` or `{ ok: false, error }` |
 
+| GET | `/agents/:id/auth/totp?kind=app\|salesforce&identity=` | editor | Current code of a saved authenticator key `{ code, secondsLeft, digits, issuer, account }` (the key is never returned) |
 | POST | `/agents/:id/auth/interactive` | editor | *Sign in once*: `{ kind: app\|salesforce, identity }` opens the sign-in page in a server browser → `{ id, url, title, viewport, canFill }` |
 | GET | `/auth/interactive/:sid`, `/auth/interactive/:sid/screenshot` | editor | State / current screen (JPEG) |
 | POST | `/auth/interactive/:sid/input` | editor | `{ type: click, x, y }`, `{ type: text, text }`, `{ type: key, key: Enter\|Tab\|Escape\|… }`, `{ type: scroll, dy }`, `{ type: navigate, url }`, `{ type: fill, what: username\|password\|code }` (stored values, never returned) |

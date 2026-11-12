@@ -138,7 +138,8 @@ export const TOOLS = [
       'ai (data.value: an instruction the AI carries out on the live page, e.g. "add the cheapest product to the cart"; also written as "AI: …"). ' +
       'assert_performance (page speed: target optional page to load; data budgets { lcp, fcp, cls, tbt, ttfb, load, transfer_kb, max_regression }). ' +
       'Values may use {{data.column}} (row of the data set named in the test case data.dataset: the test runs once per row), ' +
-      '{{fake.email}} / {{fake.email:label}} (fictitious values, the same within a test for the same label) and {{secrets.NAME}}. ' +
+      '{{fake.email}} / {{fake.email:label}} (fictitious values, the same within a test for the same label), {{secrets.NAME}} and ' +
+      '{{totp.NAME}} (current authenticator code of a login profile, Salesforce persona or secret). ' +
       'Targets are CSS selectors, text=…, or plain labels ("Sign in button"); data.value holds text to type or expect.',
     inputSchema: {
       type: 'object',

@@ -16,6 +16,7 @@ import { SessionVault } from '../../modules/auth/session-vault.js';
 import { CODE_SELECTORS } from '../../modules/auth/app-login.js';
 import { Identity, profileIdentity, SignInError, SignInManager, SignInSession } from '../../modules/auth/interactive.js';
 import { findPersona, salesforceSettings } from '../../modules/salesforce/personas.js';
+import { parseTotpKey, secondsRemaining, totpFor } from '../../modules/salesforce/totp.js';
 
 type Handler = (req: AuthenticatedRequest, res: Response) => Promise<void>;
 const wrap = (fn: Handler): RequestHandler => (req, res) => {
@@ -45,6 +46,25 @@ export function registerAuthSessionRoutes(router: Router, roles: { viewer: Reque
     const forgotten = await vault.forget(agent.id, kind, identity);
     res.locals.audit = { entityId: agent.id, details: { kind, identity, forgotten } };
     res.json({ forgotten });
+  }));
+
+  // Current authenticator code of a saved key (to compare with the phone), never the key itself
+  router.get('/agents/:id/auth/totp', editor, audit('agent.auth_totp.show', 'agent'), wrap(async (req, res) => {
+    const agent = await agents.findById(req.params.id, req.project!.id);
+    if (!agent) return void res.status(404).json({ error: 'Agent not found' });
+    const config = decryptAgentConfig(agent.config);
+    const name = String(req.query.identity ?? '');
+    const key = req.query.kind === 'salesforce'
+      ? (config.salesforce?.personas ?? []).find((p: any) => p.name === name)?.totp_secret
+      : (config.auth?.profiles ?? []).find((p: any) => p.name === name)?.totp_secret;
+    if (!key) return void res.status(404).json({ error: `${name || 'That user'} has no saved authenticator key` });
+    try {
+      const k = parseTotpKey(key);
+      res.locals.audit = { entityId: agent.id, details: { kind: req.query.kind ?? 'app', identity: name } };
+      res.json({ code: totpFor(key), secondsLeft: secondsRemaining(Date.now(), k.period), digits: k.digits, ...(k.issuer ? { issuer: k.issuer } : {}), ...(k.account ? { account: k.account } : {}) });
+    } catch (e: any) {
+      res.status(400).json({ error: `The saved key is not valid: ${e.message}` });
+    }
   }));
 
   // ── "Sign in once": a person completes the sign-in (any MFA) in a browser on the server ──

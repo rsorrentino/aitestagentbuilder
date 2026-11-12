@@ -108,6 +108,9 @@ async function idp(req: http.IncomingMessage, res: http.ServerResponse, url: URL
       if (USERS[u] !== b.get('password')) return send(200, html('Login', '<p>Invalid username or password</p><input name="password" type="password">'));
       return redirect('/simple/home', [`sid=${newSession(u)}; Path=/; HttpOnly`]);
     }
+    // Echoes what was typed: checks {{totp.NAME}} in steps
+    case 'GET /form':
+      return send(200, html('Form', `<input id="code" aria-label="Code"><button type="button" onclick="document.getElementById('out').textContent = document.getElementById('code').value">Show</button><p id="out"></p>`));
     case 'GET /simple/home':
       return user ? send(200, html('Home', `<h1>Welcome ${user}</h1>`)) : redirect('/simple/login');
     default:
@@ -333,6 +336,38 @@ describe('sign-in & MFA for any application (integration)', () => {
     const other = await call('POST', `/agents/${agent}/auth/interactive`, { kind: 'app', identity: 'erin' });
     assert.equal((await call('DELETE', `/auth/interactive/${other.data.id}`)).status, 204);
     assert.equal((await call('POST', `/agents/${agent}/auth/interactive`, { kind: 'salesforce', identity: 'x' })).status, 400);
+  });
+
+  it('shows the current code of a saved key and types {{totp.NAME}} codes in steps', async (t) => {
+    if (!dbAvailable) return t.skip('database not available');
+    const created = await call('POST', '/agents', {
+      name: 'Codes',
+      config: {
+        base_url: base, evidence: { trace: 'off', video: 'off' }, secrets: { VPN_KEY: 'otpauth://totp/VPN:qa?secret=KRSXG5CTMVRXEZLU&issuer=VPN' },
+        auth: { profiles: [{ name: 'alice', login_url: '/idp/login', username: 'alice@example.com', password: 'alice-pw', totp_secret: `otpauth://totp/IdP:alice?secret=${TOTP_KEY}&issuer=IdP` }] },
+      },
+    });
+    const agent = created.data.id;
+    const code = await call('GET', `/agents/${agent}/auth/totp?kind=app&identity=alice`);
+    assert.equal(code.status, 200, code.text);
+    assert.ok([-30_000, 0, 30_000].some((d) => totp(TOTP_KEY, Date.now() + d) === code.data.code));
+    assert.equal(code.data.issuer, 'IdP');
+    assert.ok(!code.text.includes(TOTP_KEY), 'the key itself is never returned');
+    assert.equal((await call('GET', `/agents/${agent}/auth/totp?kind=app&identity=nobody`)).status, 404);
+
+    const tc = await newTest('Codes are typed', [
+      { action: 'navigate', target: '/form' },
+      { action: 'fill', target: '#code', data: { value: '{{totp.alice}}-{{totp.VPN_KEY}}' } },
+      { action: 'click', target: 'text=Show' },
+      { action: 'assert_text', target: '#out', data: { value: '-' } },
+    ], { login_as: false });
+    const unknown = await newTest('Unknown authenticator', [{ action: 'navigate', target: '/form' }, { action: 'fill', target: '#code', data: { value: '{{totp.nobody}}' } }], { login_as: false });
+    const r = await run(agent, [tc, unknown]);
+    const ok = r.results.find((x: any) => x.testCaseId === tc);
+    assert.equal(ok.status, 'passed', ok.error);
+    assert.match(ok.metadata.steps[1].message, /\d{6}-\d{6}/);
+    const bad = r.results.find((x: any) => x.testCaseId === unknown);
+    assert.match(bad.error, /Unknown authenticator "nobody"/);
   });
 });
 

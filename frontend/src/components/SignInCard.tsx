@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, errorMessage, formatDate, REDACTED } from '../lib/api';
 import SignInOnce from './SignInOnce';
+import TotpKeyHelper from './TotpKeyHelper';
 
 interface Profile {
   name: string;
@@ -206,10 +207,14 @@ export default function SignInCard({ agentId, config, canAdmin, canEdit, onSaved
                 <input id="lp-pw" className="form-control" type="password" value={editing.password ?? ''} onChange={(e) => setEditing({ ...editing, password: e.target.value })}
                   placeholder={editing.previous_name ? 'unchanged' : ''} autoComplete="new-password" />
               </div>
-              <div>
+              <div style={{ gridColumn: '1 / -1' }}>
                 <label className="form-label" htmlFor="lp-totp">Authenticator key (optional)</label>
                 <input id="lp-totp" className="form-control code" type="password" value={editing.totp_secret ?? ''} onChange={(e) => setEditing({ ...editing, totp_secret: e.target.value })}
-                  placeholder={editing.previous_name ? 'unchanged' : 'Base32 key or otpauth:// link'} autoComplete="off" />
+                  placeholder={editing.previous_name ? 'unchanged' : 'Base32 key or otpauth:// link'} autoComplete="off" style={{ maxWidth: 480 }} />
+                <TotpKeyHelper value={editing.totp_secret ?? ''} onChange={(k) => setEditing((cur) => (cur ? { ...cur, totp_secret: k } : cur))}
+                  savedCode={editing.previous_name && profiles.find((x) => x.name === editing.previous_name)?.totp_secret
+                    ? async () => (await api.get(`/agents/${agentId}/auth/totp`, { params: { kind: 'app', identity: editing.previous_name } })).data
+                    : undefined} />
               </div>
               <div>
                 <label className="form-label" htmlFor="lp-landing">Page after sign-in (optional)</label>
@@ -225,7 +230,8 @@ export default function SignInCard({ agentId, config, canAdmin, canEdit, onSaved
               </div>
             </div>
             <p className="form-hint mt-2">
-              Authenticator key: when you add an authenticator app for this user, choose “Can’t scan the QR code?” and copy the key, or copy the otpauth:// link.
+              Authenticator key: when you add an authenticator app for this user, take a screenshot of the QR code (or choose “Can’t scan the QR code?”
+              and copy the key) and add the same key to your phone, so you can check that both show the same code.
               Secrets are encrypted and never shown again.
             </p>
             <div className="flex gap-2">

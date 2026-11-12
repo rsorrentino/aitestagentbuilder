@@ -83,3 +83,35 @@ test('a person signs in once in the server browser and the session is saved', as
   const sessions = await (await request.get(`${API_URL}/agents/${agent.id}/auth/sessions`)).json();
   expect(sessions[0]).toMatchObject({ identity: 'shopper', capturedBy: 'interactive' });
 });
+
+test('an authenticator key is read from a QR code screenshot and checked against the live code', async ({ page, request }) => {
+  const auth = await (await request.get(`${API_URL}/auth/config`)).json();
+  test.skip(auth.authEnabled, 'runs in local mode (no login)');
+  const QRCode = (await import('qrcode')).default;
+  const link = 'otpauth://totp/ACME:qa%40example.com?secret=JBSWY3DPEHPK3PXP&issuer=ACME';
+  const png = await QRCode.toBuffer(link, { width: 300, margin: 4 });
+
+  const agent = await (await request.post(`${API_URL}/agents`, {
+    data: { name: unique('QR key'), config: { base_url: `${BACKEND}/demo/` } },
+  })).json();
+  await page.goto(`/agents/${agent.id}`);
+  await page.getByRole('button', { name: '＋ Add login profile' }).click();
+  const form = page.getByRole('form', { name: 'Login profile' });
+  await form.getByLabel('Name', { exact: true }).fill('qa');
+  await form.getByLabel('User name / email').fill('demo');
+  await form.getByLabel('QR code image').setInputFiles({ name: 'qr.png', mimeType: 'image/png', buffer: png });
+  await expect(form.getByText('Key read from the QR code')).toBeVisible();
+  await expect(form.getByLabel('Authenticator key (optional)')).toHaveValue(link);
+  const live = form.getByTestId('totp-live');
+  await expect(live).toContainText('ACME · qa@example.com');
+  await expect(live).toContainText(/Code now: \d{3} \d{3}/);
+  await form.getByRole('button', { name: 'Save profile' }).click();
+  await expect(page.getByText('Login profile “qa” saved')).toBeVisible();
+
+  // The saved key is never sent back, but its current code can be shown to compare with the phone
+  const row = page.getByRole('table', { name: 'Login profiles' }).locator('tr', { hasText: 'qa' });
+  await expect(row).toContainText('🔑 authenticator key');
+  await row.getByRole('button', { name: 'Edit' }).click();
+  await form.getByRole('button', { name: 'Show the current code of the saved key' }).click();
+  await expect(form.getByTestId('totp-helper')).toContainText(/\d{3} \d{3}/);
+});

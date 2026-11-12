@@ -125,6 +125,18 @@ auth:
 - **When MFA cannot be answered:** an application that asks for a code without an authenticator key gives a clear error
   (triaged as *environment*). Then add the key, or let a person sign in once.
 
+**Setting up an authenticator key.** When you add an authenticator app for the test user in the application:
+1. Take a screenshot of the QR code and use **📷 Read the QR code from a screenshot**, or paste the image (Ctrl+V).
+   It is decoded in your browser and never uploaded. You can also choose "Can't scan the QR code?" and paste the key.
+2. Add the same key to the authenticator app on your phone. The form shows **Code now: 123 456**, and it must match
+   the phone; if it doesn't, check the key and the server clock.
+3. Save. The key is encrypted and never shown again; **Show the current code of the saved key** checks it later.
+
+The same helper is on Salesforce personas (*Authenticator (TOTP) secret*). Steps can type a current code with
+`{{totp.NAME}}`, where NAME is:
+- a login profile or a Salesforce persona with a key, or
+- an agent secret holding a key, e.g. for a VPN or second application: `{ "action": "fill", "target": "#otp", "data": { "value": "{{totp.VPN_KEY}}" } }`.
+
 **Sign in once (any MFA).** For MFA that a script cannot answer (a push approval on the phone, an SMS code, number
 matching, a hardware token), use **Sign in once…** next to a login profile or a Salesforce persona.
 - **What happens:** the sign-in page opens in a browser on the server and its screen is shown on the agent page.

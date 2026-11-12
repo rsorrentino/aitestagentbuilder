@@ -7,6 +7,7 @@
 import { Fragment, useState } from 'react';
 import axios from 'axios';
 import { api, BACKEND_URL, errorMessage, REDACTED } from '../lib/api';
+import TotpKeyHelper from './TotpKeyHelper';
 
 export const AUTH_METHODS: Array<{ value: string; label: string; hint: string }> = [
   { value: 'password', label: 'Username + password (UI)', hint: 'Plain UI login. Works when MFA is not triggered, e.g. from a trusted IP range.' },
@@ -173,6 +174,10 @@ export default function SalesforcePersonasCard({ agentId, baseUrl, salesforce, c
           onChange={(e) => set({ [field]: e.target.value || (stored ? REDACTED : undefined) } as any)}
         />
         {hint && <div className="form-hint">{hint}</div>}
+        {field === 'totp_secret' && (
+          <TotpKeyHelper value={editing?.totp_secret === REDACTED ? '' : editing?.totp_secret ?? ''} onChange={(k) => set({ totp_secret: k })}
+            savedCode={stored ? async () => (await api.get(`/agents/${agentId}/auth/totp`, { params: { kind: 'salesforce', identity: editing!.previous_name ?? editing!.name } })).data : undefined} />
+        )}
       </div>
     );
   };

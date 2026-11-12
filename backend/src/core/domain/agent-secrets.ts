@@ -165,7 +165,7 @@ export function secretValues(decrypted: any): string[] {
 }
 
 /**
- * Replace {{secrets.NAME}}, {{env.NAME}}, {{vars.NAME}}, {{data.FIELD}} and {{fake.KIND[:label]}}
+ * Replace {{secrets.NAME}}, {{env.NAME}}, {{vars.NAME}}, {{data.FIELD}}, {{fake.KIND[:label]}} and {{totp.NAME}}
  * placeholders. Unknown secrets, variables and fields throw. Variables come from earlier steps
  * of the test (http_request extract), data fields from the test's data set row, fake values
  * from the test data generator (the same kind and label give the same value within a test).
@@ -174,9 +174,9 @@ export function resolvePlaceholders(
   text: string,
   secrets: Record<string, string>,
   vars?: Record<string, string>,
-  extra: { data?: Record<string, any> | null; fake?: { get(kind: string, label?: string): string }; keepSecrets?: boolean } = {},
+  extra: { data?: Record<string, any> | null; fake?: { get(kind: string, label?: string): string }; keepSecrets?: boolean; totp?: (name: string) => string } = {},
 ): string {
-  return text.replace(/\{\{\s*(secrets|env|vars|data|fake)\.([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*)(?::([\w-]{1,40}))?\s*\}\}/g, (match, kind, name, label) => {
+  return text.replace(/\{\{\s*(secrets|env|vars|data|fake|totp)\.([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*)(?::([\w-]{1,40}))?\s*\}\}/g, (match, kind, name, label) => {
     if (label !== undefined && kind !== 'fake') return match;
     if (kind === 'fake') {
       if (!extra.fake) throw new Error('{{fake.…}} values are only available while a test runs');
@@ -188,6 +188,12 @@ export function resolvePlaceholders(
       for (const part of name.split('.')) cur = cur !== null && typeof cur === 'object' && part in cur ? cur[part] : undefined;
       if (cur === undefined) throw new Error(`Unknown data field "${name}" — the row has: ${Object.keys(extra.data).join(', ') || '(no fields)'}`);
       return cur === null ? '' : typeof cur === 'object' ? JSON.stringify(cur) : String(cur);
+    }
+    if (kind === 'totp') {
+      // Current authenticator code of a login profile, a Salesforce persona or a secret holding a key
+      if (extra.keepSecrets) return match;
+      if (!extra.totp) throw new Error('{{totp.…}} codes are only available while a test runs');
+      return extra.totp(name);
     }
     if (name.includes('.')) return match;
     // Text for the AI: secrets and environment values stay placeholders, resolved only when an action runs

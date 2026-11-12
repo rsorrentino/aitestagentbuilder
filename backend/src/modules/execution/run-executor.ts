@@ -28,6 +28,7 @@ import { Quarantine, QuarantineRepository } from '../quality/quarantine.js';
 import { salesforceSettings, testPersonas } from '../salesforce/personas.js';
 import { AppSessions } from '../auth/app-login.js';
 import { authSettings } from '../auth/profiles.js';
+import { totpFor } from '../salesforce/totp.js';
 import { SessionVault } from '../auth/session-vault.js';
 import { SalesforceSessions } from '../salesforce/session.js';
 import { TestDataRepository } from '../../core/repositories/test-data.repository.js';
@@ -97,6 +98,15 @@ export class RunExecutor {
     }
     const auth = authSettings(this.config);
     if (auth) this.appAuth = new AppSessions(auth, this.config.base_url, { agentId: agent.id, vault });
+  }
+
+  /** {{totp.NAME}}: current code of a login profile's, a Salesforce persona's, or a secret's authenticator key. */
+  private totpCode(name: string): string {
+    const key = (this.config.auth?.profiles ?? []).find((p: any) => p.name === name)?.totp_secret
+      ?? (this.config.salesforce?.personas ?? []).find((p: any) => p.name === name)?.totp_secret
+      ?? this.secrets[name];
+    if (!key) throw new Error(`Unknown authenticator "${name}" — name a login profile or Salesforce persona with an authenticator key, or a secret holding one`);
+    return totpFor(key);
   }
 
   /** Login profiles of other applications (agent config auth). */
@@ -175,7 +185,7 @@ export class RunExecutor {
     const persona = ctx.persona;
     // AI action steps: the instruction goes to the AI, so secrets stay placeholders until an action runs
     const keepSecrets = classifyAction(step.action, step) === 'ai_action';
-    const extra = { data: ctx.testData?.row ?? null, fake: ctx.testData?.fake, keepSecrets };
+    const extra = { data: ctx.testData?.row ?? null, fake: ctx.testData?.fake, keepSecrets, totp: (name: string) => this.totpCode(name) };
     const resolve = (v: any): any => {
       if (typeof v === 'string') return resolvePlaceholders(v, this.secrets, ctx.api?.vars, extra);
       if (Array.isArray(v)) return v.map(resolve);
@@ -365,7 +375,7 @@ export class RunExecutor {
             get: (stepId, instruction) => this.aiActionCache.get({ agentId: this.agent.id, testCaseId: testCase.id, stepId, variant, instruction }),
             save: (stepId, instruction, actions) => this.aiActionCache.save({ agentId: this.agent.id, testCaseId: testCase.id, stepId, variant, instruction }, actions),
           },
-          resolve: (text) => resolvePlaceholders(text, this.secrets, ctxRef.api?.vars, { data: testData?.row ?? null, fake: testData?.fake }),
+          resolve: (text) => resolvePlaceholders(text, this.secrets, ctxRef.api?.vars, { data: testData?.row ?? null, fake: testData?.fake, totp: (n) => this.totpCode(n) }),
         },
         ai: {
           judge: async (system, user) => {
