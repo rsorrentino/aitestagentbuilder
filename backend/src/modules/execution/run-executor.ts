@@ -3,6 +3,7 @@
  * results in the database, and streams progress over WebSocket.
  */
 
+import { mockAccess } from '../mocks/mocks.js';
 import { DbConnections } from '../database/db.js';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -502,6 +503,7 @@ export class RunExecutor {
         auth: this.appAuth,
         codes: this.codes,
         db: this.db,
+        mocks: mockAccess(this.agent.projectId),
         testStartedAt: startedAt,
         persona,
         quality,

@@ -150,7 +150,8 @@ const ACTIONS = `navigate (target: /path or URL), click, fill (data.value), sele
 wait (data.ms, or target to wait for), assert_visible, assert_not_visible, assert_text (target + data.value), assert_url (data.value), assert_title (data.value),
 screenshot, salesforce_login (data.persona: sign in as that persona / login profile), use_block (target = block name, data.params),
 http_request (target path, data.method/json/extract), assert_status, assert_json,
-db_query / assert_db / db_execute (target = database name, data.sql with ? placeholders, data.params, assert_db: data.rows / data.equals), assert_ai (data.value = expectation judged by AI on the page),
+db_query / assert_db / db_execute (target = database name, data.sql with ? placeholders, data.params, assert_db: data.rows / data.equals),
+mock_service_respond (target = mock API name, data.method/path/status/body: the next call answers so), assert_mock_service_called (target, data.method/path/body_contains), assert_ai (data.value = expectation judged by AI on the page),
 ai (data.value = instruction carried out by AI on the live page, only when no other action fits)`;
 
 /** The AI prompt for the clauses the rules did not understand (pure, so it can be checked). */
@@ -176,7 +177,7 @@ export function aiPrompt(lines: string[], lib: LibraryView, outline?: string): {
 const KNOWN = new Set(['navigate', 'click', 'fill', 'select', 'check', 'uncheck', 'press', 'hover', 'wait', 'assert_visible', 'assert_not_visible', 'assert_text',
   'assert_url', 'assert_title', 'screenshot', 'salesforce_login', 'salesforce_logout', 'use_block', 'http_request', 'assert_status', 'assert_json', 'assert_ai', 'ai',
   'assert_header', 'assert_response_time', 'mock_route', 'block_route', 'assert_accessible', 'assert_screenshot', 'assert_performance', 'wait_for_code', 'wait_for_lightning',
-  'db_query', 'assert_db', 'db_execute']);
+  'db_query', 'assert_db', 'db_execute', 'mock_service_respond', 'assert_mock_service_called']);
 
 /** Keep only well-formed steps with known actions and existing blocks (pure). */
 export function cleanAiSteps(raw: any, lib: LibraryView): Step[] {

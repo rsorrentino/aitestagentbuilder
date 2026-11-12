@@ -179,6 +179,19 @@ Steps: `{ "action": "use_block", "target": "<block>", "data": { "params": { … 
 | POST | `/discoveries/:id/elements` | editor | `{ names? }`: add elements to the library (existing names kept) → `{ created, skipped }` |
 | POST | `/discoveries/:id/tests` | editor | `{ indexes? }`: create proposed tests (and the elements they use) → `{ tests, elements }` |
 
+## Mock APIs and CI templates
+
+| Method | Path | Role | Description |
+|---|---|---|---|
+| GET / POST | `/mock-services` | viewer / editor | List; create `{ name, spec? (object, JSON or YAML text), specUrl?, routes?: [{ method, path, status, body, headers, delay_ms }] }` → `{ id, name, slug, path, operations, routes }` |
+| GET / PUT / DELETE | `/mock-services/:id` | viewer / editor | One mock; update `name`, `spec` (`null` removes), `routes` |
+| GET | `/mock-services/:id/requests` | viewer | Recorded requests, newest first: `{ at, method, path, query, body, status, source }` |
+| ANY | `/mocks/:slug/*` | none | The mock itself (`X-Mock-Source: test \| route \| spec \| none`) |
+| GET | `/agents/:id/ci-template?kind=github\|gitlab\|azure\|jenkins` | viewer | `{ path, secret, secretWhere, text }` |
+
+Steps: `mock_service_respond` (target = mock name; `method`, `path`, `status`, `body`, `headers`, `delay_ms`, `times`),
+`assert_mock_service_called` (target; `method`, `path`, `body_contains`, `times`).
+
 ## Integrations
 
 See [integrations.md](integrations.md). Secrets (`api_token`, `token`, `pat`, `webhook_secret`) are encrypted and returned as `••••••••`.

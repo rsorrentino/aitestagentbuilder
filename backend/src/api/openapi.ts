@@ -260,6 +260,14 @@ export function buildOpenApi(serverUrl: string) {
       '/discoveries/{id}/cancel': { post: op('Library', 'Stop a running discovery', { parameters: [id()] }) },
       '/discoveries/{id}/elements': { post: op('Library', 'Add discovered elements to the library { names? }', { parameters: [id()] }) },
       '/discoveries/{id}/tests': { post: op('Library', 'Create proposed tests { indexes? } (and the elements they use)', { parameters: [id()], responses: { 201: ok({}) } }) },
+      '/mock-services': { get: op('Library', 'Mock APIs'), post: op('Library', 'Create a mock API { name, spec?, specUrl?, routes? }', { responses: { 201: ok({}) } }) },
+      '/mock-services/{id}': {
+        get: op('Library', 'A mock API', { parameters: [id()] }),
+        put: op('Library', 'Update a mock API (name, spec, routes)', { parameters: [id()] }),
+        delete: op('Library', 'Delete a mock API', { parameters: [id()], responses: { 204: { description: 'Deleted' } } }),
+      },
+      '/mock-services/{id}/requests': { get: op('Library', 'Requests the mock received (newest first)', { parameters: [id()] }) },
+      '/agents/{id}/ci-template': { get: op('Agents', 'CI pipeline running the agent: kind = github | gitlab | azure | jenkins', { parameters: [id(), q('kind', { enum: ['github', 'gitlab', 'azure', 'jenkins'] })] }) },
       '/blocks': { get: op('Library', 'Reusable step blocks'), post: op('Library', 'Create a block { name, description?, params: [{ name, default? }], steps }', { responses: { 201: ok({}) } }) },
       '/blocks/{id}': {
         get: op('Library', 'A block and where it is used', { parameters: [id()] }),

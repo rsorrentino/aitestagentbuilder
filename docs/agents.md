@@ -540,6 +540,37 @@ cancellation and the maximum run time work as before.
   passed / failed so their dashboards match.
 - Runs started from a grid still use everything else: sign-in sessions, test data, evidence, triage, integrations.
 
+## Mock APIs
+
+**Mock APIs** (left menu) are stand-ins for services that do not exist yet, cannot be reached from the test environment
+(payment providers, partner APIs) or must answer in a particular way. Point the application under test at the mock's
+address (`https://<server>/api/v1/mocks/<name>-<random>/…`, shown on the page; no login, the address is unguessable).
+
+A mock answers each request with, in order:
+
+1. a **one-off answer set by the running test**: `{ "action": "mock_service_respond", "target": "Payments", "data": { "method": "POST", "path": "/v1/payments", "status": 402, "body": { "error": "card declined" }, "times": 1 } }`;
+2. its **fixed routes** (`method`, `path` such as `/orders/{id}` or `/files/*`, `status`, `body`, `headers`, `delay_ms` up to 10 s);
+3. its **OpenAPI description** (pasted or by URL): the documented example of the operation's success response, else a value
+   generated from the schema;
+4. otherwise `404` with what was asked. The header `X-Mock-Source` says which (`test`, `route`, `spec`, `none`).
+
+Every request is recorded (the last 200, in memory). A test checks what the application sent:
+
+```json
+{ "action": "assert_mock_service_called", "target": "Payments", "data": { "method": "POST", "path": "/v1/payments", "body_contains": "4242", "times": 1 } }
+```
+
+(only calls made during that test count). API: `/mock-services` (create with `spec`, `specUrl` or `routes`),
+`/mock-services/:id/requests`.
+
+## Running from CI
+
+The agent page's **Run from CI** card writes the pipeline for the agent: GitHub Actions, GitLab CI, Azure Pipelines or
+**Jenkins** (a declarative `Jenkinsfile` stage: needs `curl` and `jq` on the Jenkins agent and a *Secret text* credential
+`atab-api-key`). Each one starts the run and waits, fails the job when tests fail, publishes the JUnit report, and passes the
+commit and pull request number — with a GitHub, GitLab or Azure DevOps integration for the repository, the commit gets a
+status and the pull request a comment, also when Jenkins runs the tests. API: `GET /agents/:id/ci-template?kind=github|gitlab|azure|jenkins`.
+
 ## Self-healing
 
 When a step fails on a selector (timeout, element not found), self-healing is enabled for the agent, and an AI provider is configured, the executor:

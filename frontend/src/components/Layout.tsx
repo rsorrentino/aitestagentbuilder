@@ -68,6 +68,7 @@ export default function Layout({ children, title, actions }: LayoutProps) {
     {
       label: 'Tools',
       items: [
+        { href: '/mocks', icon: '🎭', label: 'Mock APIs' },
         { href: '/wizard/salesforce', icon: '⚡', label: 'SF Wizard' },
         { href: '/settings/ai-providers', icon: '⚙️', label: 'AI Providers' },
         { href: '/admin/users', icon: '👥', label: 'Users', show: isAdmin && authEnabled },

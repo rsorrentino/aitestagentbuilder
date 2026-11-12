@@ -340,4 +340,21 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_discoveries_project ON discoveries(project_id, started_at DESC);
     `,
   },
+  {
+    version: 14,
+    name: 'mock APIs (service virtualization)',
+    sql: `
+      CREATE TABLE IF NOT EXISTS mock_services (
+        id VARCHAR(255) PRIMARY KEY,
+        project_id VARCHAR(255) NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        name VARCHAR(255) NOT NULL,
+        slug VARCHAR(100) NOT NULL UNIQUE,
+        spec JSONB,
+        routes JSONB NOT NULL DEFAULT '[]'::jsonb,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        created_by VARCHAR(255)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_mock_services_name ON mock_services(project_id, lower(name));
+    `,
+  },
 ];

@@ -29,6 +29,7 @@ export type StepKind =
   | 'http_request' | 'assert_status' | 'assert_json' | 'assert_header' | 'assert_response_time' | 'mock_route' | 'block_route'
   | 'assert_ai' | 'assert_performance' | 'ai_action' | 'wait_for_code'
   | 'db_query' | 'assert_db' | 'db_execute'
+  | 'mock_service_respond' | 'assert_mock_service_called'
   | 'manual';
 
 export interface StepOutcome {
@@ -50,6 +51,8 @@ export interface StepContext {
   codes?: CodeFetcher;
   /** The agent's databases (database steps) */
   db?: DbConnections;
+  /** The project's mock APIs (mock_service_respond, assert_mock_service_called) */
+  mocks?: ReturnType<typeof import('../mocks/mocks.js')['mockAccess']>;
   /** When the test started: codes sent before are ignored. */
   testStartedAt?: Date;
   /** Persona this test runs as (persona matrix), used when a step names none. */
@@ -116,6 +119,8 @@ export function classifyAction(rawAction: string, step: Pick<TestStep, 'target' 
     'get verification code': 'wait_for_code', 'wait for verification code': 'wait_for_code',
     'db query': 'db_query', 'query database': 'db_query', 'query db': 'db_query', 'run query': 'db_query', 'sql query': 'db_query', 'sql': 'db_query',
     'assert db': 'assert_db', 'assert database': 'assert_db', 'check database': 'assert_db', 'verify database': 'assert_db', 'db check': 'assert_db',
+    'mock respond': 'mock_service_respond', 'mock service respond': 'mock_service_respond', 'set mock response': 'mock_service_respond',
+    'assert mock called': 'assert_mock_service_called', 'assert mock service called': 'assert_mock_service_called', 'verify mock called': 'assert_mock_service_called',
     'db execute': 'db_execute', 'execute sql': 'db_execute', 'run sql': 'db_execute', 'db update': 'db_execute',
   };
   if (exact[a]) return exact[a];
@@ -526,6 +531,27 @@ export async function executeStep(step: TestStep, ctx: StepContext, targetOverri
         return { status: 'passed', message: `${r.database}: ${r.rowCount} row(s) as expected.${preview}` };
       }
       return { status: 'passed', message: `${r.database}: ${r.rowCount} row(s).${preview}` };
+    }
+    case 'mock_service_respond': {
+      if (!ctx.mocks) throw new Error('Mock steps need a run context');
+      const d = step.data ?? {};
+      if (!d.path || !String(d.path).startsWith('/')) need('data.path (e.g. /payments)');
+      const s = await ctx.mocks.respond(target || undefined, { method: String(d.method ?? '*').toUpperCase(), path: String(d.path), status: Number(d.status ?? 200), body: d.body, headers: d.headers, delay_ms: d.delay_ms, times: d.times });
+      return { status: 'passed', message: `${s.name}: the next ${d.times ?? 1} ${String(d.method ?? 'request').toUpperCase()} ${d.path} answer${(d.times ?? 1) > 1 ? '' : 's'} ${d.status ?? 200}` };
+    }
+    case 'assert_mock_service_called': {
+      if (!ctx.mocks) throw new Error('Mock steps need a run context');
+      const d = step.data ?? {};
+      const { service, calls } = await ctx.mocks.calls(target || undefined, ctx.testStartedAt);
+      const { pathRegex } = await import('../mocks/mocks.js');
+      const matching = calls.filter((c) => (!d.method || c.method === String(d.method).toUpperCase()) && (!d.path || pathRegex(String(d.path)).test(c.path))
+        && (d.body_contains === undefined || JSON.stringify(c.body ?? '').includes(String(d.body_contains))));
+      const what = `${d.method ? String(d.method).toUpperCase() : 'any'} ${d.path ?? '*'}${d.body_contains !== undefined ? ` containing "${d.body_contains}"` : ''}`;
+      if (d.times !== undefined ? matching.length !== Number(d.times) : matching.length === 0) {
+        const seen = calls.slice(-5).map((c) => `${c.method} ${c.path}`).join(', ') || 'none';
+        throw new Error(`${service.name}: expected ${d.times !== undefined ? `${d.times} call(s)` : 'a call'} ${what} during this test, got ${matching.length} (latest calls: ${seen})`);
+      }
+      return { status: 'passed', message: `${service.name}: ${matching.length} call(s) ${what}` };
     }
     case 'wait_for_code': {
       if (!ctx.codes) throw new Error('This agent has no code sources (Agent → Sign-in & MFA → mailboxes and phone numbers)');

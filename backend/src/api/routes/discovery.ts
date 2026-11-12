@@ -10,6 +10,7 @@ import { AgentRepository } from '../../core/repositories/agent.repository.js';
 import { TestCaseRepository } from '../../core/repositories/test-case.repository.js';
 import { cancelDiscovery, DISCOVERY_LIMITS, DiscoveryRepository, runDiscovery } from '../../modules/discovery/discovery.js';
 import { ElementRepository } from '../../modules/library/library.js';
+import { CI_KINDS, ciTemplate } from '../../modules/integrations/triggers.js';
 
 type Handler = (req: AuthenticatedRequest, res: Response) => Promise<void>;
 const wrap = (fn: Handler): RequestHandler => (req, res) => {
@@ -41,6 +42,16 @@ export function registerDiscoveryRoutes(router: Router, roles: { viewer: Request
     void runDiscovery(d, agent);
     res.locals.audit = { entityId: agent.id, details: { discovery: d.id, ...options } };
     res.status(202).json(d);
+  }));
+
+  // CI templates for an agent: GitHub Actions, GitLab CI, Azure Pipelines, Jenkins
+  router.get('/agents/:id/ci-template', viewer, wrap(async (req, res) => {
+    const agent = await agents.findById(req.params.id, req.project!.id);
+    if (!agent) return void res.status(404).json({ error: 'Agent not found' });
+    const kind = String(req.query.kind ?? 'github') as typeof CI_KINDS[number];
+    if (!CI_KINDS.includes(kind)) return void res.status(400).json({ error: `kind must be one of ${CI_KINDS.join(', ')}` });
+    const apiUrl = String(req.query.apiUrl || process.env.PUBLIC_API_URL || `${req.protocol}://${req.get('host')}/api/v1`);
+    res.json(ciTemplate(kind, { apiUrl, projectId: req.project!.id, agentId: agent.id, agentName: agent.name, branch: typeof req.query.branch === 'string' ? req.query.branch : undefined }));
   }));
 
   router.get('/discoveries', viewer, wrap(async (req, res) => {
