@@ -80,3 +80,17 @@ describe('verification codes by email / SMS', () => {
     assert.ok(secretValues(decryptAgentConfig(kept)).includes('imap-secret-1'));
   });
 });
+
+describe('sign-in health', () => {
+  it('knows who can sign in without a person', async () => {
+    const { unattendedOf } = await import('../modules/auth/health.js');
+    assert.equal(unattendedOf('app', { username: 'u', password: 'p', totp_secret: 'K' }).unattended, 'yes');
+    assert.equal(unattendedOf('app', { username: 'u', password: 'p', codes: { source: 'inbox' } }).how, 'password + codes from inbox');
+    assert.equal(unattendedOf('app', { username: 'u', password: 'p' }).unattended, 'maybe');
+    assert.equal(unattendedOf('app', { username: 'u' }).unattended, 'no');
+    assert.equal(unattendedOf('salesforce', { auth_method: 'jwt' }).unattended, 'yes');
+    assert.equal(unattendedOf('salesforce', { auth_method: 'password_totp', password: 'p', totp_secret: 'K' }).unattended, 'yes');
+    assert.equal(unattendedOf('salesforce', { auth_method: 'password', password: 'p' }).unattended, 'maybe');
+    assert.equal(unattendedOf('salesforce', { auth_method: 'password', password: 'p', codes: { source: 'sf_inbox' } }).unattended, 'yes');
+  });
+});

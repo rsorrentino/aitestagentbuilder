@@ -179,6 +179,17 @@ matching, a hardware token), use **Sign in once…** next to a login profile or 
 - **Limits:** the browser closes after saving or after 10 minutes without use, and at most `SIGNIN_MAX_SESSIONS`
   (default 4) are open at once.
 
+**Sign-in health.** The dashboard's **Sign-in health** card lists the test users (login profiles and Salesforce
+personas) that may need a person before the next runs.
+- **Who is listed:** users who cannot sign in unattended (no stored password, or no answer for MFA), and whose saved
+  session is missing, expiring or expired.
+- **Warnings:** a session saved with *Sign in once* is announced to the project's notification channels subscribed to
+  **Saved sign-in expiring** (`auth.session_expiring`) when less than half of its lifetime (at most 24 h) is left, once
+  per saved session.
+- **When it has expired:** a run fails with "… cannot sign in by itself: use Sign in once… again", triaged as
+  *environment*.
+- **API:** `GET /auth/health` gives the same list.
+
 ## Recording tests
 
 **Recorder page.** Record a test by using the application instead of writing steps.

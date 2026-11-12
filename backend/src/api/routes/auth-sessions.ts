@@ -18,6 +18,7 @@ import { Identity, profileIdentity, SignInError, SignInManager, SignInSession } 
 import { findPersona, salesforceSettings } from '../../modules/salesforce/personas.js';
 import { parseTotpKey, secondsRemaining, totpFor } from '../../modules/salesforce/totp.js';
 import { checkSource, codeFetcher, codeSources } from '../../modules/auth/code-sources.js';
+import { authHealth, warnExpiringSessions } from '../../modules/auth/health.js';
 
 type Handler = (req: AuthenticatedRequest, res: Response) => Promise<void>;
 const wrap = (fn: Handler): RequestHandler => (req, res) => {
@@ -32,6 +33,17 @@ export function registerAuthSessionRoutes(router: Router, roles: { viewer: Reque
   const { viewer, editor } = roles;
   const agents = new AgentRepository();
   const vault = new SessionVault();
+
+  // Sign-in health of the project: who can sign in unattended, and the saved sessions to watch
+  router.get('/auth/health', viewer, wrap(async (req, res) => {
+    const list = await authHealth(req.project!.id);
+    res.json({ identities: list, attention: list.filter((x) => x.attention).length });
+  }));
+
+  // Send the expiry warnings now (normally hourly)
+  router.post('/auth/health/warn', editor, audit('auth.health.warn', 'project'), wrap(async (req, res) => {
+    res.json({ warned: await warnExpiringSessions(req.project!.id) });
+  }));
 
   router.get('/agents/:id/auth/sessions', viewer, wrap(async (req, res) => {
     const agent = await agents.findById(req.params.id, req.project!.id);

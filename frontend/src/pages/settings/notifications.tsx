@@ -18,6 +18,7 @@ const EVENTS = [
   { value: 'run.failed', label: 'Run failed' },
   { value: 'run.completed', label: 'Run passed' },
   { value: 'run.cancelled', label: 'Run cancelled' },
+  { value: 'auth.session_expiring', label: 'Saved sign-in expiring (needs a person)' },
 ];
 
 export default function NotificationsPage() {

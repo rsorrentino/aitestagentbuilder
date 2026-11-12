@@ -143,6 +143,8 @@ export function buildOpenApi(serverUrl: string) {
       '/agents/{id}/ai-action-cache': {
         delete: op('Quality', 'Forget cached AI action sequences of an agent (optionally ?testCaseId=): the AI decides again next run', { parameters: [id(), q('testCaseId', { type: 'string' })] }),
       },
+      '/auth/health': { get: op('Sign-in', 'Sign-in health of the project: who can sign in unattended, sessions expiring or expired') },
+      '/auth/health/warn': { post: op('Sign-in', 'Send the session expiry warnings now (normally hourly)') },
       '/agents/{id}/auth/sessions': {
         get: op('Sign-in', 'Saved sessions of the agent\'s login profiles and Salesforce personas (never their contents)', { parameters: [id()] }),
         delete: op('Sign-in', 'Forget saved sessions (?kind=app|salesforce&identity=name)', { parameters: [id(), q('kind', { type: 'string' }), q('identity', { type: 'string' })] }),

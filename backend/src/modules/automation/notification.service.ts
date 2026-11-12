@@ -22,7 +22,8 @@ import { runEvents, RunFinishedEvent } from './run-events.js';
 
 export type ChannelType = 'webhook' | 'slack' | 'teams' | 'email';
 export const CHANNEL_TYPES: ChannelType[] = ['webhook', 'slack', 'teams', 'email'];
-export const RUN_EVENTS = ['run.completed', 'run.failed', 'run.cancelled'] as const;
+/** Run events, and a warning before a session saved by a person expires (it cannot be renewed unattended). */
+export const RUN_EVENTS = ['run.completed', 'run.failed', 'run.cancelled', 'auth.session_expiring'] as const;
 export type RunEventName = typeof RUN_EVENTS[number];
 
 export interface NotificationChannel {
@@ -164,6 +165,7 @@ export function triageLine(triage: any): string | undefined {
 }
 
 function headline(event: RunEventName, s: Summary): string {
+  if ((s as any).headline) return (s as any).headline;
   const icon = event === 'run.completed' ? '✅' : event === 'run.failed' ? '❌' : '⏹';
   return `${icon} ${s.agentName ?? s.agentId}: ${s.status} — ${s.passed}/${s.total} passed${s.failed ? `, ${s.failed} failed` : ''}`;
 }
@@ -254,6 +256,32 @@ export class NotificationService {
     );
     await Promise.all(result.rows.map((row) =>
       this.deliver(this.map(row, true), event, runSummary(run, row.project_name))));
+  }
+
+  /** Warns the project's subscribed channels that a saved sign-in session will expire soon. */
+  async onSessionExpiring(n: { projectId: string; agentId: string; agentName: string; kind: string; identity: string; expiresAt: Date; unattended: boolean }): Promise<number> {
+    const event: RunEventName = 'auth.session_expiring';
+    const result = await this.db.query(
+      `SELECT c.*, p.name AS project_name FROM notification_channels c JOIN projects p ON p.id = c.project_id
+        WHERE c.project_id = $1 AND c.enabled AND c.events ? $2`,
+      [n.projectId, event],
+    );
+    const appUrl = (process.env.PUBLIC_APP_URL || 'http://localhost:4000').replace(/\/$/, '');
+    const hours = Math.max(0, Math.round((n.expiresAt.getTime() - Date.now()) / 3_600_000));
+    const who = `${n.kind === 'salesforce' ? 'Salesforce persona' : 'login profile'} ${n.identity}`;
+    for (const row of result.rows) {
+      const summary: any = {
+        id: `SESSION-${n.agentId}-${n.identity}`, status: 'expiring', agentId: n.agentId, agentName: n.agentName, projectId: n.projectId, projectName: row.project_name,
+        total: 0, passed: 0, failed: 0, skipped: 0, durationMs: 0, startedAt: new Date(), finishedAt: new Date(), triggeredBy: 'sign-in health', error: undefined,
+        url: `${appUrl}/agents/${n.agentId}`, triage: undefined,
+        headline: `🔐 ${n.agentName}: the saved sign-in of ${who} expires in ${hours} h`,
+        failures: [{ title: 'What to do', error: n.unattended
+          ? 'Nothing: the next run signs in by itself.'
+          : 'Open the agent, Sign-in & MFA, and use "Sign in once…" again, or add an authenticator key or a mailbox for codes so it renews by itself.' }],
+      };
+      await this.deliver(this.map(row, true), event, summary);
+    }
+    return result.rows.length;
   }
 
   /** Sends a sample notification through a channel (UI "Test" button). */

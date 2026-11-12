@@ -20,6 +20,7 @@ const workDir = mkdtempSync(join(tmpdir(), 'atab-auth-'));
 const TOTP_KEY = 'JBSWY3DPEHPK3PXP';
 
 Object.assign(process.env, {
+  NOTIFICATIONS_ALLOW_PRIVATE_URLS: 'true',
   NODE_ENV: 'test', DATABASE_URL: DB_URL, AUTH_ENABLED: 'false', ARTIFACTS_PATH: join(workDir, 'artifacts'), LOG_TO_FILE: 'false', STEP_TIMEOUT_MS: '4000',
 });
 for (const k of ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'AZURE_OPENAI_API_KEY', 'GITHUB_TOKEN', 'GH_TOKEN', 'COPILOT_GITHUB_TOKEN', 'LLM_PROVIDER', 'EVIDENCE_TRACE', 'EVIDENCE_VIDEO']) delete process.env[k];
@@ -33,6 +34,7 @@ const USERS: Record<string, string> = {
 const GINA_PHONE = '+15550001111';
 let mail: MailFixture;
 const pendingCodes = new Map<string, string>();
+const hooks: any[] = [];
 const sessions = new Map<string, string>();
 const devices = new Set<string>();
 const counts = { passwords: 0, mfaPrompts: 0, codesAccepted: 0 };
@@ -145,6 +147,17 @@ async function idp(req: http.IncomingMessage, res: http.ServerResponse, url: URL
       const u = String(b.get('username'));
       if (USERS[u] !== b.get('password')) return send(200, html('Login', '<p>Invalid username or password</p><input name="password" type="password">'));
       return redirect('/simple/home', [`sid=${newSession(u)}; Path=/; HttpOnly`]);
+    }
+    // Notification webhook (session expiry warnings)
+    case 'POST /hook': {
+      let raw = '';
+      req.on('data', (chunk) => { raw += chunk; });
+      req.on('end', () => {
+        hooks.push(JSON.parse(raw));
+        res.writeHead(204);
+        res.end();
+      });
+      return;
     }
     // Echoes what was typed: checks {{totp.NAME}} in steps
     case 'GET /form':
@@ -457,6 +470,50 @@ describe('sign-in & MFA for any application (integration)', () => {
     const invalid = await call('PUT', `/agents/${agent}`, { config: { code_sources: [{ name: 'x', type: 'sms', account_sid: 'nope', phone_number: '123' }] } });
     assert.equal(invalid.status, 400);
     assert.match(invalid.data.error, /account_sid/);
+  });
+
+  it('reports sign-in health and warns before a session saved by a person expires', async (t) => {
+    if (!dbAvailable) return t.skip('database not available');
+    const created = await call('POST', '/agents', {
+      name: 'Health',
+      config: { base_url: base, evidence: { trace: 'off', video: 'off' }, auth: { profiles: [
+        { name: 'alice', login_url: '/idp/login', username: 'alice@example.com', password: 'alice-pw', totp_secret: TOTP_KEY },
+        { name: 'pat', login_url: '/idp/login', username: 'pat@example.com' },
+        { name: 'bob', login_url: '/simple/login', username: 'bob', password: 'bob-pw' },
+      ] } },
+    });
+    const agent = created.data.id;
+    // Pat signed in once, by hand, 22 hours ago: the session expires in 2 hours
+    const { SessionVault } = await import('../../modules/auth/session-vault.js');
+    await new SessionVault().save(agent, 'app', 'pat', { cookies: [], origins: [] }, { maxAgeHours: 2, capturedBy: 'interactive' });
+    const { default: getDatabaseClient } = await import('../../infra/db/client.js');
+    await getDatabaseClient().query(`UPDATE auth_sessions SET captured_at = NOW() - INTERVAL '22 hours' WHERE agent_id = $1 AND identity = 'pat'`, [agent]);
+
+    const health = await call('GET', '/auth/health');
+    assert.equal(health.status, 200, health.text);
+    const of = (name: string) => health.data.identities.find((x: any) => x.agentId === agent && x.identity === name);
+    assert.deepEqual([of('alice').unattended, of('alice').attention], ['yes', false]);
+    assert.deepEqual([of('pat').unattended, of('pat').session, of('pat').attention], ['no', 'expiring', true]);
+    assert.match(of('pat').hint, /Sign in once/);
+    assert.deepEqual([of('bob').unattended, of('bob').session, of('bob').attention], ['maybe', 'none', true]);
+    assert.ok(health.data.attention >= 2);
+
+    const channel = await call('POST', '/notifications', { name: 'Hook', type: 'webhook', config: { url: `${base}/hook` }, events: ['auth.session_expiring'] });
+    assert.equal(channel.status, 201, channel.text);
+    const warn = await call('POST', '/auth/health/warn');
+    assert.equal(warn.data.warned, 1, warn.text);
+    const hook = hooks.find((h) => h.event === 'auth.session_expiring');
+    assert.ok(hook, JSON.stringify(hooks));
+    assert.match(hook.run.headline, /Health: the saved sign-in of login profile pat expires in [12] h/);
+    assert.match(hook.run.failures[0].error, /Sign in once/);
+    assert.equal((await call('POST', '/auth/health/warn')).data.warned, 0, 'warned once per saved session');
+
+    // When it has expired, runs fail with what to do, triaged as environment
+    await call('DELETE', `/agents/${agent}/auth/sessions?identity=pat`);
+    const tc = await newTest('Pat needs a person', [{ action: 'assert_text', target: 'h1', data: { value: 'Welcome' } }], { login_as: 'pat' });
+    const r = await run(agent, [tc]);
+    assert.match(r.results[0].error, /pat cannot sign in by itself \(no stored password\): use "Sign in once…" again/);
+    assert.equal(r.metadata.triage.groups[0].category, 'environment');
   });
 });
 

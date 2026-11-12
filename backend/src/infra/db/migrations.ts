@@ -223,4 +223,9 @@ export const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    version: 9,
+    name: 'session expiry warnings',
+    sql: `ALTER TABLE auth_sessions ADD COLUMN IF NOT EXISTS warned_at TIMESTAMP;`,
+  },
 ];

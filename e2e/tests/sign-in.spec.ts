@@ -151,3 +151,22 @@ test('a mailbox for emailed codes is added, checked and used by a login profile'
   expect(saved.config.code_sources[0].password).toBe('••••••••');
   expect(saved.config.auth.profiles[0].codes).toEqual({ source: 'qa_inbox', to: 'qa+shopper@example.com' });
 });
+
+test('the dashboard shows which test users need a person to sign in', async ({ page, request }) => {
+  const auth = await (await request.get(`${API_URL}/auth/config`)).json();
+  test.skip(auth.authEnabled, 'runs in local mode (no login)');
+  const agentName = unique('AAA health');
+  const agent = await (await request.post(`${API_URL}/agents`, {
+    data: { name: agentName, config: { base_url: `${BACKEND}/demo/`, auth: { profiles: [{ name: 'hand_signed', login_url: 'login', username: 'demo' }] } } },
+  })).json();
+
+  await page.goto('/');
+  const card = page.getByRole('region', { name: 'Sign-in health' });
+  await expect(card).toContainText('may need a person');
+  const item = card.locator('li', { hasText: agentName });
+  await expect(item).toContainText('hand_signed');
+  await expect(item).toContainText('no saved session · no user name / password stored');
+  await expect(item).toContainText('Sign in once');
+  await item.getByRole('link', { name: 'hand_signed' }).click();
+  await expect(page).toHaveURL(new RegExp(`/agents/${agent.id}`));
+});

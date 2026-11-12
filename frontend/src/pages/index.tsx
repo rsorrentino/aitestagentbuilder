@@ -8,6 +8,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/router';
 import Layout from '../components/Layout';
 import ChatPanel from '../components/ChatPanel';
+import SignInHealthCard from '../components/SignInHealthCard';
 
 
 function statusBadge(status: string) {
@@ -183,6 +184,7 @@ export default function Dashboard() {
 
         {/* Right column */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <SignInHealthCard />
           {/* Quick actions */}
           <div className="card">
             <div className="card-header"><h3>Quick Actions</h3></div>

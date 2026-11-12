@@ -136,7 +136,10 @@ export class AppSessions {
 
   /** Fill the sign-in pages until signed in (or stuck). */
   private async formLogin(page: Page, p: LoginProfile): Promise<{ usedMfa: boolean }> {
-    if (!p.username || !p.password) throw new Error(`Login profile "${p.name}" needs a username and a password (or sign in once interactively)`);
+    if (!p.username || !p.password) {
+      throw new Error(`The saved session of ${p.name} has expired (or was never saved) and ${p.name} cannot sign in by itself (no stored password): `
+        + 'use "Sign in once…" again (Agent → Sign-in & MFA)');
+    }
     const since = new Date();
     await page.goto(this.loginUrl(p), { waitUntil: 'domcontentloaded', timeout: 30_000 });
     await this.settle(page);

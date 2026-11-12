@@ -136,6 +136,8 @@ Screenshots are served at `GET /artifacts/<path from evidence.screenshots>`.
 
 | Method | Path | Role | Description |
 |---|---|---|---|
+| GET | `/auth/health` | viewer | Sign-in health of the project: `{ identities: [{ agentId, agentName, kind, identity, unattended: yes\|maybe\|no, how, session: ok\|expiring\|expired\|none, expiresAt, attention, hint }], attention }` |
+| POST | `/auth/health/warn` | editor | Send the expiry warnings now (normally hourly) → `{ warned }` |
 | GET | `/agents/:id/auth/sessions` | viewer | Saved sessions of the agent's login profiles and Salesforce personas: `[{ kind: app\|salesforce, identity, capturedAt, expiresAt, expired, lastUsedAt, capturedBy, cookies }]` (never their contents) |
 | DELETE | `/agents/:id/auth/sessions?kind=&identity=` | editor | Forget saved sessions (all, or one) → `{ forgotten }` |
 | POST | `/agents/:id/auth/profiles/:name/verify` | editor | Sign in as a login profile now (`{ fresh: true }` ignores the saved session) and save the session → `{ ok, message, reused, usedMfa, landedUrl, session }` or `{ ok: false, error }` |
