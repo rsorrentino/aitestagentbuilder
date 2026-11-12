@@ -69,7 +69,7 @@ test('connect GitHub, a pull request webhook runs the tests and reports back', a
     await expect(line).toContainText('connected');
     await expect(line).toContainText('1 trigger · commit status · PR comment');
     await line.getByRole('button', { name: 'Setup' }).click();
-    const setup = page.getByTestId('github-setup');
+    const setup = page.getByTestId('codehost-setup');
     await expect(setup.getByTestId('hook-url')).toContainText('/hooks/github/');
     integrationId = (await setup.getByTestId('hook-url').innerText()).split('/').pop()!;
     await setup.getByLabel('Agent').selectOption({ label: agentName });

@@ -125,3 +125,101 @@ jobs:
           if-no-files-found: ignore
 `;
 }
+
+/**
+ * POSIX sh: starts the run (wait mode) with the commit and pull / merge request, downloads
+ * the JUnit report, exits non-zero unless the run completed. Expects ATAB_URL, ATAB_PROJECT,
+ * ATAB_AGENT, ATAB_API_KEY, optional ATAB_BASE_URL, and PROVIDER, REPO, SHA, PR, REF, CI_URL.
+ */
+export const CI_RUN_SCRIPT = `set -eu
+pr_json=null
+if [ -n "\${PR:-}" ]; then pr_json="$PR"; fi
+body=$(jq -n --arg agent "$ATAB_AGENT" --arg base "\${ATAB_BASE_URL:-}" --arg provider "$PROVIDER" --arg repo "$REPO" \\
+  --arg sha "$SHA" --arg ref "$REF" --arg url "$CI_URL" --argjson pr "$pr_json" \\
+  '{agentId: $agent, wait: true, timeoutSeconds: 3300,
+    metadata: {triggeredBy: "ci", ciUrl: $url, git: {provider: $provider, repository: $repo, sha: $sha, ref: $ref, pr: $pr}}}
+   + (if $base == "" then {} else {baseUrl: $base} end)')
+run=$(curl -fsS -X POST "$ATAB_URL/runs" -H "Authorization: ApiKey $ATAB_API_KEY" -H "X-Project-Id: $ATAB_PROJECT" -H 'Content-Type: application/json' -d "$body")
+id=$(echo "$run" | jq -r .id)
+status=$(echo "$run" | jq -r .status)
+echo "Run $id: $status ($(echo "$run" | jq -r '"\\(.passedTests) passed, \\(.failedTests) failed of \\(.totalTests)"'))"
+curl -fsS "$ATAB_URL/runs/$id/report?format=junit" -H "Authorization: ApiKey $ATAB_API_KEY" -H "X-Project-Id: $ATAB_PROJECT" -o ai-tests-junit.xml || true
+test "$status" = completed`;
+
+const indent = (text: string, spaces: number) => text.split('\n').map((l) => (l ? ' '.repeat(spaces) + l : l)).join('\n');
+
+/** GitLab CI job: merge request pipelines, the default branch and manual pipelines; JUnit shown in the merge request. */
+export function gitlabCiJob(o: { apiUrl: string; projectId: string; agentId: string; agentName: string }): string {
+  return `# AI tests for "${o.agentName}" — add this job to .gitlab-ci.yml
+# Needs the CI/CD variable ATAB_API_KEY (Settings → CI/CD → Variables, masked): an API key of
+# AI Test Agent Builder (Account → API keys) with the editor role on this project.
+ai-tests:
+  stage: test
+  image: alpine:3.20
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == "web"
+  timeout: 1h
+  variables:
+    ATAB_URL: ${o.apiUrl.replace(/\/+$/, '')}
+    ATAB_PROJECT: ${o.projectId}
+    ATAB_AGENT: ${o.agentId}
+    # Test a review app instead of the agent's address: ATAB_BASE_URL: $CI_ENVIRONMENT_URL
+  before_script:
+    - apk add --no-cache curl jq
+  script:
+    - |
+      export PROVIDER=gitlab REPO="$CI_PROJECT_PATH" SHA="$CI_COMMIT_SHA" PR="\${CI_MERGE_REQUEST_IID:-}" REF="$CI_COMMIT_REF_NAME" CI_URL="$CI_JOB_URL"
+${indent(CI_RUN_SCRIPT, 6)}
+  artifacts:
+    when: always
+    paths: [ai-tests-junit.xml]
+    reports:
+      junit: ai-tests-junit.xml
+`;
+}
+
+/** Azure Pipelines: pushes to the branch and pull requests (Azure Repos: add it as a build validation branch policy). */
+export function azurePipeline(o: { apiUrl: string; projectId: string; agentId: string; agentName: string; branch?: string }): string {
+  const branch = o.branch || 'main';
+  return `# AI tests for "${o.agentName}" — save as azure-pipelines.yml (or add the steps to yours)
+# Needs the secret pipeline variable ATAB_API_KEY: an API key of AI Test Agent Builder
+# (Account → API keys) with the editor role. For Azure Repos pull requests, add this pipeline
+# as a build validation in the branch policy of ${branch}.
+trigger:
+  branches:
+    include: [${branch}]
+pr:
+  branches:
+    include: [${branch}]
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  ATAB_URL: ${o.apiUrl.replace(/\/+$/, '')}
+  ATAB_PROJECT: ${o.projectId}
+  ATAB_AGENT: ${o.agentId}
+  # Test another address (a slot or preview environment): ATAB_BASE_URL: https://…
+
+steps:
+  - checkout: none
+  - bash: |
+      export PROVIDER=azure_devops REPO="$BUILD_REPOSITORY_NAME" SHA="\${SYSTEM_PULLREQUEST_SOURCECOMMITID:-$BUILD_SOURCEVERSION}" PR="\${SYSTEM_PULLREQUEST_PULLREQUESTID:-}" REF="$BUILD_SOURCEBRANCH"
+      export CI_URL="\${SYSTEM_COLLECTIONURI}\${SYSTEM_TEAMPROJECT}/_build/results?buildId=\${BUILD_BUILDID}"
+${indent(CI_RUN_SCRIPT, 6)}
+    displayName: Run the tests
+    timeoutInMinutes: 60
+    env:
+      ATAB_API_KEY: $(ATAB_API_KEY)
+  - task: PublishTestResults@2
+    displayName: Publish the test results
+    condition: always()
+    inputs:
+      testResultsFormat: JUnit
+      testResultsFiles: ai-tests-junit.xml
+      testRunTitle: AI tests
+      failTaskOnMissingResultsFile: false
+`;
+}

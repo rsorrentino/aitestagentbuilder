@@ -110,7 +110,7 @@ export default function RunDetail() {
       )}
       {run.metadata?.git && (
         <div className="alert alert-info" data-testid="run-git">
-          Started by {run.metadata.git.event === 'pull_request' ? `pull request #${run.metadata.git.pr}` : run.metadata.git.event === 'deployment_status' ? `a deployment to ${run.metadata.git.environment}` : run.metadata.git.event === 'push' ? `a push to ${run.metadata.git.branch}` : 'CI'}
+          Started by {run.metadata.git.event === 'pull_request' ? `${run.metadata.git.provider === 'gitlab' ? 'merge request !' : 'pull request #'}${run.metadata.git.pr}` : run.metadata.git.event === 'deployment_status' ? `a deployment to ${run.metadata.git.environment}` : run.metadata.git.event === 'push' ? `a push to ${run.metadata.git.branch}` : 'CI'}
           {' '}in {run.metadata.git.repository} at <span className="code">{String(run.metadata.git.sha ?? '').slice(0, 7)}</span>
           {run.metadata.git.title && <> — “{run.metadata.git.title}”</>}
           {run.metadata.baseUrl && <>; tested {run.metadata.baseUrl}</>}
@@ -125,7 +125,7 @@ export default function RunDetail() {
           {r.resolved?.length > 0 && <>resolved: {r.resolved.join(', ')}. </>}
           {r.linked > 0 && <>results shown on {r.linked} linked stor{r.linked === 1 ? 'y' : 'ies'}. </>}
           {r.status && <>commit status: {r.status}. </>}
-          {r.comment && <><a href={r.comment} target="_blank" rel="noreferrer">pull request comment</a>. </>}
+          {r.comment && <><a href={r.comment} target="_blank" rel="noreferrer">{r.type === 'gitlab' ? 'merge request note' : 'pull request comment'}</a>. </>}
           {r.errors?.length > 0 && <span className="text-danger">Problems: {r.errors.join('; ')}</span>}
         </div>
       ) : null)}

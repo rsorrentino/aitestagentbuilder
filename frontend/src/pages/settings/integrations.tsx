@@ -9,7 +9,7 @@ import Link from 'next/link';
 import Layout from '../../components/Layout';
 import { api, errorMessage, formatDate } from '../../lib/api';
 import { useSession } from '../../lib/session';
-import { GitHubForm, GitHubSetup } from '../../components/GitHubIntegration';
+import { CodeHostForm, CodeHostSetup, CodeHostType, codeHostLabel } from '../../components/CodeHostIntegration';
 
 const CATEGORIES = [
   { value: 'app_bug', label: 'Application bugs' },
@@ -46,8 +46,8 @@ export default function IntegrationsPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [form, setForm] = useState({ ...blankJira });
   const [editing, setEditing] = useState<string | null>(null);
-  const [kind, setKind] = useState<'jira' | 'github'>('jira');
-  const [githubEditing, setGithubEditing] = useState<any>(null);
+  const [kind, setKind] = useState<'jira' | CodeHostType>('jira');
+  const [hostEditing, setHostEditing] = useState<any>(null);
   const [setupOpen, setSetupOpen] = useState<string | null>(null);
 
   // Import stories
@@ -63,7 +63,7 @@ export default function IntegrationsPage() {
       const [i, d] = await Promise.all([api.get('/integrations'), api.get('/defects')]);
       setItems(i.data);
       setDefects(d.data);
-      setImportFrom((cur) => cur || i.data.find((x: any) => x.type === 'jira' || x.type === 'github')?.id || '');
+      setImportFrom((cur) => cur || i.data[0]?.id || '');
     } catch (err) {
       setError(errorMessage(err));
     }
@@ -114,9 +114,9 @@ export default function IntegrationsPage() {
 
   const edit = (i: any) => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
-    if (i.type === 'github') {
-      setKind('github');
-      setGithubEditing(i);
+    if (i.type !== 'jira') {
+      setKind(i.type);
+      setHostEditing(i);
       return;
     }
     setKind('jira');
@@ -157,7 +157,7 @@ export default function IntegrationsPage() {
     }
   };
 
-  const jiras = items.filter((i) => i.type === 'jira' || i.type === 'github');
+  const jiras = items;
   const openDefects = defects.filter((d) => d.status === 'open');
 
   return (
@@ -168,21 +168,21 @@ export default function IntegrationsPage() {
       {isAdmin && (
         <div className="card mb-6">
           <div className="card-header">
-            <h3>{editing ? `Edit ${form.name}` : githubEditing ? `Edit ${githubEditing.name}` : '＋ Connect'}</h3>
-            {!editing && !githubEditing && (
+            <h3>{editing ? `Edit ${form.name}` : hostEditing ? `Edit ${hostEditing.name}` : '＋ Connect'}</h3>
+            {!editing && !hostEditing && (
               <div className="chip-group" role="radiogroup" aria-label="Integration type">
-                {(['jira', 'github'] as const).map((k) => (
+                {(['jira', 'github', 'gitlab', 'azure_devops'] as const).map((k) => (
                   <div key={k} role="radio" aria-checked={kind === k} tabIndex={0} className={`chip${kind === k ? ' selected' : ''}`} onClick={() => setKind(k)}
-                    onKeyDown={(e) => e.key === ' ' && setKind(k)}>{k === 'jira' ? 'Jira' : 'GitHub'}</div>
+                    onKeyDown={(e) => e.key === ' ' && setKind(k)}>{k === 'jira' ? 'Jira' : codeHostLabel(k)}</div>
                 ))}
               </div>
             )}
           </div>
-          {kind === 'github' ? (
+          {kind !== 'jira' ? (
             <div className="card-body">
-              <GitHubForm key={githubEditing?.id ?? 'new'} editing={githubEditing} agents={agents} onError={setError}
-                onCancel={() => setGithubEditing(null)}
-                onSaved={async (message) => { setGithubEditing(null); setNotice(message); await load(); }} />
+              <CodeHostForm key={`${kind}-${hostEditing?.id ?? 'new'}`} type={kind} editing={hostEditing} agents={agents} onError={setError}
+                onCancel={() => setHostEditing(null)}
+                onSaved={async (message) => { setHostEditing(null); setNotice(message); await load(); }} />
             </div>
           ) : (
         <form onSubmit={save} data-testid="jira-form">
@@ -271,7 +271,7 @@ export default function IntegrationsPage() {
           <div className="empty-state">
             <div className="empty-icon">🔗</div>
             <h3>No integrations yet</h3>
-            <p>Connect Jira to turn stories into tests and get bugs filed for you overnight; connect GitHub to test every pull request and deployment.</p>
+            <p>Connect Jira or Azure DevOps to turn stories into tests and get bugs filed for you overnight; connect GitHub, GitLab or Azure Repos to test every pull / merge request and deployment.</p>
           </div>
         ) : (
           <div className="table-wrapper">
@@ -281,11 +281,15 @@ export default function IntegrationsPage() {
                 {items.map((i) => (
                   <Fragment key={i.id}>
                   <tr>
-                    <td><div className="fw-600">{i.name}</div><div className="text-sm text-muted">{i.type}{!i.enabled ? ' · disabled' : ''}</div></td>
-                    <td className="text-sm">{i.config.base_url ?? i.config.repository ?? i.config.project}{i.config.project_key ? ` · ${i.config.project_key}` : ''}</td>
+                    <td><div className="fw-600">{i.name}</div><div className="text-sm text-muted">{i.type === 'jira' ? 'Jira' : codeHostLabel(i.type)}{!i.enabled ? ' · disabled' : ''}</div></td>
+                    <td className="text-sm">
+                      {i.type === 'jira' ? `${i.config.base_url}${i.config.project_key ? ` · ${i.config.project_key}` : ''}`
+                        : i.type === 'azure_devops' ? `${i.config.organization_url} · ${i.config.project}${i.config.repository ? ` · ${i.config.repository}` : ''}`
+                          : i.config.repository ?? i.config.project}
+                    </td>
                     <td className="text-sm">
                       {i.config.defects?.enabled ? `filed for ${(i.config.defects.categories ?? ['app_bug']).join(', ')}` : <span className="text-muted">off</span>}
-                      {i.type === 'github' && (
+                      {i.type !== 'jira' && (
                         <div className="text-muted">
                           {(i.config.triggers ?? []).length} trigger{(i.config.triggers ?? []).length === 1 ? '' : 's'}
                           {i.config.commit_status !== false && ' · commit status'}{i.config.pr_comment !== false && ' · PR comment'}
@@ -304,14 +308,14 @@ export default function IntegrationsPage() {
                     <td>
                       <div className="flex gap-2" style={{ flexWrap: 'wrap' }}>
                         {canEdit && <button className="btn btn-secondary btn-sm" onClick={() => check(i)}>Check</button>}
-                        {i.type === 'github' && <button className="btn btn-secondary btn-sm" onClick={() => setSetupOpen(setupOpen === i.id ? null : i.id)}>Setup</button>}
+                        {i.type !== 'jira' && <button className="btn btn-secondary btn-sm" onClick={() => setSetupOpen(setupOpen === i.id ? null : i.id)}>Setup</button>}
                         {isAdmin && <button className="btn btn-secondary btn-sm" onClick={() => edit(i)}>Edit</button>}
                         {isAdmin && <button className="btn btn-secondary btn-sm" onClick={() => act(() => api.put(`/integrations/${i.id}`, { enabled: !i.enabled }))}>{i.enabled ? 'Disable' : 'Enable'}</button>}
                         {isAdmin && <button className="btn btn-danger btn-sm" onClick={() => confirm(`Delete “${i.name}”? Links and filed-bug tracking are removed (the issues stay in ${i.type}).`) && act(() => api.delete(`/integrations/${i.id}`))}>Delete</button>}
                       </div>
                     </td>
                   </tr>
-                  {setupOpen === i.id && <tr><td colSpan={5} style={{ padding: 0 }}><GitHubSetup integration={i} agents={agents} /></td></tr>}
+                  {setupOpen === i.id && <tr><td colSpan={5} style={{ padding: 0 }}><CodeHostSetup integration={i} agents={agents} /></td></tr>}
                   </Fragment>
                 ))}
               </tbody>
@@ -337,7 +341,7 @@ export default function IntegrationsPage() {
               <div className="form-group" style={{ gridColumn: 'span 2' }}>
                 <label className="form-label" htmlFor="imp-what">Stories *</label>
                 <input id="imp-what" className="form-control" value={importWhat} onChange={(e) => setImportWhat(e.target.value)} required
-                  placeholder='SHOP-12, SHOP-15 or #12  ·  or JQL: sprint in openSprints() AND type = Story  ·  or words' />
+                  placeholder='SHOP-12, SHOP-15 or #12  ·  or JQL / WIQL  ·  or words' />
               </div>
               <div className="form-group">
                 <label className="form-label" htmlFor="imp-module">Module</label>

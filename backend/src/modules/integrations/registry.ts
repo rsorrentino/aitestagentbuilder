@@ -3,20 +3,27 @@
  * for code hosts, commit statuses and pull request comments.
  */
 
+import { AzureDevOpsClient } from './azure-devops.js';
 import { GitHubClient } from './github.js';
+import { GitLabClient } from './gitlab.js';
 import { JiraClient } from './jira.js';
 import { CodeHost, Integration, IntegrationError, IssueTracker } from './types.js';
 
 const factories: Partial<Record<Integration['type'], (config: Record<string, any>) => IssueTracker>> = {
   jira: (c) => new JiraClient(c as any),
   github: (c) => new GitHubClient(c as any),
+  gitlab: (c) => new GitLabClient(c as any),
+  azure_devops: (c) => new AzureDevOpsClient(c as any),
 };
 
-const hosts: Partial<Record<Integration['type'], (config: Record<string, any>) => CodeHost>> = {
+const hosts: Partial<Record<Integration['type'], (config: Record<string, any>) => CodeHost | null>> = {
   github: (c) => new GitHubClient(c as any),
+  gitlab: (c) => new GitLabClient(c as any),
+  // Azure DevOps reports to commits only when a repository is configured (work items need none)
+  azure_devops: (c) => (c.repository ? new AzureDevOpsClient(c as any) : null),
 };
 
-export function registerCodeHost(type: Integration['type'], factory: (config: Record<string, any>) => CodeHost): void {
+export function registerCodeHost(type: Integration['type'], factory: (config: Record<string, any>) => CodeHost | null): void {
   hosts[type] = factory;
 }
 

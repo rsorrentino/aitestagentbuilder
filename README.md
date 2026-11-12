@@ -49,6 +49,7 @@
 | **Unattended nights** | Pre-flight checks with retries (one alert instead of hundreds of failures when the app is down), failed tests re-run at the end in a fresh browser, maximum run time, interrupted runs started again after a restart, daily digest every morning |
 | **Jira** | Stories imported as AI-written tests linked to them, test results shown on each story, requirement coverage page, bugs filed automatically for new failures of unattended runs (screenshot attached, never duplicated, commented when failing again, resolved when the tests pass) — Jira Cloud and Data Center ([docs/integrations.md](docs/integrations.md)) |
 | **GitHub** | Tests run on every pull request, push and successful deployment (preview URLs tested), status check on the commit, one pull request comment kept up to date, bugs as issues closed when fixed, signed webhooks or a generated Actions workflow ([docs/integrations.md](docs/integrations.md#github)) |
+| **GitLab & Azure DevOps** | The same for merge requests (review apps tested) and Azure Repos pull requests: commit statuses, one comment kept up to date, bugs as GitLab issues or Azure work items (screenshot attached) resolved when fixed, user stories imported as tests, GitLab CI and Azure Pipelines templates |
 | **Sign-in & MFA for any app** | Login profiles for any web application (SSO and two-step forms found automatically, authenticator codes typed when asked, "remember this device" accepted) and encrypted sessions reused across runs, for Salesforce personas too; "sign in once" in a server browser for push / SMS MFA; QR-screenshot authenticator setup; emailed and SMS codes read from a test mailbox (IMAP) or Twilio number; sign-in health on the dashboard and warnings before a session saved by a person expires |
 | **Test recorder** | Record tests by clicking through the application in a server-side browser (robust unique selectors, secrets as placeholders), or import `npx playwright codegen` scripts (JS/TS/Python) |
 | **AI action steps** | “AI: add the cheapest product to the cart”: the AI carries out an instruction on the live page; what worked is replayed without the AI, secrets never reach it, and the actions can be saved as ordinary steps |
@@ -178,7 +179,7 @@ The integration suite also exercises the Copilot **CLI** and **API** transports 
 - [docs/windows.md](docs/windows.md): install on Windows Server without Docker (PowerShell scripts, Windows services)
 - [docs/enterprise-roadmap.md](docs/enterprise-roadmap.md): enterprise features and roadmap
 - [docs/salesforce-guide.md](docs/salesforce-guide.md): testing Salesforce orgs as many users (personas, MFA, JWT, Log in as, permission assertions)
-- [docs/integrations.md](docs/integrations.md): Jira and GitHub (stories → tests, results on stories and pull requests, automatic bugs, runs on every pull request and deployment)
+- [docs/integrations.md](docs/integrations.md): Jira, GitHub, GitLab and Azure DevOps (stories → tests, results on stories and pull requests, automatic bugs, runs on every pull request and deployment)
 - [docs/mcp-server.md](docs/mcp-server.md): MCP server
 - [docs/production-readiness.md](docs/production-readiness.md): deployment notes
 
