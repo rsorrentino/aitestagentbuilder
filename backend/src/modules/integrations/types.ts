@@ -87,6 +87,35 @@ export interface IssueTracker {
   attach(key: string, file: { name: string; data: Buffer; contentType: string }): Promise<void>;
 }
 
+export type CommitState = 'pending' | 'success' | 'failure' | 'error';
+
+/** Code hosts (GitHub, GitLab, Azure DevOps): results on commits and pull requests. */
+export interface CodeHost {
+  /** Status check on a commit (one per context, updated in place) */
+  setStatus(sha: string, state: CommitState, status: { context: string; description: string; url: string }): Promise<void>;
+  /** One comment per marker on a pull request, edited on later runs instead of adding more */
+  upsertPullRequestComment(pr: number, marker: string, body: string): Promise<{ url: string; updated: boolean }>;
+}
+
+/** What a webhook from a code host asks for (after the provider's payload is understood). */
+export interface GitEvent {
+  event: 'push' | 'pull_request' | 'deployment_status';
+  repository: string;
+  sha: string;
+  ref?: string;
+  branch?: string;
+  /** pull_request: target branch */
+  baseBranch?: string;
+  pr?: number;
+  draft?: boolean;
+  environment?: string;
+  /** deployment_status: the deployed address (preview environments) */
+  deploymentUrl?: string;
+  /** Who / what caused it, for the run page */
+  actor?: string;
+  title?: string;
+}
+
 export class IntegrationError extends Error {
   constructor(message: string, public status = 502) {
     super(message);

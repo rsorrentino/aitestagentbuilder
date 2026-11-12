@@ -34,6 +34,7 @@ import { registerQualityRoutes } from './quality.js';
 import { registerRecorderRoutes } from './recorder.js';
 import { registerAuthSessionRoutes } from './auth-sessions.js';
 import { registerIntegrationRoutes } from './integrations.js';
+import { registerHookRoutes } from './hooks.js';
 import { AgentRepository } from '../../core/repositories/agent.repository.js';
 
 const router = Router();
@@ -81,6 +82,8 @@ const owner = requireProjectRole('owner');
 router.get('/auth/config', (req, res) => auth.config(req, res));
 router.post('/auth/login', rateLimiters.strict, (req, res) => auth.login(req, res));
 router.post('/auth/refresh', (req, res) => auth.refresh(req, res));
+// Webhooks from GitHub & co. (signed, no login)
+registerHookRoutes(router);
 
 // ── Everything below requires an identity ────────────────────────────────────
 router.use(requireAuth);

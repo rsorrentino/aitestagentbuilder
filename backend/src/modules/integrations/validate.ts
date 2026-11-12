@@ -4,6 +4,7 @@
 
 import { REDACTED } from '../../infra/security/secrets.js';
 import { IntegrationType } from './types.js';
+import { validateTriggers } from './triggers.js';
 
 const httpUrl = (v: any) => {
   try {
@@ -32,6 +33,7 @@ export function validateIntegration(type: IntegrationType, config: any, partial:
       if (!/^[\w.-]+\/[\w.-]+$/.test(String(config.repository ?? ''))) errors.push('config.repository must be owner/name');
       if (!secret('token')) errors.push('config.token is required (a fine-grained personal access token or GitHub App token)');
       if (config.api_url !== undefined && config.api_url !== '' && !httpUrl(config.api_url)) errors.push('config.api_url must be a URL (GitHub Enterprise Server: https://github.example.com/api/v3)');
+      if (config.webhook_secret !== undefined && config.webhook_secret !== '' && config.webhook_secret !== REDACTED && String(config.webhook_secret).length < 16) errors.push('config.webhook_secret must be at least 16 characters');
       break;
     case 'gitlab':
       if (!String(config.project ?? '').trim()) errors.push('config.project must be the project path (group/name) or numeric id');
@@ -44,6 +46,8 @@ export function validateIntegration(type: IntegrationType, config: any, partial:
       if (!secret('pat')) errors.push('config.pat is required (personal access token)');
       break;
   }
+  if (type !== 'jira') errors.push(...validateTriggers(config.triggers));
+  for (const k of ['commit_status', 'pr_comment']) if (config[k] !== undefined && typeof config[k] !== 'boolean') errors.push(`config.${k} must be true or false`);
   const d = config.defects;
   if (d !== undefined) {
     if (typeof d !== 'object' || Array.isArray(d)) errors.push('config.defects must be an object');

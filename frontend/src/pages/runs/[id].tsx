@@ -108,13 +108,24 @@ export default function RunDetail() {
           {run.metadata.preflight.checks.map((c: any) => `${c.name} ${c.ok ? '✓' : '✗'} (${c.detail})`).join(' · ')}
         </div>
       )}
-      {(run.metadata?.integrations ?? []).map((r: any) => (r.filed?.length || r.commented?.length || r.resolved?.length || r.errors?.length) ? (
+      {run.metadata?.git && (
+        <div className="alert alert-info" data-testid="run-git">
+          Started by {run.metadata.git.event === 'pull_request' ? `pull request #${run.metadata.git.pr}` : run.metadata.git.event === 'deployment_status' ? `a deployment to ${run.metadata.git.environment}` : run.metadata.git.event === 'push' ? `a push to ${run.metadata.git.branch}` : 'CI'}
+          {' '}in {run.metadata.git.repository} at <span className="code">{String(run.metadata.git.sha ?? '').slice(0, 7)}</span>
+          {run.metadata.git.title && <> — “{run.metadata.git.title}”</>}
+          {run.metadata.baseUrl && <>; tested {run.metadata.baseUrl}</>}
+          {run.metadata.ciUrl && <> · <a href={run.metadata.ciUrl} target="_blank" rel="noreferrer">CI job</a></>}
+        </div>
+      )}
+      {(run.metadata?.integrations ?? []).map((r: any) => (r.filed?.length || r.commented?.length || r.resolved?.length || r.status || r.errors?.length) ? (
         <div key={r.integration} className={`alert ${r.errors?.length ? 'alert-warning' : 'alert-info'}`} data-testid="run-integrations">
           <strong>{r.integration}:</strong>{' '}
           {r.filed?.length > 0 && <>filed {r.filed.map((f: any, n: number) => <span key={f.key}>{n ? ', ' : ''}<a href={f.url} target="_blank" rel="noreferrer">{f.key}</a></span>)}. </>}
           {r.commented?.length > 0 && <>still failing: {r.commented.join(', ')}. </>}
           {r.resolved?.length > 0 && <>resolved: {r.resolved.join(', ')}. </>}
           {r.linked > 0 && <>results shown on {r.linked} linked stor{r.linked === 1 ? 'y' : 'ies'}. </>}
+          {r.status && <>commit status: {r.status}. </>}
+          {r.comment && <><a href={r.comment} target="_blank" rel="noreferrer">pull request comment</a>. </>}
           {r.errors?.length > 0 && <span className="text-danger">Problems: {r.errors.join('; ')}</span>}
         </div>
       ) : null)}

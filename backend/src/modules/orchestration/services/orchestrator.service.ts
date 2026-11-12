@@ -22,7 +22,7 @@ import logger from '../../../infra/logger/index.js';
 import { triageRun } from '../../quality/triage.js';
 import { applyQuarantinePolicy } from '../../quality/quarantine.js';
 import { runEvents } from '../../automation/run-events.js';
-import { syncRun } from '../../integrations/sync.js';
+import { reportRunStarted, syncRun } from '../../integrations/sync.js';
 
 export class RunValidationError extends Error {
   constructor(message: string, public statusCode = 400) {
@@ -60,9 +60,13 @@ export class OrchestratorService {
     return this.planner.createTestPlan(agent.config, agent.projectId);
   }
 
-  async startRun(input: TestRunCreateInput & { testIds?: string[] }): Promise<TestRun> {
-    const agent = await this.agentRepo.findById(input.agentId, input.projectId);
-    if (!agent) throw new RunValidationError(`Agent not found: ${input.agentId}`, 404);
+  async startRun(input: TestRunCreateInput & { testIds?: string[]; baseUrl?: string }): Promise<TestRun> {
+    const stored = await this.agentRepo.findById(input.agentId, input.projectId);
+    if (!stored) throw new RunValidationError(`Agent not found: ${input.agentId}`, 404);
+    // A run can test another address than the agent's (a preview deployment of a pull request)
+    const baseUrl = input.baseUrl ?? input.metadata?.baseUrl;
+    if (baseUrl !== undefined && !/^https?:\/\/[^\s]+$/i.test(String(baseUrl))) throw new RunValidationError('baseUrl must be an http(s) URL');
+    const agent = baseUrl ? { ...stored, config: { ...stored.config, base_url: String(baseUrl) } } : stored;
     if (agent.status !== 'active') throw new RunValidationError(`Agent "${agent.name}" is ${agent.status}`);
     if (!agent.config?.base_url) throw new RunValidationError('Agent has no base_url configured');
 
@@ -82,6 +86,7 @@ export class OrchestratorService {
       projectId: agent.projectId,
       metadata: {
         ...(input.metadata ?? {}), strategy: plan.strategy, environment: agent.config.environment,
+        ...(baseUrl ? { baseUrl: String(baseUrl) } : {}),
         // Kept so an interrupted run can be started again with the same tests
         ...(input.testIds?.length ? { testIds: input.testIds.slice(0, 1000) } : {}),
       },
@@ -89,6 +94,8 @@ export class OrchestratorService {
     await this.runRepo.updateRun(run.id, { totalTests: plan.tests.length });
     run.totalTests = plan.tests.length;
     run.agentName = agent.name;
+    // Pending commit status on GitHub (runs started by a push, pull request or deployment)
+    if (run.metadata?.git) void reportRunStarted(run.id).catch((e) => logger.warn('Could not report the run start', { runId: run.id, error: e.message }));
 
     this.queue.push({ runId: run.id, agent, plan, triggeredBy: input.metadata?.triggeredBy });
     this.pump();
@@ -111,6 +118,7 @@ export class OrchestratorService {
     this.active.get(runId)?.cancel();
 
     await this.runRepo.updateRun(runId, { status: 'cancelled', finishedAt: new Date() });
+    if (queuedIndex !== -1) await syncRun(runId).catch(() => undefined);
     emitRunEvent(runId, 'run_completed', { status: 'cancelled', total: run.totalTests, passed: run.passedTests, failed: run.failedTests, skipped: run.skippedTests });
     const cancelled = (await this.runRepo.findRunById(runId))!;
     runEvents.emitFinished(cancelled);
@@ -239,7 +247,7 @@ export class OrchestratorService {
       if (finalStatus === 'failed') await this.triage(runId, agent);
       if (finalStatus !== 'cancelled') await this.updateQuarantine(runId, agent, plan);
       // Jira / GitHub / …: file or update defects, show results on linked stories
-      if (finalStatus !== 'cancelled') await syncRun(runId).catch((e) => logger.warn('Integration sync failed', { runId, error: e.message }));
+      await syncRun(runId).catch((e) => logger.warn('Integration sync failed', { runId, error: e.message }));
       const done = await this.runRepo.findRunById(runId);
       emitRunEvent(runId, 'run_completed', {
         status: finalStatus,

@@ -13,6 +13,8 @@ import { DefectRepository, IntegrationRepository, redactIntegration, TestLinkRep
 import { trackerFor } from '../../modules/integrations/registry.js';
 import { INTEGRATION_TYPES, IntegrationError, IntegrationType } from '../../modules/integrations/types.js';
 import { validateIntegration } from '../../modules/integrations/validate.js';
+import { githubActionsWorkflow } from '../../modules/integrations/triggers.js';
+import { AgentRepository } from '../../core/repositories/agent.repository.js';
 
 type Handler = (req: AuthenticatedRequest, res: Response) => Promise<void>;
 const wrap = (fn: Handler): RequestHandler => (req, res) => {
@@ -27,6 +29,15 @@ export function registerIntegrationRoutes(router: Router, roles: { viewer: Reque
   const repo = new IntegrationRepository();
   const links = new TestLinkRepository();
   const testCases = new TestCaseRepository();
+  const agents = new AgentRepository();
+
+  /** Trigger agents must be agents of the project */
+  const unknownAgents = async (config: any, projectId: string) => {
+    const ids = [...new Set<string>((Array.isArray(config?.triggers) ? config.triggers : []).map((t: any) => String(t.agent_id)))];
+    const missing: string[] = [];
+    for (const id of ids) if (!(await agents.findById(id, projectId))) missing.push(id);
+    return missing.length ? [`config.triggers: unknown agent ${missing.join(', ')}`] : [];
+  };
 
   const load = async (req: AuthenticatedRequest, res: Response) => {
     const i = await repo.get(req.params.id, req.project!.id, true);
@@ -43,6 +54,7 @@ export function registerIntegrationRoutes(router: Router, roles: { viewer: Reque
     if (!INTEGRATION_TYPES.includes(type)) return void res.status(400).json({ error: `type must be one of ${INTEGRATION_TYPES.join(', ')}` });
     const errors = validateIntegration(type as IntegrationType, config, false);
     if (!name || typeof name !== 'string') errors.unshift('name is required');
+    if (!errors.length) errors.push(...await unknownAgents(config, req.project!.id));
     if (errors.length) return void res.status(400).json({ error: errors.join('; ') });
     const created = await repo.create({ projectId: req.project!.id, type, name: name.trim(), config, createdBy: req.user?.email });
     res.locals.audit = { entityId: created.id, details: { type, name } };
@@ -54,6 +66,7 @@ export function registerIntegrationRoutes(router: Router, roles: { viewer: Reque
     if (!current) return void res.status(404).json({ error: 'Integration not found' });
     if (req.body?.config !== undefined) {
       const errors = validateIntegration(current.type, { ...current.config, ...req.body.config }, true);
+      if (!errors.length) errors.push(...await unknownAgents(req.body.config, req.project!.id));
       if (errors.length) return void res.status(400).json({ error: errors.join('; ') });
     }
     const updated = await repo.update(current.id, req.project!.id, {
@@ -80,6 +93,21 @@ export function registerIntegrationRoutes(router: Router, roles: { viewer: Reque
       await repo.setCheck(i.id, { ok: false, error: e.message });
       res.json({ ok: false, error: e.message });
     }
+  }));
+
+  // GitHub Actions workflow running an agent's tests on pull requests and pushes
+  router.get('/integrations/:id/workflow', viewer, wrap(async (req, res) => {
+    const i = await load(req, res);
+    if (!i) return;
+    if (i.type !== 'github') return void res.status(400).json({ error: 'Workflows are generated for GitHub integrations' });
+    const agent = await agents.findById(String(req.query.agentId ?? ''), req.project!.id);
+    if (!agent) return void res.status(400).json({ error: 'agentId must be an agent of this project' });
+    const apiUrl = String(req.query.apiUrl || process.env.PUBLIC_API_URL || `${req.protocol}://${req.get('host')}/api/v1`);
+    res.json({
+      path: '.github/workflows/ai-tests.yml',
+      secret: 'ATAB_API_KEY',
+      yaml: githubActionsWorkflow({ apiUrl, projectId: req.project!.id, agentId: agent.id, agentName: agent.name, branch: typeof req.query.branch === 'string' ? req.query.branch : undefined }),
+    });
   }));
 
   router.get('/integrations/:id/issues', viewer, wrap(async (req, res) => {

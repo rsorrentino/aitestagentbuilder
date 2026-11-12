@@ -58,3 +58,92 @@ describe('integrations', () => {
     assert.notEqual(signatureLabel('a1', 'sig'), signatureLabel('a2', 'sig'));
   });
 });
+
+describe('GitHub', async () => {
+  const crypto = await import('crypto');
+  const YAML = (await import('yaml')).default;
+  const { issueNumber, parseGitHubEvent, verifyGitHubSignature } = await import('../modules/integrations/github.js');
+  const { githubActionsWorkflow, matchTriggers, validateTriggers } = await import('../modules/integrations/triggers.js');
+  const { commitStatusOf, pullRequestComment } = await import('../modules/integrations/sync.js');
+
+  it('checks webhook signatures in constant time', () => {
+    const body = Buffer.from('{"a":1}');
+    const sig = `sha256=${crypto.createHmac('sha256', 's3cret').update(body).digest('hex')}`;
+    assert.equal(verifyGitHubSignature('s3cret', body, sig), true);
+    assert.equal(verifyGitHubSignature('other', body, sig), false);
+    assert.equal(verifyGitHubSignature('s3cret', Buffer.from('{"a":2}'), sig), false);
+    assert.equal(verifyGitHubSignature('s3cret', body, undefined), false);
+    assert.equal(verifyGitHubSignature('', body, sig), false);
+    assert.equal(verifyGitHubSignature('s3cret', body, 'sha256=00'), false);
+  });
+
+  it('understands push, pull request and deployment webhooks', () => {
+    const repository = { full_name: 'acme/shop' };
+    assert.deepEqual(parseGitHubEvent('push', { ref: 'refs/heads/main', after: 'abc', repository, pusher: { name: 'dev' }, head_commit: { message: 'Fix\n\nbody' } }),
+      { event: 'push', repository: 'acme/shop', sha: 'abc', ref: 'refs/heads/main', branch: 'main', actor: 'dev', title: 'Fix' });
+    assert.equal(parseGitHubEvent('push', { ref: 'refs/heads/main', after: '0000000000', deleted: true, repository }), null, 'branch deleted');
+    assert.equal(parseGitHubEvent('push', { ref: 'refs/tags/v1', after: 'abc', repository }), null, 'tags');
+    const pr = parseGitHubEvent('pull_request', { action: 'synchronize', repository, pull_request: { number: 3, draft: true, head: { sha: 'h', ref: 'f' }, base: { ref: 'main' } } });
+    assert.deepEqual([pr?.pr, pr?.sha, pr?.baseBranch, pr?.draft], [3, 'h', 'main', true]);
+    assert.equal(parseGitHubEvent('pull_request', { action: 'labeled', repository, pull_request: {} }), null);
+    assert.equal(parseGitHubEvent('deployment_status', { repository, deployment: {}, deployment_status: { state: 'failure' } }), null);
+    assert.equal(parseGitHubEvent('deployment_status', { repository, deployment: { sha: 's', environment: 'preview' }, deployment_status: { state: 'success', target_url: 'https://p.example' } })?.deploymentUrl, 'https://p.example');
+    assert.equal(parseGitHubEvent('issues', { repository }), null);
+    assert.deepEqual(['#12', '12', 'acme/shop#12', 'https://github.com/acme/shop/issues/12'].map(issueNumber), [12, 12, 12, 12]);
+    assert.throws(() => issueNumber('SHOP-1'), /not a GitHub issue number/);
+  });
+
+  it('matches triggers by event, branch globs and environments', () => {
+    const triggers: any[] = [
+      { event: 'push', agent_id: 'smoke', branches: ['main', 'release/*'] },
+      { event: 'pull_request', agent_id: 'full', branches: ['main'] },
+      { event: 'deployment_status', agent_id: 'full', environments: ['preview*', 'staging'], use_deployment_url: true },
+      { event: 'deployment_status', agent_id: 'full', environments: ['staging'] },
+    ];
+    const push = (branch: string) => matchTriggers(triggers, { event: 'push', repository: 'r', sha: 's', branch });
+    assert.deepEqual(push('main'), [{ agentId: 'smoke' }]);
+    assert.deepEqual(push('release/2.1'), [{ agentId: 'smoke' }]);
+    assert.deepEqual(push('feature/x'), []);
+    assert.deepEqual(matchTriggers(triggers, { event: 'pull_request', repository: 'r', sha: 's', branch: 'f', baseBranch: 'main', pr: 1 }), [{ agentId: 'full' }]);
+    assert.deepEqual(matchTriggers(triggers, { event: 'pull_request', repository: 'r', sha: 's', baseBranch: 'main', draft: true }), []);
+    assert.deepEqual(matchTriggers(triggers, { event: 'deployment_status', repository: 'r', sha: 's', environment: 'Preview-12', deploymentUrl: 'https://pr-12.example' }), [{ agentId: 'full', baseUrl: 'https://pr-12.example' }]);
+    assert.deepEqual(matchTriggers(triggers, { event: 'deployment_status', repository: 'r', sha: 's', environment: 'staging' }), [{ agentId: 'full' }], 'one run per agent');
+    assert.deepEqual(validateTriggers([{ event: 'merge', agent_id: '' }, { event: 'push', agent_id: 'a', branches: 'main' }]), [
+      'config.triggers[0].event must be one of push, pull_request, deployment_status', 'config.triggers[0].agent_id is required', 'config.triggers[1].branches must be a list of names',
+    ]);
+  });
+
+  it('reports runs as commit statuses and pull request comments', () => {
+    const base: any = { id: 'RUN-1', agentId: 'a', agentName: 'Shop', totalTests: 3, passedTests: 3, failedTests: 0, metadata: { git: { sha: 'abcdef123' } } };
+    assert.deepEqual(commitStatusOf({ ...base, status: 'running' }), { state: 'pending', description: 'Running 3 tests…' });
+    assert.deepEqual(commitStatusOf({ ...base, status: 'completed' }), { state: 'success', description: '3 of 3 passed' });
+    assert.deepEqual(commitStatusOf({ ...base, status: 'failed', passedTests: 1, failedTests: 2 }), { state: 'failure', description: '2 of 3 failed' });
+    assert.equal(commitStatusOf({ ...base, status: 'failed', passedTests: 0, metadata: { preflight: { ok: false } } }).state, 'error');
+    assert.equal(commitStatusOf({ ...base, status: 'cancelled' }).state, 'error');
+    const body = pullRequestComment({
+      ...base, status: 'failed', passedTests: 2, failedTests: 1, duration: 61_000,
+      metadata: { baseUrl: 'https://pr-1.example', git: { sha: 'abcdef123', environment: 'preview' }, triage: { groups: [{ category: 'app_bug', tests: [{}], seenBefore: false }] } },
+      results: [
+        { testCaseId: 't1', status: 'failed', startedAt: new Date(1), error: 'Step 2 (assert_text): Expected | pipe', metadata: { title: 'Cart' } },
+        { testCaseId: 't1', status: 'passed', startedAt: new Date(0), metadata: { title: 'Cart' } },
+        { testCaseId: 't2', status: 'failed', startedAt: new Date(1), error: 'flaky', metadata: { title: 'Flaky', quarantined: true } },
+      ],
+    });
+    assert.match(body, /^### ❌ AI tests failed: Shop\n\*\*2 passed · 1 failed\*\* of 3 · 1 quarantined \(flaky\) failure not counted · 61 s · \[run RUN-1\]/);
+    assert.match(body, /Tested `https:\/\/pr-1\.example` at abcdef1 \(preview\)\./);
+    assert.match(body, /\| Cart \| Expected \\\| pipe \|/);
+    assert.ok(!body.includes('Flaky'));
+    assert.match(body, /\*\*Triage:\*\* 1 × application bug \(new\)/);
+  });
+
+  it('writes a valid GitHub Actions workflow', () => {
+    const yaml = githubActionsWorkflow({ apiUrl: 'https://atab.example.com/api/v1/', projectId: 'default', agentId: 'agent-1', agentName: 'Shop', branch: 'develop' });
+    const wf = YAML.parse(yaml);
+    assert.deepEqual(Object.keys(wf.on), ['pull_request', 'push', 'workflow_dispatch']);
+    assert.deepEqual(wf.on.push.branches, ['develop']);
+    assert.equal(wf.jobs['ai-tests'].env.ATAB_URL, 'https://atab.example.com/api/v1');
+    assert.equal(wf.jobs['ai-tests'].env.ATAB_AGENT, 'agent-1');
+    assert.equal(wf.jobs['ai-tests'].steps[0].env.ATAB_API_KEY, '${{ secrets.ATAB_API_KEY }}');
+    assert.match(wf.jobs['ai-tests'].steps[0].run, /test "\$status" = completed/);
+  });
+});

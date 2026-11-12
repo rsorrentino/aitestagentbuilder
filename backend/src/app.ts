@@ -39,7 +39,8 @@ export function createApp(): express.Express {
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Project-Id'],
   }));
 
-  app.use(express.json({ limit: '10mb' }));
+  // Webhooks are verified against the exact bytes received (HMAC signatures)
+  app.use(express.json({ limit: '10mb', verify: (req, _res, buf) => { if (req.url?.includes('/hooks/')) (req as any).rawBody = buf; } }));
   app.use(express.urlencoded({ extended: true, limit: '10mb' }));
   app.use(metricsMiddleware);
 
