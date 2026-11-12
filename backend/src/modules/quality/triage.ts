@@ -22,7 +22,7 @@ export interface TriageGroup {
   suggestion?: string;
   source: 'rules' | 'ai';
   sample: { error: string; action?: string; target?: string };
-  tests: Array<{ resultId: string; testCaseId: string; title: string; persona?: string; dataRow?: string }>;
+  tests: Array<{ resultId: string; testCaseId: string; title: string; persona?: string; dataRow?: string; browser?: string }>;
   /** Earlier runs of the same agent with this failure (last 30 days) */
   seenBefore: number;
   firstSeen?: string;
@@ -77,7 +77,7 @@ export function classifyFailure(error: string): { category: FailureCategory; rea
 function finalFailures(results: any[]): any[] {
   const latest = new Map<string, any>();
   for (const r of results) {
-    const key = `${r.testCaseId}@${r.metadata?.persona ?? ''}#${r.metadata?.dataRow ?? ''}`;
+    const key = `${r.testCaseId}@${r.metadata?.persona ?? ''}#${r.metadata?.dataRow ?? ''}~${r.metadata?.browser ?? ''}`;
     const prev = latest.get(key);
     if (!prev || new Date(r.startedAt) >= new Date(prev.startedAt)) latest.set(key, r);
   }
@@ -97,7 +97,7 @@ export function groupFailures(results: any[]): Omit<TriageGroup, 'seenBefore' | 
       group = { signature, category, reason, source: 'rules', sample: { error: error.slice(0, 500), action: step?.action, target: step?.target }, tests: [] };
       groups.set(signature, group);
     }
-    group.tests.push({ resultId: r.id, testCaseId: r.testCaseId, title: r.metadata?.title ?? r.testCaseId, ...(r.metadata?.persona ? { persona: r.metadata.persona } : {}), ...(r.metadata?.dataLabel ? { dataRow: r.metadata.dataLabel } : {}) });
+    group.tests.push({ resultId: r.id, testCaseId: r.testCaseId, title: r.metadata?.title ?? r.testCaseId, ...(r.metadata?.persona ? { persona: r.metadata.persona } : {}), ...(r.metadata?.dataLabel ? { dataRow: r.metadata.dataLabel } : {}), ...(r.metadata?.browser ? { browser: r.metadata.browser } : {}) });
   }
   const order: Record<FailureCategory, number> = { app_bug: 0, environment: 1, test_bug: 2, unknown: 3 };
   return [...groups.values()].sort((a, b) => order[a.category] - order[b.category] || b.tests.length - a.tests.length);

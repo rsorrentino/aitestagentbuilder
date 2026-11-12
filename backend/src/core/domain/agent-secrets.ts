@@ -8,6 +8,7 @@
  *   config.salesforce.personas[].password / totp_secret / security_token
  *   config.auth.profiles[].password / totp_secret                (login profiles of any application)
  *   config.code_sources[].password / auth_token                  (mailboxes / phone numbers for verification codes)
+ *   config.grid.access_key                                        (BrowserStack, LambdaTest, Sauce Labs)
  */
 
 import { decryptSecret, isEncrypted, REDACTED, sealSecret } from '../../infra/security/secrets.js';
@@ -117,10 +118,14 @@ function sealSalesforce(next: any, previous: any): any {
   return out;
 }
 
+const GRID_SECRET_FIELDS = ['access_key'];
+const gridSecretSpots = (grid: any): Array<{ obj: any; fields: Fields }> => (grid && typeof grid === 'object' ? [{ obj: grid, fields: GRID_SECRET_FIELDS }] : []);
+const transformGrid = (grid: any, fn: (value: any, field: string) => any) => (grid && typeof grid === 'object' ? mapFields(grid, GRID_SECRET_FIELDS, fn) : grid);
+
 /** Whether a stored config still holds plaintext secrets (written before encryption existed). */
 export function hasPlaintextSecrets(config: any): boolean {
   if (Object.values(config?.secrets ?? {}).some((v) => !isEncrypted(v))) return true;
-  return [...salesforceSecretSpots(config?.salesforce), ...authSecretSpots(config?.auth), ...sourceSecretSpots(config?.code_sources)]
+  return [...salesforceSecretSpots(config?.salesforce), ...authSecretSpots(config?.auth), ...sourceSecretSpots(config?.code_sources), ...gridSecretSpots(config?.grid)]
     .some(({ obj, fields }) => fields.some((f) => obj?.[f] && !isEncrypted(obj[f])));
 }
 
@@ -153,6 +158,14 @@ export function sealAgentConfig(next: any, previous?: any): any {
   if (next.code_sources !== undefined || previous?.code_sources) {
     out.code_sources = sealSources(next.code_sources, previous?.code_sources);
   }
+  // The grid keeps its access key when sent back redacted or left out, unless the provider changed
+  if (next.grid !== undefined || previous?.grid) {
+    const grid = next.grid === undefined ? previous.grid : next.grid;
+    out.grid = grid && typeof grid === 'object'
+      ? mapFields(grid, GRID_SECRET_FIELDS, (_v, f) => (next.grid === undefined ? previous.grid[f]
+        : grid[f] === undefined && grid.provider !== previous?.grid?.provider ? undefined : sealSecret(grid[f], previous?.grid?.[f])))
+      : grid;
+  }
   return out;
 }
 
@@ -166,6 +179,7 @@ export function redactAgentConfig(config: any): any {
   if (config.salesforce) out.salesforce = transformSalesforce(config.salesforce, (v) => (v ? REDACTED : undefined));
   if (config.auth) out.auth = transformAuth(config.auth, (v) => (v ? REDACTED : undefined));
   if (config.code_sources) out.code_sources = transformSources(config.code_sources, (v) => (v ? REDACTED : undefined));
+  if (config.grid) out.grid = transformGrid(config.grid, (v) => (v ? REDACTED : undefined));
   return out;
 }
 
@@ -179,13 +193,14 @@ export function decryptAgentConfig(config: any): any {
   if (config.salesforce) out.salesforce = transformSalesforce(config.salesforce, (v) => (v ? decryptSecret(String(v)) : undefined));
   if (config.auth) out.auth = transformAuth(config.auth, (v) => (v ? decryptSecret(String(v)) : undefined));
   if (config.code_sources) out.code_sources = transformSources(config.code_sources, (v) => (v ? decryptSecret(String(v)) : undefined));
+  if (config.grid) out.grid = transformGrid(config.grid, (v) => (v ? decryptSecret(String(v)) : undefined));
   return out;
 }
 
 /** All plaintext secret values of a decrypted config (for log masking). */
 export function secretValues(decrypted: any): string[] {
   const values: string[] = Object.values(decrypted?.secrets ?? {}).map(String);
-  for (const { obj, fields } of [...salesforceSecretSpots(decrypted?.salesforce), ...authSecretSpots(decrypted?.auth), ...sourceSecretSpots(decrypted?.code_sources)]) {
+  for (const { obj, fields } of [...salesforceSecretSpots(decrypted?.salesforce), ...authSecretSpots(decrypted?.auth), ...sourceSecretSpots(decrypted?.code_sources), ...gridSecretSpots(decrypted?.grid)]) {
     for (const f of fields) if (obj?.[f]) values.push(String(obj[f]));
   }
   return values.filter(Boolean);

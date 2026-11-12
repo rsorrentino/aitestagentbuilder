@@ -95,11 +95,11 @@ export class RunRepository {
     // Failures of quarantined tests are counted apart: they do not fail the run.
     const statsQuery = `
       WITH latest AS (
-        SELECT DISTINCT ON (test_case_id, COALESCE(metadata->>'persona', '') || COALESCE('#' || (metadata->>'dataRow'), '')) status,
+        SELECT DISTINCT ON (test_case_id, COALESCE(metadata->>'persona', '') || COALESCE('#' || (metadata->>'dataRow'), '') || COALESCE('~' || (metadata->>'browser'), '')) status,
                COALESCE((metadata->>'quarantined')::boolean, false) AS quarantined
         FROM results
         WHERE run_id = $1
-        ORDER BY test_case_id, COALESCE(metadata->>'persona', '') || COALESCE('#' || (metadata->>'dataRow'), ''), started_at DESC
+        ORDER BY test_case_id, COALESCE(metadata->>'persona', '') || COALESCE('#' || (metadata->>'dataRow'), '') || COALESCE('~' || (metadata->>'browser'), ''), started_at DESC
       )
       SELECT
         COUNT(*) as total_tests,

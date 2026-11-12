@@ -362,6 +362,46 @@ Persona matrix: `data.personas` on the test case (list or `"all"`) runs it once 
 
   It exits with code 1 when any test fails, so it works as a CI gate. Publish `reports/report-<run>.xml` as JUnit.
 
+## Browsers & devices
+
+Agent page → **Browsers & devices**, or in the agent JSON:
+
+```json
+"browsers": ["chromium", "firefox", "webkit", "iPhone 15", "Pixel 7"]
+```
+
+Every test runs once per entry; the results are kept per browser (title `Checkout [firefox]`, `metadata.browser`),
+so the same test can pass in Chromium and fail in WebKit, and flaky detection, triage, reports and coverage count them
+apart. All tests of one browser run together, in one browser start (one session on a grid).
+
+- `chromium` (alias `chrome` for installed Google Chrome), `firefox`, `webkit` (alias `safari`).
+- Any [Playwright device](https://playwright.dev/docs/emulation#devices) name (`iPhone 15`, `iPad Pro 11`, `Pixel 7`,
+  `Galaxy S9+`, …): the device's screen size, pixel density, touch and user agent, in its browser engine. Pages without
+  `<meta name="viewport">` are laid out 980 px wide, as on a real phone.
+- On this server, Firefox and WebKit must be installed: `cd backend && npx playwright install firefox webkit`
+  (Windows: the same command). A browser that cannot start fails only its own tests, with that hint.
+
+### Cloud grids
+
+`"grid"` runs the browsers elsewhere: real Windows and macOS machines, browser versions this server does not have.
+
+| Provider | `grid` | Browsers |
+|---|---|---|
+| BrowserStack | `{ "provider": "browserstack", "username": "…", "access_key": "…", "os": "Windows", "os_version": "11" }` | Chromium / Chrome, Firefox, WebKit |
+| LambdaTest | `{ "provider": "lambdatest", "username": "…", "access_key": "…", "os": "Windows 11" }` | Chromium / Chrome, Firefox, WebKit |
+| Sauce Labs | `{ "provider": "saucelabs", "username": "…", "access_key": "…", "region": "eu-central-1" }` | Chrome only (Playwright's Selenium Grid connection) |
+| Playwright server | `{ "provider": "playwright", "ws_endpoint": "ws://grid.internal:3000/" }` | what the server has (`npx playwright run-server`, Moon, Browserless, …) |
+
+- The access key is encrypted at rest, never returned by the API and masked in logs. Without one, the server's
+  `BROWSERSTACK_USERNAME` / `BROWSERSTACK_ACCESS_KEY`, `LT_USERNAME` / `LT_ACCESS_KEY` or `SAUCE_USERNAME` / `SAUCE_ACCESS_KEY` are used.
+- `browser_version` (default `latest`), `os`, `os_version` choose the machine; `capabilities` adds provider capabilities
+  as given (e.g. `{ "browserstack.local": true }` with BrowserStack Local, `{ "LT:Options": { "tunnel": true } }` with
+  LambdaTest Tunnel — needed to test an application that is not reachable from the internet). `ws_endpoint` overrides
+  the provider's address if it gives you another.
+- BrowserStack and LambdaTest sessions are named after the agent and browser, grouped in a build per run, and marked
+  passed / failed so their dashboards match.
+- Runs started from a grid still use everything else: sign-in sessions, test data, evidence, triage, integrations.
+
 ## Self-healing
 
 When a step fails on a selector (timeout, element not found), self-healing is enabled for the agent, and an AI provider is configured, the executor:

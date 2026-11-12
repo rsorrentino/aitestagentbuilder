@@ -161,7 +161,7 @@ function finalFailures(run: TestRun): { failed: any[]; quarantined: number } {
   const latest = new Map<string, any>();
   for (const r of run.results ?? []) {
     const m = (r.metadata ?? {}) as any;
-    const key = `${r.testCaseId}@${m.persona ?? ''}#${m.dataRow ?? ''}`;
+    const key = `${r.testCaseId}@${m.persona ?? ''}#${m.dataRow ?? ''}~${m.browser ?? ''}`;
     const prev = latest.get(key);
     if (!prev || new Date(r.startedAt) >= new Date(prev.startedAt)) latest.set(key, r);
   }

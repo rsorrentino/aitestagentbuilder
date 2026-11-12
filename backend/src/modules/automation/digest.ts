@@ -72,10 +72,10 @@ export async function buildDigest(projectId: string, since: Date): Promise<Diges
   for (const [agentId, list] of byAgent) {
     const latest = list[0];
     const results = (await db.query(
-      `SELECT DISTINCT ON (test_case_id, COALESCE(metadata->>'persona', '') || COALESCE('#' || (metadata->>'dataRow'), ''))
+      `SELECT DISTINCT ON (test_case_id, COALESCE(metadata->>'persona', '') || COALESCE('#' || (metadata->>'dataRow'), '') || COALESCE('~' || (metadata->>'browser'), ''))
               test_case_id, status, error, metadata
          FROM results WHERE run_id = $1
-        ORDER BY test_case_id, COALESCE(metadata->>'persona', '') || COALESCE('#' || (metadata->>'dataRow'), ''), started_at DESC`, [latest.id])).rows;
+        ORDER BY test_case_id, COALESCE(metadata->>'persona', '') || COALESCE('#' || (metadata->>'dataRow'), '') || COALESCE('~' || (metadata->>'browser'), ''), started_at DESC`, [latest.id])).rows;
     const triageGroups: any[] = latest.metadata?.triage?.groups ?? [];
     const failures = results.filter((x) => ['failed', 'error', 'timeout'].includes(x.status) && !x.metadata?.quarantined).map((x) => {
       const group = triageGroups.find((g) => g.tests?.some((t: any) => t.testCaseId === x.test_case_id));
