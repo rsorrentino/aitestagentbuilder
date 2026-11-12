@@ -125,6 +125,19 @@ auth:
 - **When MFA cannot be answered:** an application that asks for a code without an authenticator key gives a clear error
   (triaged as *environment*). Then add the key, or let a person sign in once.
 
+**Sign in once (any MFA).** For MFA that a script cannot answer (a push approval on the phone, an SMS code, number
+matching, a hardware token), use **Sign in once…** next to a login profile or a Salesforce persona.
+- **What happens:** the sign-in page opens in a browser on the server and its screen is shown on the agent page.
+  - Click on the picture, type in the text box, use the key buttons.
+  - **Type user name**, **Type password** and **Type authenticator code** enter the stored values without showing them.
+  - Approve the prompt on your phone: the screen refreshes by itself.
+- **Saving:** **I'm signed in** saves the session (encrypted) and runs reuse it until it expires. If the page doesn't look
+  signed in, you're asked to confirm with **Save anyway**.
+- **Fewer prompts later:** tick "remember this device" when offered, so later automatic sign-ins rarely need MFA.
+- **Privacy:** typed text is never stored or logged.
+- **Limits:** the browser closes after saving or after 10 minutes without use, and at most `SIGNIN_MAX_SESSIONS`
+  (default 4) are open at once.
+
 ## Recording tests
 
 **Recorder page.** Record a test by using the application instead of writing steps.

@@ -24,7 +24,7 @@ Object.assign(process.env, {
 for (const k of ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'AZURE_OPENAI_API_KEY', 'GITHUB_TOKEN', 'GH_TOKEN', 'COPILOT_GITHUB_TOKEN', 'LLM_PROVIDER', 'EVIDENCE_TRACE', 'EVIDENCE_VIDEO']) delete process.env[k];
 
 // ---- a small identity provider and two applications ----
-const USERS: Record<string, string> = { 'alice@example.com': 'alice-pw', 'carol@example.com': 'carol-pw', bob: 'bob-pw' };
+const USERS: Record<string, string> = { 'alice@example.com': 'alice-pw', 'carol@example.com': 'carol-pw', 'erin@example.com': 'erin-pw', bob: 'bob-pw' };
 const sessions = new Map<string, string>();
 const devices = new Set<string>();
 const counts = { passwords: 0, mfaPrompts: 0, codesAccepted: 0 };
@@ -272,4 +272,67 @@ describe('sign-in & MFA for any application (integration)', () => {
     assert.equal(invalid.status, 400);
     assert.match(invalid.data.error, /default_profile "zed" is not a login profile/);
   });
+
+  it('lets a person sign in once in the server browser (any MFA), then runs reuse that session', async (t) => {
+    if (!dbAvailable) return t.skip('database not available');
+    // Erin has no authenticator key stored: MFA can only be answered by a person (here: a code read from the phone)
+    const created = await call('POST', '/agents', {
+      name: 'Sign in once',
+      config: { base_url: base, evidence: { trace: 'off', video: 'off' }, auth: { profiles: [
+        { name: 'erin', login_url: '/idp/login', username: 'erin@example.com', password: 'erin-pw', landing_path: '/idp/home' },
+      ] } },
+    });
+    const agent = created.data.id;
+    const start = await call('POST', `/agents/${agent}/auth/interactive`, { kind: 'app', identity: 'erin' });
+    assert.equal(start.status, 201, start.text);
+    const sid = start.data.id;
+    assert.deepEqual(start.data.canFill, { username: true, password: true, code: false });
+    const input = async (body: any, status = 200) => {
+      const r = await call('POST', `/auth/interactive/${sid}/input`, body);
+      assert.equal(r.status, status, r.text);
+      return r.data;
+    };
+    const shot = await fetch(`${apiUrl}/api/v1/auth/interactive/${sid}/screenshot`);
+    assert.equal(shot.headers.get('content-type'), 'image/jpeg');
+
+    // Saving before signing in is refused (unless forced)
+    assert.equal((await call('POST', `/auth/interactive/${sid}/finish`, {})).status, 409);
+
+    await input({ type: 'fill', what: 'username' });
+    await input({ type: 'key', key: 'Enter' });
+    await input({ type: 'fill', what: 'password' });
+    await input({ type: 'key', key: 'Enter' });
+    const mfa = await input({ type: 'fill', what: 'code' }, 400);
+    assert.match(mfa.error, /no stored authenticator key/);
+    // The person types the code from their phone
+    await input({ type: 'key', key: 'Tab' });
+    await input({ type: 'text', text: totp(TOTP_KEY) });
+    await input({ type: 'key', key: 'Enter' });
+    const kmsiPage = await input({ type: 'key', key: 'Tab' });
+    assert.equal(kmsiPage.title, 'Stay signed in?');
+    await input({ type: 'key', key: 'Tab' });
+    await input({ type: 'key', key: 'Enter' });
+    assert.equal((await call('POST', `/auth/interactive/${sid}/input`, { type: 'navigate', url: 'javascript:alert(1)' })).status, 400);
+    assert.equal((await call('POST', `/auth/interactive/${sid}/input`, { type: 'key', key: 'Control+W' })).status, 400);
+
+    const done = await call('POST', `/auth/interactive/${sid}/finish`, {});
+    assert.equal(done.status, 200, done.text);
+    assert.equal(done.data.signedIn, true);
+    assert.equal(done.data.session.capturedBy, 'interactive');
+    assert.equal((await call('GET', `/auth/interactive/${sid}`)).status, 404, 'the browser is closed after saving');
+
+    // Runs use the session: no automated sign-in (which would fail: erin has no authenticator key)
+    const before = counts.passwords;
+    const tc = await newTest('Erin sees her home', [{ action: 'assert_text', target: 'h1', data: { value: 'Welcome erin@example.com' } }], { login_as: 'erin' });
+    const r = await run(agent, [tc]);
+    assert.equal(r.results[0].status, 'passed', r.results[0].error);
+    assert.match(r.results[0].metadata.steps[0].message, /saved session/);
+    assert.equal(counts.passwords, before);
+
+    // Closing without saving
+    const other = await call('POST', `/agents/${agent}/auth/interactive`, { kind: 'app', identity: 'erin' });
+    assert.equal((await call('DELETE', `/auth/interactive/${other.data.id}`)).status, 204);
+    assert.equal((await call('POST', `/agents/${agent}/auth/interactive`, { kind: 'salesforce', identity: 'x' })).status, 400);
+  });
 });
+

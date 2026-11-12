@@ -140,6 +140,12 @@ Screenshots are served at `GET /artifacts/<path from evidence.screenshots>`.
 | DELETE | `/agents/:id/auth/sessions?kind=&identity=` | editor | Forget saved sessions (all, or one) → `{ forgotten }` |
 | POST | `/agents/:id/auth/profiles/:name/verify` | editor | Sign in as a login profile now (`{ fresh: true }` ignores the saved session) and save the session → `{ ok, message, reused, usedMfa, landedUrl, session }` or `{ ok: false, error }` |
 
+| POST | `/agents/:id/auth/interactive` | editor | *Sign in once*: `{ kind: app\|salesforce, identity }` opens the sign-in page in a server browser → `{ id, url, title, viewport, canFill }` |
+| GET | `/auth/interactive/:sid`, `/auth/interactive/:sid/screenshot` | editor | State / current screen (JPEG) |
+| POST | `/auth/interactive/:sid/input` | editor | `{ type: click, x, y }`, `{ type: text, text }`, `{ type: key, key: Enter\|Tab\|Escape\|… }`, `{ type: scroll, dy }`, `{ type: navigate, url }`, `{ type: fill, what: username\|password\|code }` (stored values, never returned) |
+| POST | `/auth/interactive/:sid/finish` | editor | Save the session (409 when the page does not look signed in; `{ force: true }` saves anyway) → `{ signedIn, session }` and closes the browser |
+| DELETE | `/auth/interactive/:sid` | editor | Close without saving |
+
 Login profiles are part of the agent config (`config.auth`), with `password` and `totp_secret` encrypted and returned
 as `••••••••`.
 

@@ -150,6 +150,16 @@ export function buildOpenApi(serverUrl: string) {
       '/agents/{id}/auth/profiles/{name}/verify': {
         post: op('Sign-in', 'Sign in as a login profile now and save the session ({ fresh: true } ignores the saved one)', { parameters: [id(), id('name', 'Login profile name')] }),
       },
+      '/agents/{id}/auth/interactive': {
+        post: op('Sign-in', 'Sign in once: open the sign-in page of a login profile or Salesforce persona in a server browser ({ kind, identity })', { parameters: [id()] }),
+      },
+      '/auth/interactive/{sid}': {
+        get: op('Sign-in', 'State of a sign-in browser', { parameters: [id('sid')] }),
+        delete: op('Sign-in', 'Close a sign-in browser without saving', { parameters: [id('sid')] }),
+      },
+      '/auth/interactive/{sid}/screenshot': { get: op('Sign-in', 'Current screen (JPEG)', { parameters: [id('sid')] }) },
+      '/auth/interactive/{sid}/input': { post: op('Sign-in', 'Click, type, press a key, scroll, navigate or type a stored value', { parameters: [id('sid')] }) },
+      '/auth/interactive/{sid}/finish': { post: op('Sign-in', 'Save the session to the vault and close the browser ({ force })', { parameters: [id('sid')] }) },
       '/recordings': {
         get: op('Recorder', 'Your open recording sessions in this project'),
         post: op('Recorder', 'Start recording: a server-side browser opens the agent\'s application ({ agentId, startPath?, persona? })'),

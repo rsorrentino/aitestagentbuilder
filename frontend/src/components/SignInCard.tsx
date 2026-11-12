@@ -6,6 +6,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { api, errorMessage, formatDate, REDACTED } from '../lib/api';
+import SignInOnce from './SignInOnce';
 
 interface Profile {
   name: string;
@@ -47,6 +48,7 @@ export default function SignInCard({ agentId, config, canAdmin, canEdit, onSaved
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [interactive, setInteractive] = useState<{ kind: 'app' | 'salesforce'; identity: string } | null>(null);
 
   const loadSessions = useCallback(async () => {
     try {
@@ -126,7 +128,8 @@ export default function SignInCard({ agentId, config, canAdmin, canEdit, onSaved
         {error && <div className="alert alert-error" role="alert">⚠️ {error}</div>}
         {notice && <div className="alert alert-success" role="status">{notice}</div>}
         <p className="text-sm text-muted mb-3">
-          Tests start signed in: the sign-in form is filled for you (two-step forms too), the authenticator code is typed when asked, and the
+          MFA by phone push, SMS or number matching? Use <strong>Sign in once…</strong>: you complete the sign-in yourself and runs reuse the session.
+          Otherwise tests start signed in: the sign-in form is filled for you (two-step forms too), the authenticator code is typed when asked, and the
           session is kept, encrypted, for the next tests and runs. “Remember this device” is ticked, so most applications stop asking for MFA.
         </p>
 
@@ -157,6 +160,7 @@ export default function SignInCard({ agentId, config, canAdmin, canEdit, onSaved
                       <td>
                         <div className="flex gap-2" style={{ flexWrap: 'wrap' }}>
                           {canEdit && <button type="button" className="btn btn-secondary btn-sm" disabled={busy !== null} onClick={() => verify(p.name, !s)}>{busy === `verify-${p.name}` ? 'Signing in…' : 'Test sign-in'}</button>}
+                          {canEdit && <button type="button" className="btn btn-ghost btn-sm" disabled={busy !== null || !!interactive} onClick={() => setInteractive({ kind: 'app', identity: p.name })} title="Complete the sign-in yourself (any MFA) in a browser on the server">Sign in once…</button>}
                           {canEdit && s && <button type="button" className="btn btn-ghost btn-sm" disabled={busy !== null} onClick={() => forget('app', p.name)}>Forget session</button>}
                           {canAdmin && <button type="button" className="btn btn-ghost btn-sm" onClick={() => setEditing({ ...p, previous_name: p.name, password: '', totp_secret: '' })}>Edit</button>}
                           {canAdmin && <button type="button" className="btn btn-ghost btn-sm" onClick={() => remove(p.name)}>Delete</button>}
@@ -231,6 +235,15 @@ export default function SignInCard({ agentId, config, canAdmin, canEdit, onSaved
           </form>
         )}
 
+        {interactive && (
+          <SignInOnce agentId={agentId} kind={interactive.kind} identity={interactive.identity} onDone={(saved) => {
+            const who = interactive.identity;
+            setInteractive(null);
+            loadSessions();
+            if (saved) setNotice(`Session of ${who} saved: runs now start signed in as ${who}`);
+          }} />
+        )}
+
         {sfPersonas.length > 0 && (
           <div className="mt-3">
             <h4 className="mb-2">Salesforce personas</h4>
@@ -240,6 +253,7 @@ export default function SignInCard({ agentId, config, canAdmin, canEdit, onSaved
                 return (
                   <li key={p.name} className="mb-1">
                     <strong>{p.name}</strong>: {s ? <>{s.expired ? 'session expired' : `session saved, ${until(s.expiresAt)}`}{canEdit && <button type="button" className="btn btn-ghost btn-sm" onClick={() => forget('salesforce', p.name)}>Forget</button>}</> : <span className="text-muted">no saved session</span>}
+                    {canEdit && <button type="button" className="btn btn-ghost btn-sm" disabled={!!interactive} onClick={() => setInteractive({ kind: 'salesforce', identity: p.name })}>Sign in once…</button>}
                   </li>
                 );
               })}

@@ -10,6 +10,7 @@ import getDatabaseClient from './infra/db/client.js';
 import { runMigrations } from './infra/db/migrate.js';
 import { initializeWebSocket } from './infra/websocket/server.js';
 import { RecorderManager } from './modules/recorder/recorder.js';
+import { SignInManager } from './modules/auth/interactive.js';
 import { seedAdminUser } from './api/controllers/auth.controller.js';
 import { RunRepository } from './core/repositories/run.repository.js';
 import { OrchestratorService } from './modules/orchestration/services/orchestrator.service.js';
@@ -84,6 +85,7 @@ async function start(): Promise<void> {
     stopBackgroundJobs();
     await OrchestratorService.get().shutdown();
     await RecorderManager.get().shutdown();
+    await SignInManager.get().shutdown();
     await CopilotClient.shutdown();
     server.close();
     await db.close().catch(() => undefined);

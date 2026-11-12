@@ -52,3 +52,34 @@ test('a login profile signs tests in', async ({ page, request }) => {
   await expect(page.getByText('Saved session of shopper forgotten')).toBeVisible();
   await expect(page.getByTestId('session-shopper')).toContainText('none yet');
 });
+
+test('a person signs in once in the server browser and the session is saved', async ({ page, request }) => {
+  const auth = await (await request.get(`${API_URL}/auth/config`)).json();
+  test.skip(auth.authEnabled, 'runs in local mode (no login)');
+
+  const agent = await (await request.post(`${API_URL}/agents`, {
+    data: { name: unique('Sign in once'), config: { base_url: `${BACKEND}/demo/`, auth: { profiles: [{ name: 'shopper', login_url: 'login', username: 'demo', password: 'demo123' }] } } },
+  })).json();
+
+  await page.goto(`/agents/${agent.id}`);
+  const row = page.getByRole('table', { name: 'Login profiles' }).locator('tr', { hasText: 'shopper' });
+  await row.getByRole('button', { name: 'Sign in once…' }).click();
+  const panel = page.getByRole('region', { name: 'Sign in as shopper' });
+  await expect(panel.getByTestId('signin-screen')).toBeVisible();
+
+  // Saving before signing in is refused, with the option to save anyway
+  await panel.getByRole('button', { name: /I'm signed in/ }).click();
+  await expect(panel.getByRole('alert')).toContainText('does not look signed in');
+  await expect(panel.getByRole('button', { name: 'Save anyway' })).toBeVisible();
+
+  await panel.getByRole('button', { name: 'Type user name' }).click();
+  await panel.getByRole('button', { name: 'Type password' }).click();
+  await panel.getByRole('button', { name: '⌨ Enter' }).click();
+  await expect(panel).toContainText('/demo/dashboard');
+  await panel.getByRole('button', { name: /I'm signed in/ }).click();
+  await expect(page.getByText('Session of shopper saved')).toBeVisible();
+  await expect(page.getByTestId('session-shopper')).toContainText('h left');
+
+  const sessions = await (await request.get(`${API_URL}/agents/${agent.id}/auth/sessions`)).json();
+  expect(sessions[0]).toMatchObject({ identity: 'shopper', capturedBy: 'interactive' });
+});
