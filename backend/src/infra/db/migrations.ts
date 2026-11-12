@@ -282,4 +282,39 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_defects_open ON defects(integration_id, agent_id, status);
     `,
   },
+  {
+    version: 12,
+    name: 'reusable step blocks and the element library',
+    sql: `
+      CREATE TABLE IF NOT EXISTS step_blocks (
+        id VARCHAR(255) PRIMARY KEY,
+        project_id VARCHAR(255) NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        name VARCHAR(255) NOT NULL,
+        description TEXT,
+        params JSONB NOT NULL DEFAULT '[]'::jsonb,
+        steps JSONB NOT NULL DEFAULT '[]'::jsonb,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        created_by VARCHAR(255),
+        updated_by VARCHAR(255)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_step_blocks_name ON step_blocks(project_id, lower(name));
+
+      CREATE TABLE IF NOT EXISTS elements (
+        id VARCHAR(255) PRIMARY KEY,
+        project_id VARCHAR(255) NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        name VARCHAR(255) NOT NULL,
+        locator TEXT NOT NULL,
+        alternatives JSONB NOT NULL DEFAULT '[]'::jsonb,
+        description TEXT,
+        page_url TEXT,
+        source VARCHAR(30) NOT NULL DEFAULT 'manual',
+        healed_at TIMESTAMP,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        created_by VARCHAR(255)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_elements_name ON elements(project_id, lower(name));
+    `,
+  },
 ];

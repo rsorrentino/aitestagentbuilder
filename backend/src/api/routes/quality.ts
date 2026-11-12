@@ -10,7 +10,8 @@ import { signArtifactPath } from '../../infra/security/signed-urls.js';
 import { RunRepository } from '../../core/repositories/run.repository.js';
 import { TestCaseRepository } from '../../core/repositories/test-case.repository.js';
 import { approveActual, VisualBaselineRepository, VisualEntry } from '../../modules/quality/visual.js';
-import { applyHealing, healedStepsOf } from '../../modules/quality/healing.js';
+import { healedStepsOf } from '../../modules/quality/healing.js';
+import { saveHealing } from '../../modules/library/library.js';
 import { triageRun } from '../../modules/quality/triage.js';
 import { QuarantineRepository } from '../../modules/quality/quarantine.js';
 import { aiApiTests, basePathOf, fetchSpec, listOperations, operationKey, parseSpec, smokeTest } from '../../modules/quality/openapi-tests.js';
@@ -257,8 +258,8 @@ export function registerQualityRoutes(router: Router, roles: { viewer: RequestHa
       return;
     }
     const only = Array.isArray(req.body?.stepIds) ? req.body.stepIds.map(Number) : undefined;
-    const { steps, applied, skipped } = applyHealing(testCase.steps, healed, only);
-    if (applied.length) await testCases.update(testCase.id, { steps }, req.project!.id);
+    // Into the library element / block the step used, or the test case
+    const { applied, skipped } = await saveHealing(req.project!.id, testCase.id, healed, only);
     await runs.updateResult(result.id, { metadata: { ...result.metadata, healing: { steps: healed, applied: applied.length > 0 } } });
     res.locals.audit = { entityId: testCase.id, details: { applied, skipped, resultId: result.id } };
     res.json({ testCaseId: testCase.id, applied, skipped });

@@ -151,6 +151,21 @@ Notification events:
 - `digest.daily`, with channel config `digest_time` (HH:MM) and `digest_timezone`; the webhook payload's `run.digest`
   has the per-agent details
 
+## Library
+
+| Method | Path | Role | Description |
+|---|---|---|---|
+| GET | `/blocks` | viewer | Step blocks: `{ id, name, description, params: [{ name, default?, description? }], steps }` |
+| GET | `/blocks/:id` | viewer | A block with `usage: { tests, blocks }` |
+| POST | `/blocks` | editor | Create (`409` if the name exists, any case) |
+| PUT | `/blocks/:id` | editor | Update; a new name is followed by every test and block using it |
+| DELETE | `/blocks/:id[?force=true]` | editor | `409 { usage }` while used, unless forced |
+| GET | `/elements` | viewer | Elements: `{ id, name, locator, alternatives, description, pageUrl, source, healedAt }` |
+| GET | `/elements/:id` | viewer | An element with `usage` |
+| POST / PUT / DELETE | `/elements[/:id]` | editor | As for blocks |
+
+Steps: `{ "action": "use_block", "target": "<block>", "data": { "params": { … } } }`; `{{el.Name}}` in any target or value.
+
 ## Integrations
 
 See [integrations.md](integrations.md). Secrets (`api_token`, `token`, `pat`, `webhook_secret`) are encrypted and returned as `••••••••`.

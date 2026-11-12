@@ -41,7 +41,7 @@ export function buildOpenApi(serverUrl: string) {
     },
     servers: [{ url: serverUrl }],
     security: [{ bearer: [] }, { apiKey: [] }],
-    tags: ['Auth', 'Projects', 'Admin', 'Agents', 'Test cases', 'Documents', 'Runs', 'Quality', 'Sign-in', 'Recorder', 'Test data', 'Schedules', 'Notifications', 'Integrations', 'Analytics', 'Audit', 'AI']
+    tags: ['Auth', 'Projects', 'Admin', 'Agents', 'Test cases', 'Documents', 'Runs', 'Quality', 'Sign-in', 'Recorder', 'Test data', 'Schedules', 'Notifications', 'Integrations', 'Library', 'Analytics', 'Audit', 'AI']
       .map((name) => ({ name })),
     paths: {
       // ── Auth ─────────────────────────────────────────────────────────────
@@ -251,6 +251,20 @@ export function buildOpenApi(serverUrl: string) {
       '/notifications/{id}/test': { post: op('Notifications', 'Send a test notification', { parameters: [id()] }) },
       '/notifications/{id}/digest': { post: op('Notifications', 'Send the daily digest of a channel now (channel subscribed to digest.daily)', { parameters: [id()] }) },
       '/notifications/{id}/deliveries': { get: op('Notifications', 'Recent deliveries', { parameters: [id()] }) },
+
+      // ── Library ──────────────────────────────────────────────────────────
+      '/blocks': { get: op('Library', 'Reusable step blocks'), post: op('Library', 'Create a block { name, description?, params: [{ name, default? }], steps }', { responses: { 201: ok({}) } }) },
+      '/blocks/{id}': {
+        get: op('Library', 'A block and where it is used', { parameters: [id()] }),
+        put: op('Library', 'Update a block (a rename is followed by the tests using it)', { parameters: [id()] }),
+        delete: op('Library', 'Delete a block (409 while used, unless ?force=true)', { parameters: [id(), q('force', { type: 'boolean' })], responses: { 204: { description: 'Deleted' } } }),
+      },
+      '/elements': { get: op('Library', 'Named elements ({{el.Name}})'), post: op('Library', 'Create an element { name, locator, alternatives?, description?, pageUrl? }', { responses: { 201: ok({}) } }) },
+      '/elements/{id}': {
+        get: op('Library', 'An element and where it is used', { parameters: [id()] }),
+        put: op('Library', 'Update an element (a rename is followed by the tests using it)', { parameters: [id()] }),
+        delete: op('Library', 'Delete an element (409 while used, unless ?force=true)', { parameters: [id(), q('force', { type: 'boolean' })], responses: { 204: { description: 'Deleted' } } }),
+      },
 
       // ── Integrations (Jira, GitHub, GitLab, Azure DevOps) ────────────────
       '/integrations': {

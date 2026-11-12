@@ -41,7 +41,7 @@ export interface Triage {
  */
 export function failureSignature(error: string, action?: string): string {
   const normalized = String(error ?? '')
-    .replace(/^Step \d+ \([^)]*\):\s*/, '')
+    .replace(/^Step [\d.]+ \([^)]*\)(?: in block "[^"]*")?:\s*/, '')
     .replace(/https?:\/\/[^\s"')]+/g, '<url>')
     .replace(/"[^"]*"|'[^']*'|“[^”]*”/g, '"…"')
     .replace(/\b[0-9a-f]{8}-[0-9a-f-]{27,}\b/gi, '<id>')

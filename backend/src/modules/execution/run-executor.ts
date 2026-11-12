@@ -20,10 +20,10 @@ import { maskSecrets } from '../../infra/security/secrets.js';
 import { outlinePage } from './browser.js';
 import { deviceOptions, GridConfig, launchTarget, markGridSession, parallelism, resolveTargets, Target } from './targets.js';
 import { classifyAction, executeStep, isSelectorFailure, QualityContext, StepContext } from './step-runner.js';
-import { TestCaseRepository } from '../../core/repositories/test-case.repository.js';
 import { describeA11y, scanAccessibility } from '../quality/accessibility.js';
 import { evidenceConfig, keepEvidence, redactTrace } from '../quality/evidence.js';
-import { applyHealing, HealingCache, healedStepsOf } from '../quality/healing.js';
+import { HealingCache, healedStepsOf } from '../quality/healing.js';
+import { BlockRepository, elementRef, ElementRepository, expandSteps, LibraryElement, resolveElements, RunStep, saveHealing, StepBlock } from '../library/library.js';
 import { failureSignature } from '../quality/triage.js';
 import { Quarantine, QuarantineRepository } from '../quality/quarantine.js';
 import { salesforceSettings, testPersonas } from '../salesforce/personas.js';
@@ -48,6 +48,10 @@ export interface StepLog {
   message: string;
   durationMs: number;
   healedSelector?: string;
+  /** From a library block: its name, the step's number in it, and the path ("3.2") */
+  block?: string;
+  blockStepId?: number;
+  path?: string;
 }
 
 /** One test execution: a test case, optionally as a persona and with a data set row. */
@@ -110,6 +114,9 @@ export class RunExecutor {
   private runRepo = new RunRepository();
   private cancelled = false;
   private browser?: Browser;
+  /** Library of the project: reusable step blocks and named elements (loaded at the start of the run) */
+  private blocks = new Map<string, StepBlock>();
+  private elements = new Map<string, LibraryElement>();
 
   /** Agent config with decrypted secrets — kept in memory only for this run. */
   private config: any;
@@ -266,7 +273,7 @@ export class RunExecutor {
     const keepSecrets = classifyAction(step.action, step) === 'ai_action';
     const extra = { data: ctx.testData?.row ?? null, fake: ctx.testData?.fake, keepSecrets, totp: (name: string) => this.totpCode(name) };
     const resolve = (v: any): any => {
-      if (typeof v === 'string') return resolvePlaceholders(v, this.secrets, ctx.api?.vars, extra);
+      if (typeof v === 'string') return resolvePlaceholders(resolveElements(v, this.elements), this.secrets, ctx.api?.vars, extra);
       if (Array.isArray(v)) return v.map(resolve);
       if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, resolve(x)]));
       return v;
@@ -307,6 +314,10 @@ export class RunExecutor {
   /** Runs every test; resolves with the final run status. */
   async execute(): Promise<'completed' | 'failed' | 'cancelled'> {
     await this.loadDatasets();
+    [this.blocks, this.elements] = await Promise.all([
+      new BlockRepository().byName(this.agent.projectId).catch(() => new Map<string, StepBlock>()),
+      new ElementRepository().byName(this.agent.projectId).catch(() => new Map<string, LibraryElement>()),
+    ]);
     const plan = this.plan();
     const total = plan.length;
     const counts = { passed: 0, failed: 0, skipped: 0, quarantined: 0 };
@@ -517,8 +528,9 @@ export class RunExecutor {
       };
 
       ctxRef.api = ctx.api;
-      const steps: TestStep[] = testCase.steps ?? [];
-      if (steps.length === 0) throw new Error('Test case has no steps');
+      if (!(testCase.steps ?? []).length) throw new Error('Test case has no steps');
+      // use_block steps become the library block's steps
+      const steps: RunStep[] = expandSteps(testCase.steps ?? [], this.blocks);
 
       // Persona tests (and tests of agents with a default login profile) without an explicit login step start signed in.
       const loginAs = this.loginFor(testCase, persona);
@@ -538,11 +550,12 @@ export class RunExecutor {
           continue;
         }
         const log = await this.runStep(step, ctx, testCase);
+        if (step.origin) Object.assign(log, { block: step.origin.block, blockStepId: step.origin.blockStepId, path: step.origin.path });
         stepLogs.push(log);
         await this.streamScreenshot(page, testCase.id);
         if (log.status === 'failed') {
           status = 'failed';
-          error = `Step ${log.stepId} (${log.action}): ${log.message}`;
+          error = `Step ${log.path ?? log.stepId} (${log.action})${log.block ? ` in block "${log.block}"` : ''}: ${log.message}`;
           break;
         }
       }
@@ -655,7 +668,8 @@ export class RunExecutor {
     const started = Date.now();
     const base = { stepId: step.stepId, action: step.action, target: step.target };
     const kind = classifyAction(step.action, step);
-    this.log(`  Step ${step.stepId}: ${step.action}${step.target ? ` → ${step.target}` : ''}`, { testId: testCase.id, stepId: step.stepId });
+    const origin = (step as RunStep).origin;
+    this.log(`  Step ${origin?.path ?? step.stepId}${origin ? ` [${origin.block}]` : ''}: ${step.action}${step.target ? ` → ${step.target}` : ''}`, { testId: testCase.id, stepId: step.stepId });
 
     try {
       const outcome = await executeStep(this.resolveStep(step, ctx), ctx);
@@ -664,6 +678,17 @@ export class RunExecutor {
       let message = this.mask(String(e.message || e).split('\n')[0]);
       if (step.target && /Timeout \d+ms exceeded/.test(message)) {
         message = `Element "${step.target}" was not found or not actionable (${message})`;
+      }
+      // A library element whose main locator broke: its earlier locators are tried before the AI
+      const elName = elementRef(step.target);
+      for (const alt of elName ? this.elements.get(elName.toLowerCase())?.alternatives ?? [] : []) {
+        try {
+          const outcome = await executeStep(this.resolveStep(step, ctx), ctx, alt);
+          this.log(`  🩹 Element ${elName}: its alternative locator "${alt}" worked`, { testId: testCase.id, stepId: step.stepId }, 'warn');
+          return { ...base, ...outcome, message: `${this.mask(outcome.message)} (element ${elName}: alternative locator "${alt}")`, healedSelector: alt, durationMs: Date.now() - started };
+        } catch {
+          // next alternative
+        }
       }
       const healed = await this.trySelfHeal(step, ctx, kind, message, testCase);
       if (healed) return { ...base, ...healed, durationMs: Date.now() - started };
@@ -783,13 +808,16 @@ export class RunExecutor {
   /** Write healed selectors back into the test case (agent config ai.auto_apply_healing). */
   private async writeBackHealing(testCase: TestCase, healed: ReturnType<typeof healedStepsOf>): Promise<boolean> {
     try {
-      const repo = new TestCaseRepository();
-      const current = await repo.findById(testCase.id, this.agent.projectId);
-      if (!current) return false;
-      const { steps, applied } = applyHealing(current.steps, healed);
+      const { applied } = await saveHealing(this.agent.projectId, testCase.id, healed);
       if (!applied.length) return false;
-      await repo.update(current.id, { steps }, this.agent.projectId);
-      this.log(`  🩹 Saved ${applied.length} healed selector(s) to "${testCase.title}"`, { testId: testCase.id });
+      for (const a of applied) {
+        if (a.savedTo.startsWith('element ')) {
+          const el = this.elements.get(a.savedTo.slice(8).toLowerCase());
+          if (el) el.locator = a.to;
+        }
+      }
+      this.log(`  🩹 Saved ${applied.length} healed selector(s): ${applied.map((a) => a.savedTo).join(', ')}`, { testId: testCase.id });
+      if (applied.some((a) => a.savedTo.startsWith('block '))) this.blocks = await new BlockRepository().byName(this.agent.projectId);
       return true;
     } catch (e: any) {
       logger.warn('Could not save healed selectors', { error: e.message });

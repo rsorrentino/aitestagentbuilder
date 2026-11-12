@@ -4,39 +4,16 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { api, errorMessage, PRIORITIES, STEP_ACTIONS, TEST_TYPES } from '../lib/api';
-import IssueLinks from './IssueLinks';
+import { api, errorMessage, PRIORITIES, TEST_TYPES } from '../lib/api';
+import StepsEditor, { rowsToSteps, StepRow, toRows } from './StepsEditor';
 
-interface StepRow { action: string; target: string; value: string }
+export { valueToData } from './StepsEditor';
+import IssueLinks from './IssueLinks';
 
 export interface TestCaseEditorProps {
   initial?: any;
   onSaved: (tc: any) => void;
   onCancel: () => void;
-}
-
-/** Step value column: plain text becomes data.value; a JSON object is used as the step data as-is. */
-export function valueToData(value: string): Record<string, any> | undefined {
-  if (value === '') return undefined;
-  const trimmed = value.trim();
-  if (trimmed.startsWith('{')) {
-    try {
-      const parsed = JSON.parse(trimmed);
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
-    } catch {
-      // not JSON: plain text
-    }
-  }
-  return { value };
-}
-
-function toRows(steps: any[] | undefined): StepRow[] {
-  if (!steps || steps.length === 0) return [{ action: 'navigate', target: '/', value: '' }];
-  return steps.map((s) => ({
-    action: s.action ?? '',
-    target: s.target ?? '',
-    value: s.data?.value !== undefined && Object.keys(s.data).length === 1 ? String(s.data.value) : s.data ? JSON.stringify(s.data) : '',
-  }));
 }
 
 export default function TestCaseEditor({ initial, onSaved, onCancel }: TestCaseEditorProps) {
@@ -58,16 +35,6 @@ export default function TestCaseEditor({ initial, onSaved, onCancel }: TestCaseE
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const updateStep = (i: number, key: keyof StepRow, v: string) =>
-    setSteps((prev) => prev.map((s, idx) => (idx === i ? { ...s, [key]: v } : s)));
-  const move = (i: number, d: number) => setSteps((prev) => {
-    const next = [...prev];
-    const j = i + d;
-    if (j < 0 || j >= next.length) return prev;
-    [next[i], next[j]] = [next[j], next[i]];
-    return next;
-  });
-
   const save = async () => {
     setSaving(true);
     setError(null);
@@ -79,13 +46,7 @@ export default function TestCaseEditor({ initial, onSaved, onCancel }: TestCaseE
       description: description.trim() || undefined,
       tags: tags.split(',').map((t: string) => t.trim()).filter(Boolean),
       expectedResults: expected.split('\n').map((t: string) => t.trim()).filter(Boolean),
-      steps: steps
-        .filter((s) => s.action.trim())
-        .map((s) => ({
-          action: s.action.trim(),
-          ...(s.target.trim() ? { target: s.target.trim() } : {}),
-          ...(valueToData(s.value) ? { data: valueToData(s.value) } : {}),
-        })),
+      steps: rowsToSteps(steps),
       data: (() => {
         const list = personas.split(',').map((p: string) => p.trim()).filter(Boolean);
         const rest = { ...(initial?.data ?? {}) };
@@ -160,21 +121,7 @@ export default function TestCaseEditor({ initial, onSaved, onCancel }: TestCaseE
 
         <div className="form-group">
           <label className="form-label">Steps</label>
-          <datalist id="step-actions">{STEP_ACTIONS.map((a) => <option key={a} value={a} />)}</datalist>
-          {steps.map((s, i) => (
-            <div key={i} style={{ display: 'grid', gridTemplateColumns: '28px 160px 1fr 1fr auto', gap: 6, marginBottom: 6, alignItems: 'center' }}>
-              <span className="text-sm text-muted">{i + 1}.</span>
-              <input className="form-control" list="step-actions" aria-label={`Step ${i + 1} action`} value={s.action} onChange={(e) => updateStep(i, 'action', e.target.value)} placeholder="action" />
-              <input className="form-control" aria-label={`Step ${i + 1} target`} value={s.target} onChange={(e) => updateStep(i, 'target', e.target.value)} placeholder="target: /path, #id, text=Label" />
-              <input className="form-control" aria-label={`Step ${i + 1} value`} value={s.value} onChange={(e) => updateStep(i, 'value', e.target.value)} placeholder="value (text to type / expect)" />
-              <div className="flex gap-2">
-                <button type="button" className="btn btn-ghost btn-sm" onClick={() => move(i, -1)} title="Move up">↑</button>
-                <button type="button" className="btn btn-ghost btn-sm" onClick={() => move(i, 1)} title="Move down">↓</button>
-                <button type="button" className="btn btn-ghost btn-sm" onClick={() => setSteps((p) => p.filter((_, idx) => idx !== i))} title="Remove">✕</button>
-              </div>
-            </div>
-          ))}
-          <button type="button" className="btn btn-secondary btn-sm mt-2" onClick={() => setSteps((p) => [...p, { action: 'click', target: '', value: '' }])}>＋ Add step</button>
+          <StepsEditor steps={steps} setSteps={setSteps} idPrefix="tc" />
           <p className="form-hint mt-2">
             Actions: navigate, click, fill, select, check, press, hover, wait, assert_visible, assert_not_visible, assert_text, assert_url, assert_title, screenshot.
             Quality: assert_accessible (axe-core WCAG scan; value <code>{'{"level": "wcag21aa", "ignore": ["color-contrast"]}'}</code>),
@@ -192,7 +139,10 @@ export default function TestCaseEditor({ initial, onSaved, onCancel }: TestCaseE
             values: the same kind and label give the same value within a test, so a later step can check it), <code>{'{{secrets.NAME}}'}</code>,
             <code>{'{{totp.NAME}}'}</code> (current authenticator code of a login profile, persona or secret).
             Emailed / texted codes: wait_for_code (target: the mailbox or phone number, value <code>{'{"save_as": "otp", "to": "qa@example.com"}'}</code>), then <code>{'{{vars.otp}}'}</code>.
-            Targets can be CSS selectors (#id, .class), <code>text=Visible text</code>, or a plain label like “Sign in button”.
+            Targets can be CSS selectors (#id, .class), <code>text=Visible text</code>, React-friendly <code>[data-testid="total"]</code> or
+            <code>role=button[name="Save"]</code> (also inside Salesforce Lightning components), or a plain label like “Sign in button”.
+            Library: <code>{'{{el.Checkout.Total}}'}</code> uses a named element (★ saves a target as one); action <code>use_block</code> runs a
+            reusable block of steps with its parameters (Library → Blocks).
             Salesforce: salesforce_login (target = persona), assert_object_access (target = Account, value <code>{'{"read": true, "delete": false}'}</code>),
             assert_field_access (Account.AnnualRevenue), assert_record_access (record Id), assert_profile, assert_access_denied.
             Per-persona expectations: <code>{'{"by_persona": {"admin": {"delete": true}, "rep": {"delete": false}}}'}</code>;

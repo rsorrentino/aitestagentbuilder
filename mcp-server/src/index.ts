@@ -253,6 +253,12 @@ export const TOOLS = [
     },
   },
   {
+    name: 'get_library',
+    description: 'Reusable step blocks (use with { action: "use_block", target: "<block>", data: { params: {...} } }) and named elements ' +
+      '(use as {{el.Name}} in targets) of the project. Prefer them when writing tests: a change in the application is then fixed once.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
     name: 'import_stories',
     description: 'Import Jira stories as tests: the AI writes test cases from each story (description and acceptance criteria) and links them ' +
       'to it, so the story shows their results after every run. Needs a Jira integration (Settings → Integrations).',
@@ -393,6 +399,14 @@ export class TestAgentMCPServer {
       const statusOk = args.expectedStatus === undefined || res.status === args.expectedStatus;
       const bodyOk = args.expectedBody === undefined || JSON.stringify(res.data) === JSON.stringify(args.expectedBody);
       return { passed: statusOk && bodyOk, status: res.status, body: res.data, expectedStatus: args.expectedStatus, bodyMatches: bodyOk };
+    },
+
+    get_library: async () => {
+      const [{ data: blocks }, { data: elements }] = await Promise.all([this.api.get('/blocks'), this.api.get('/elements')]);
+      return {
+        blocks: blocks.map((b: any) => ({ name: b.name, description: b.description, params: b.params, steps: b.steps.length })),
+        elements: elements.map((e: any) => ({ name: `{{el.${e.name}}}`, locator: e.locator, page: e.pageUrl, description: e.description })),
+      };
     },
 
     import_stories: async (args: { keys?: string[]; query?: string; module?: string; agentId?: string; integrationId?: string }) => {

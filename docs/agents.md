@@ -362,6 +362,41 @@ Persona matrix: `data.personas` on the test case (list or `"all"`) runs it once 
 
   It exits with code 1 when any test fails, so it works as a CI gate. Publish `reports/report-<run>.xml` as JUnit.
 
+## Library: blocks and elements
+
+**Library** (left menu) keeps what many tests share, so a change in the application is fixed once.
+
+### Elements
+
+A named locator, used in any step as `{{el.Name}}` (names like `Checkout.PayButton`, dots for groups):
+
+```json
+{ "action": "click", "target": "{{el.Checkout.PayButton}}" }
+```
+
+- Prefer stable locators: `[data-testid="pay"]` (React and most front-end frameworks), `role=button[name="Pay"]`,
+  `role=textbox[name="Account Name"]` (accessible role and name — these reach inside the web components Salesforce
+  Lightning is built from), `text=Order total`. Avoid generated CSS classes: they change with every build.
+- **Alternatives**: other locators for the same element, tried in order when the main one stops matching.
+- **Self-healing saves here**: a repaired `{{el.…}}` step (agent setting `ai.auto_apply_healing`, or *Apply* on a result)
+  updates the element — the old locator is kept as an alternative — so every test using it is fixed at once.
+- ★ next to a step's target in the editor saves it as an element and puts `{{el.Name}}` in its place.
+- Renaming an element renames it in every test and block; deleting one that is used asks first.
+
+### Blocks
+
+A named group of steps with parameters, e.g. *Sign in* (`user`, `password`) or *Create opportunity* (`account`, `amount`):
+
+```json
+{ "action": "use_block", "target": "Create opportunity", "data": { "params": { "account": "Acme", "amount": "5000" } } }
+```
+
+- Inside the block, parameters are `{{param.account}}`; a parameter may have a default. Blocks can use other blocks
+  (up to 5 levels; a block using itself is reported).
+- Runs show each step of a block with its path (`3.2`) and the block's name; a failure says *Step 3.2 (click) in block
+  "Create opportunity"*. A selector repaired inside a block is saved in the block.
+- Renaming a block renames it in every test and block; deleting one that is used asks first.
+
 ## Browsers & devices
 
 Agent page → **Browsers & devices**, or in the agent JSON:
