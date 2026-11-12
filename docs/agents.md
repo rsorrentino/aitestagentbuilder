@@ -85,6 +85,46 @@ The agent page shows **Tests in the next run**: exactly what the planner will ex
 }
 ```
 
+## Sign-in & MFA
+
+Tests of an application behind a login start signed in, also with multi-factor authentication. Set up test users on
+the agent page (**Sign-in & MFA**) or in the config:
+
+```yaml
+auth:
+  default_profile: buyer                 # tests start signed in as this user (optional)
+  profiles:
+    - name: buyer
+      login_url: login                   # sign-in page, relative to base_url or absolute (SSO page included)
+      username: buyer@example.com
+      password: "${BUYER_PASSWORD}"      # encrypted at rest
+      totp_secret: "${BUYER_TOTP}"       # authenticator key (Base32) or otpauth:// link, encrypted
+      landing_path: /dashboard           # opened after sign-in, and used to check the session works
+      success: { url_contains: /dashboard }        # optional: how to tell sign-in worked
+      selectors: { username: "#email", code: "#otp" }  # optional: only if the form is not found by itself
+      session: { reuse: true, max_age_hours: 12 }
+    - name: admin
+      ...
+```
+
+- **The form is found by itself.** User name or email, password, *Next* for two-step forms (Microsoft Entra ID, Okta,
+  Google, Auth0, Keycloak, …), a verification-code page answered with the authenticator code, and *Stay signed in? /
+  Trust this device?* prompts accepted. "Remember this device" boxes are ticked, so most applications stop asking
+  for MFA after the first sign-in.
+- **Sessions are saved.** After signing in, the browser session (cookies and local storage) is stored encrypted and
+  reused by the next tests and runs until it expires (`max_age_hours`) or the application shows its sign-in page
+  again, when the sign-in runs again (device cookies kept). Salesforce personas use the same vault.
+- **Session storage is not kept.** Applications that keep their login in `sessionStorage` sign in again for each test.
+- **Who a test runs as:**
+  - **Default:** the `default_profile`.
+  - **One test:** `"data": { "login_as": "admin" }`, or `false` for none.
+  - **A step:** “Log in as admin”.
+  - **Every listed user:** `"personas": ["buyer", "admin"]` runs the test once per user, as for Salesforce personas.
+- **Checking a profile:** **Test sign-in** signs in now and shows what happened. **Forget session** makes the next run
+  sign in again. A saved session is also forgotten when its user name or sign-in page changes.
+- **When MFA cannot be answered:** an application that asks for a code without an authenticator key gives a clear error
+  (triaged as *environment*). Then add the key, or let a person sign in once.
+
 ## Recording tests
 
 **Recorder page.** Record a test by using the application instead of writing steps.

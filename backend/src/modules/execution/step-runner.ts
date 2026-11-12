@@ -9,6 +9,7 @@
 import type { Locator, Page } from 'playwright';
 import { TestStep } from '../../core/domain/test-case.js';
 import { SalesforceSessions } from '../salesforce/session.js';
+import { AppSessions } from '../auth/app-login.js';
 import { A11yReport, describeA11y, scanAccessibility } from '../quality/accessibility.js';
 import { checkScreenshot, describeVisual, VisualEntry } from '../quality/visual.js';
 import { ApiState, checkJson, describeResponse, extractVars, mockRoute, sendRequest, statusMatches } from '../quality/api-testing.js';
@@ -40,6 +41,8 @@ export interface StepContext {
   config: Record<string, any>;
   /** Salesforce persona sessions for this run (when the agent has a salesforce section). */
   salesforce?: SalesforceSessions;
+  /** Login profiles of any application (agent config auth), with saved sessions. */
+  auth?: AppSessions;
   /** Persona this test runs as (persona matrix), used when a step names none. */
   persona?: string;
   /** Where quality checks (accessibility, visual) store baselines and report their findings. */
@@ -83,6 +86,7 @@ export function classifyAction(rawAction: string, step: Pick<TestStep, 'target' 
 
   const exact: Record<string, StepKind> = {
     'salesforce login': 'salesforce_login', 'login as': 'salesforce_login', 'log in as': 'salesforce_login',
+    'sign in as': 'salesforce_login', 'app login': 'salesforce_login',
     'salesforce logout': 'salesforce_logout',
     'wait for lightning': 'wait_for_lightning',
     'assert profile': 'assert_profile', 'assert object access': 'assert_object_access',
@@ -101,6 +105,8 @@ export function classifyAction(rawAction: string, step: Pick<TestStep, 'target' 
     'ai': 'ai_action', 'ai action': 'ai_action', 'ai step': 'ai_action', 'do with ai': 'ai_action',
   };
   if (exact[a]) return exact[a];
+  // "Log in as buyer", "Sign in as the admin user"
+  if (/^(log ?in|sign ?in) as\s+\S/.test(a)) return 'salesforce_login';
   // "GET /api/orders", "POST https://…"
   // The method alone with a target, or followed by a path / URL (not "Get started")
   const verb = rawAction.trim().match(/^(get|post|put|patch|delete|head|options)(?:\s+(\S+))?\s*$/i);
@@ -474,8 +480,15 @@ export async function executeStep(step: TestStep, ctx: StepContext, targetOverri
       return { status: 'passed', message: `AI did "${instruction}" (${how}): ${describeActions(record.actions) || 'nothing to do'}` };
     }
     case 'salesforce_login': {
+      const named = step.action.match(/^\s*(?:log ?in|sign ?in) as\s+(?:the\s+)?([A-Za-z0-9][\w.-]*)/i)?.[1];
+      const persona = step.data?.persona ?? step.data?.profile ?? (target && !/^(https?:|\/)/.test(target) ? target : undefined) ?? named ?? ctx.persona;
+      // "Log in as X" also signs in login profiles of other applications
+      const sfHas = !!ctx.salesforce && ctx.salesforce.settings.personas.some((p) => p.name.toLowerCase() === String(persona ?? ctx.salesforce!.settings.defaultPersona ?? '').toLowerCase());
+      if (ctx.auth && !sfHas && (persona ? ctx.auth.settings.profiles.some((p) => p.name.toLowerCase() === String(persona).toLowerCase()) : !ctx.salesforce)) {
+        const r = await ctx.auth.login(page, persona, { fresh: step.data?.fresh === true, landing: step.data?.landing ?? step.data?.url ?? (target && /^\//.test(target) ? target : undefined) });
+        return { status: 'passed', message: r.message };
+      }
       const sessions = requireSalesforce(ctx);
-      const persona = step.data?.persona ?? (target && !/^(https?:|\/)/.test(target) ? target : undefined) ?? ctx.persona;
       const landing = step.data?.landing ?? step.data?.url ?? (target && /^\//.test(target) ? target : undefined);
       const result = await sessions.login(page, persona, { landing, fresh: step.data?.fresh === true });
       if (step.data?.verify_identity !== false && (result.persona.expected_profile || result.persona.expected_permission_sets?.length)) {
@@ -538,7 +551,7 @@ function lastResponse(ctx: StepContext) {
 }
 
 function requireSalesforce(ctx: StepContext): SalesforceSessions {
-  if (!ctx.salesforce) throw new Error('This agent has no Salesforce configuration (Agent → Salesforce personas)');
+  if (!ctx.salesforce) throw new Error('This agent has no Salesforce configuration or login profile for that name (Agent → Sign-in & MFA)');
   return ctx.salesforce;
 }
 

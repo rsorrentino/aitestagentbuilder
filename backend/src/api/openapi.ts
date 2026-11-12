@@ -41,7 +41,7 @@ export function buildOpenApi(serverUrl: string) {
     },
     servers: [{ url: serverUrl }],
     security: [{ bearer: [] }, { apiKey: [] }],
-    tags: ['Auth', 'Projects', 'Admin', 'Agents', 'Test cases', 'Documents', 'Runs', 'Quality', 'Recorder', 'Test data', 'Schedules', 'Notifications', 'Analytics', 'Audit', 'AI']
+    tags: ['Auth', 'Projects', 'Admin', 'Agents', 'Test cases', 'Documents', 'Runs', 'Quality', 'Sign-in', 'Recorder', 'Test data', 'Schedules', 'Notifications', 'Analytics', 'Audit', 'AI']
       .map((name) => ({ name })),
     paths: {
       // ── Auth ─────────────────────────────────────────────────────────────
@@ -142,6 +142,13 @@ export function buildOpenApi(serverUrl: string) {
       },
       '/agents/{id}/ai-action-cache': {
         delete: op('Quality', 'Forget cached AI action sequences of an agent (optionally ?testCaseId=): the AI decides again next run', { parameters: [id(), q('testCaseId', { type: 'string' })] }),
+      },
+      '/agents/{id}/auth/sessions': {
+        get: op('Sign-in', 'Saved sessions of the agent\'s login profiles and Salesforce personas (never their contents)', { parameters: [id()] }),
+        delete: op('Sign-in', 'Forget saved sessions (?kind=app|salesforce&identity=name)', { parameters: [id(), q('kind', { type: 'string' }), q('identity', { type: 'string' })] }),
+      },
+      '/agents/{id}/auth/profiles/{name}/verify': {
+        post: op('Sign-in', 'Sign in as a login profile now and save the session ({ fresh: true } ignores the saved one)', { parameters: [id(), id('name', 'Login profile name')] }),
       },
       '/recordings': {
         get: op('Recorder', 'Your open recording sessions in this project'),

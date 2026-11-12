@@ -17,6 +17,7 @@ import SalesforcePersonasCard from '../../components/SalesforcePersonasCard';
 import AgentQualityCard from '../../components/AgentQualityCard';
 import ApiTestsCard from '../../components/ApiTestsCard';
 import PageSpeedCard from '../../components/PageSpeedCard';
+import SignInCard from '../../components/SignInCard';
 
 export default function AgentDetailPage() {
   const router = useRouter();
@@ -215,6 +216,8 @@ export default function AgentDetailPage() {
       <PageSpeedCard key={`speed-${agent.id}`} agentId={agent.id} config={cfg} canEdit={canEdit} onSaved={setAgent} />
 
       <AgentQualityCard key={`quality-${agent.id}`} agentId={agent.id} config={cfg} canEdit={canEdit} onSaved={setAgent} />
+
+      <SignInCard key={`signin-${agent.id}`} agentId={agent.id} config={cfg} canAdmin={session.can('admin')} canEdit={canEdit} onSaved={setAgent} />
 
       <SalesforcePersonasCard
         key={agent.id}

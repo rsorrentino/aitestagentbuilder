@@ -26,6 +26,9 @@ import { applyHealing, HealingCache, healedStepsOf } from '../quality/healing.js
 import { failureSignature } from '../quality/triage.js';
 import { Quarantine, QuarantineRepository } from '../quality/quarantine.js';
 import { salesforceSettings, testPersonas } from '../salesforce/personas.js';
+import { AppSessions } from '../auth/app-login.js';
+import { authSettings } from '../auth/profiles.js';
+import { SessionVault } from '../auth/session-vault.js';
 import { SalesforceSessions } from '../salesforce/session.js';
 import { TestDataRepository } from '../../core/repositories/test-data.repository.js';
 import { AiActionCache } from '../quality/ai-actions.js';
@@ -86,8 +89,26 @@ export class RunExecutor {
     this.config = decryptAgentConfig(agent.config);
     this.secrets = this.config.secrets ?? {};
     this.secretList = secretValues(this.config);
+    const vault = new SessionVault();
     const sf = salesforceSettings(this.config);
-    if (sf) this.salesforce = new SalesforceSessions(sf);
+    if (sf) {
+      const maxAge = Number(this.config.salesforce?.session_max_age_hours);
+      this.salesforce = new SalesforceSessions(sf, { agentId: agent.id, vault, maxAgeHours: maxAge > 0 ? maxAge : 8 });
+    }
+    const auth = authSettings(this.config);
+    if (auth) this.appAuth = new AppSessions(auth, this.config.base_url, { agentId: agent.id, vault });
+  }
+
+  /** Login profiles of other applications (agent config auth). */
+  private appAuth?: AppSessions;
+
+  /** Who a test starts signed in as: its persona, data.login_as, or the default login profile. */
+  private loginFor(testCase: TestCase, persona?: string): string | undefined {
+    if (persona) return persona;
+    const la = testCase.data?.login_as;
+    if (la === false || la === 'none') return undefined;
+    if (typeof la === 'string' && la.trim()) return la.trim();
+    return this.appAuth?.settings.defaultProfile;
   }
 
   /** Rows of the data sets the test cases use (data.dataset), loaded once per run. */
@@ -126,7 +147,8 @@ export class RunExecutor {
    * and one per data set row for tests with data.dataset (personas × rows when both).
    */
   private plan(): PlanItem[] {
-    const settings = this.salesforce?.settings ?? null;
+    // "all" means every Salesforce persona, or every login profile when the agent has no Salesforce section
+    const settings = this.salesforce?.settings ?? (this.appAuth ? { personas: this.appAuth.settings.profiles } as any : null);
     return this.testCases.flatMap((testCase) => {
       const personas: Array<string | undefined> = testPersonas(testCase.data, settings);
       const ref = testCase.data?.dataset;
@@ -327,6 +349,7 @@ export class RunExecutor {
         stepTimeout: parseInt(process.env.STEP_TIMEOUT_MS || '') || Math.min(Number(config.step_timeout) || 10000, 60000),
         config,
         salesforce: this.salesforce,
+        auth: this.appAuth,
         persona,
         quality,
         testData,
@@ -361,13 +384,14 @@ export class RunExecutor {
       const steps: TestStep[] = testCase.steps ?? [];
       if (steps.length === 0) throw new Error('Test case has no steps');
 
-      // Persona tests without an explicit login step start logged in as the persona.
-      if (persona && !steps.some((s) => classifyAction(s.action, s) === 'salesforce_login')) {
-        const log = await this.runStep({ stepId: 0, action: 'salesforce_login', data: { persona } }, ctx, testCase);
+      // Persona tests (and tests of agents with a default login profile) without an explicit login step start signed in.
+      const loginAs = this.loginFor(testCase, persona);
+      if (loginAs && !steps.some((s) => classifyAction(s.action, s) === 'salesforce_login')) {
+        const log = await this.runStep({ stepId: 0, action: 'salesforce_login', data: { persona: loginAs } }, ctx, testCase);
         stepLogs.push(log);
         if (log.status === 'failed') {
           status = 'failed';
-          error = `Login as ${persona}: ${log.message}`;
+          error = `Login as ${loginAs}: ${log.message}`;
         }
       }
 

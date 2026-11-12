@@ -6,10 +6,12 @@
  *   config.salesforce.password / security_token                 (legacy single user)
  *   config.salesforce.connected_app.client_secret / private_key
  *   config.salesforce.personas[].password / totp_secret / security_token
+ *   config.auth.profiles[].password / totp_secret                (login profiles of any application)
  */
 
 import { decryptSecret, isEncrypted, REDACTED, sealSecret } from '../../infra/security/secrets.js';
 import { CONNECTED_APP_SECRET_FIELDS, PERSONA_SECRET_FIELDS, validatePersonas } from '../../modules/salesforce/personas.js';
+import { PROFILE_SECRET_FIELDS, validateAuth } from '../../modules/auth/profiles.js';
 
 type Fields = readonly string[];
 
@@ -43,6 +45,33 @@ function transformSalesforce(sf: any, fn: (value: any, field: string) => any): a
   return out;
 }
 
+/** Every secret-bearing login profile. */
+function authSecretSpots(auth: any): Array<{ obj: any; fields: Fields }> {
+  return Array.isArray(auth?.profiles) ? auth.profiles.map((p: any) => ({ obj: p, fields: PROFILE_SECRET_FIELDS })) : [];
+}
+
+function transformAuth(auth: any, fn: (value: any, field: string) => any): any {
+  if (!auth || typeof auth !== 'object' || !Array.isArray(auth.profiles)) return auth;
+  return { ...auth, profiles: auth.profiles.map((p: any) => mapFields(p, PROFILE_SECRET_FIELDS, fn)) };
+}
+
+/** Seal login profiles: secrets are kept by profile name (or position when renamed). */
+function sealAuth(next: any, previous: any): any {
+  if (next === undefined) return previous;
+  if (!next) return next;
+  validateAuth(next);
+  if (!Array.isArray(next.profiles)) return next;
+  const prev: any[] = Array.isArray(previous?.profiles) ? previous.profiles : [];
+  return {
+    ...next,
+    profiles: next.profiles.map((p: any, i: number) => {
+      const before = prev.find((x) => x.name === (p.previous_name ?? p.name)) ?? (p.previous_name === undefined ? prev[i] : undefined);
+      const { previous_name: _ignored, ...profile } = p;
+      return mapFields(profile, PROFILE_SECRET_FIELDS, (_v, f) => sealSecret(profile[f], before?.[f]));
+    }),
+  };
+}
+
 /** Seal the salesforce section: personas keep previous secrets by name (or position when renamed). */
 function sealSalesforce(next: any, previous: any): any {
   if (next === undefined) return previous;
@@ -69,7 +98,8 @@ function sealSalesforce(next: any, previous: any): any {
 /** Whether a stored config still holds plaintext secrets (written before encryption existed). */
 export function hasPlaintextSecrets(config: any): boolean {
   if (Object.values(config?.secrets ?? {}).some((v) => !isEncrypted(v))) return true;
-  return salesforceSecretSpots(config?.salesforce).some(({ obj, fields }) => fields.some((f) => obj?.[f] && !isEncrypted(obj[f])));
+  return [...salesforceSecretSpots(config?.salesforce), ...authSecretSpots(config?.auth)]
+    .some(({ obj, fields }) => fields.some((f) => obj?.[f] && !isEncrypted(obj[f])));
 }
 
 const SALESFORCE_SECRET_FIELDS = ['password', 'security_token'];
@@ -94,6 +124,10 @@ export function sealAgentConfig(next: any, previous?: any): any {
   if (next.salesforce !== undefined || previous?.salesforce) {
     out.salesforce = sealSalesforce(next.salesforce, previous?.salesforce);
   }
+
+  if (next.auth !== undefined || previous?.auth) {
+    out.auth = sealAuth(next.auth, previous?.auth);
+  }
   return out;
 }
 
@@ -105,6 +139,7 @@ export function redactAgentConfig(config: any): any {
     out.secrets = Object.fromEntries(Object.keys(config.secrets).map((k) => [k, REDACTED]));
   }
   if (config.salesforce) out.salesforce = transformSalesforce(config.salesforce, (v) => (v ? REDACTED : undefined));
+  if (config.auth) out.auth = transformAuth(config.auth, (v) => (v ? REDACTED : undefined));
   return out;
 }
 
@@ -116,13 +151,14 @@ export function decryptAgentConfig(config: any): any {
     out.secrets = Object.fromEntries(Object.entries(config.secrets).map(([k, v]) => [k, decryptSecret(String(v))]));
   }
   if (config.salesforce) out.salesforce = transformSalesforce(config.salesforce, (v) => (v ? decryptSecret(String(v)) : undefined));
+  if (config.auth) out.auth = transformAuth(config.auth, (v) => (v ? decryptSecret(String(v)) : undefined));
   return out;
 }
 
 /** All plaintext secret values of a decrypted config (for log masking). */
 export function secretValues(decrypted: any): string[] {
   const values: string[] = Object.values(decrypted?.secrets ?? {}).map(String);
-  for (const { obj, fields } of salesforceSecretSpots(decrypted?.salesforce)) {
+  for (const { obj, fields } of [...salesforceSecretSpots(decrypted?.salesforce), ...authSecretSpots(decrypted?.auth)]) {
     for (const f of fields) if (obj?.[f]) values.push(String(obj[f]));
   }
   return values.filter(Boolean);

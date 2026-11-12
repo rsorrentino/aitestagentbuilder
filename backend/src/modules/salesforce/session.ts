@@ -12,6 +12,7 @@ import { jwtBearerToken, passwordToken, TokenResult, uiBridgeUrl } from './oauth
 import { secondsRemaining, totp } from './totp.js';
 import { FieldAccess, ObjectAccess, RecordAccess, SalesforceAdminChecks, SalesforceApi, SfIdentity } from './sf-api.js';
 import { findPersona, Persona, SalesforceSettings } from './personas.js';
+import type { SessionVault } from '../auth/session-vault.js';
 
 type Cookie = Awaited<ReturnType<BrowserContext['cookies']>>[number];
 
@@ -41,7 +42,11 @@ export class SalesforceSessions {
   /** Persona currently logged in per browser context. */
   private active = new WeakMap<BrowserContext, string>();
 
-  constructor(public settings: SalesforceSettings) {}
+  /**
+   * With a vault, persona sessions are also kept across runs (encrypted), with the device-activation cookies
+   * that keep Salesforce from asking for an emailed verification code at every new login.
+   */
+  constructor(public settings: SalesforceSettings, private store?: { agentId: string; vault: SessionVault; maxAgeHours?: number }) {}
 
   /** Session credentials obtained during the run (access tokens, session ids), for redaction. */
   sessionSecrets(): string[] {
@@ -103,6 +108,10 @@ export class SalesforceSessions {
     this.active.delete(context);
 
     if (this.settings.reuseSessions && !opts.fresh && persona.auth_method !== 'login_as') {
+      if (!this.cookies.has(persona.name) && this.store) {
+        const stored = await this.store.vault.load(this.store.agentId, 'salesforce', persona.name).catch(() => null);
+        if (stored?.state.cookies?.length) this.cookies.set(persona.name, stored.state.cookies as Cookie[]);
+      }
       const saved = this.cookies.get(persona.name);
       if (saved?.length) {
         await context.addCookies(saved);
@@ -139,7 +148,11 @@ export class SalesforceSessions {
     }
     this.active.set(context, persona.name);
     if (this.settings.reuseSessions && persona.auth_method !== 'login_as') {
-      this.cookies.set(persona.name, await context.cookies());
+      const cookies = await context.cookies();
+      this.cookies.set(persona.name, cookies);
+      if (this.store) {
+        await this.store.vault.save(this.store.agentId, 'salesforce', persona.name, { cookies: cookies as any, origins: [] }, { maxAgeHours: this.store.maxAgeHours ?? 8 }).catch(() => undefined);
+      }
     }
     return { persona, reused: false, message: `Logged in to Salesforce as ${persona.name} (${persona.username}) via ${how}` };
   }

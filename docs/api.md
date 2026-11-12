@@ -132,6 +132,17 @@ Screenshots are served at `GET /artifacts/<path from evidence.screenshots>`.
 | POST | `/demo/seed` | Creates/updates the *Demo Shop* agent and its 3 tests → `{ agentId, created }` |
 | GET | `/demo/` (outside `/api/v1`) | The demo web app itself (login `demo` / `demo123`) |
 
+## Sign-in & MFA
+
+| Method | Path | Role | Description |
+|---|---|---|---|
+| GET | `/agents/:id/auth/sessions` | viewer | Saved sessions of the agent's login profiles and Salesforce personas: `[{ kind: app\|salesforce, identity, capturedAt, expiresAt, expired, lastUsedAt, capturedBy, cookies }]` (never their contents) |
+| DELETE | `/agents/:id/auth/sessions?kind=&identity=` | editor | Forget saved sessions (all, or one) → `{ forgotten }` |
+| POST | `/agents/:id/auth/profiles/:name/verify` | editor | Sign in as a login profile now (`{ fresh: true }` ignores the saved session) and save the session → `{ ok, message, reused, usedMfa, landedUrl, session }` or `{ ok: false, error }` |
+
+Login profiles are part of the agent config (`config.auth`), with `password` and `totp_secret` encrypted and returned
+as `••••••••`.
+
 ## Recorder
 
 Editors only; a session belongs to the user and project that started it.
