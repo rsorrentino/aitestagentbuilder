@@ -35,6 +35,13 @@ checks:
   performance: report                  # off | report | fail — page speed of the page each test ends on
   performance_budgets: { lcp: 2500, cls: 0.1, tbt: 200, load: 4000, max_regression: 0.25 }
   performance_options: { throttle: slow4g, cpu_slowdown: 4 }   # throttle: none | slow4g | fast3g
+unattended:                            # scheduled / CI / API runs, e.g. at night (see "Unattended runs")
+  preflight: true                      # check the application answers first; retry, then fail once
+  preflight_retries: 3
+  preflight_wait_seconds: 300
+  rerun_failed: auto                   # re-run failed tests once at the end: auto (unattended runs) | true | false
+  max_run_minutes: 240                 # stop a run that takes longer
+  resume_interrupted: true             # start a scheduled / CI run again after a server restart
 test_data:
   locale: it                           # names, addresses, phone numbers of {{fake.*}} values (default en)
   seed: 42                             # optional: the same values in every run (per test, row and persona)
@@ -85,6 +92,35 @@ The agent page shows **Tests in the next run**: exactly what the planner will ex
 }
 ```
 
+## Unattended runs
+
+Scheduled, CI and API runs (anything not started by a person in the UI) are built to run at night with nobody watching:
+
+- **Pre-flight.** Before running, the application (and the Salesforce login page, when there is one) must answer.
+  - If it doesn't, the run waits and retries (`preflight_retries` × `preflight_wait_seconds`), e.g. while a deploy or a
+    nightly restart finishes.
+  - Then it fails **once**, with the reason and without running the tests. Instead of 200 failures you get one clear
+    alert.
+  - Tests with AI steps also check that an AI provider is configured, as a warning.
+- **Re-run failures at the end.** Failed tests run once more, in a fresh browser, after all the others.
+  - A test that passes then counts as passed, is marked **↻ re-run**, and feeds the flaky-test quarantine.
+  - Runs started by a person are not re-run unless `rerun_failed: true`.
+- **Maximum duration.** A run stops after `max_run_minutes` (hung application, endless waits) and fails with the reason.
+- **Restarts.** A scheduled / CI / API run interrupted by a server restart (or a Windows service restart) is started
+  again once, with the same tests, when the server is back (within 12 hours).
+- **Daily digest.** A notification channel subscribed to **Daily digest** gets one message every morning at its time
+  and time zone, also with several servers. For each agent it lists:
+  - the last 24 hours: runs, passed and failed tests;
+  - new vs still-failing tests;
+  - tests that passed only when re-run;
+  - pre-flight failures;
+  - test users that need a person to sign in.
+
+  **Send digest now** on the notifications page sends it immediately.
+
+A typical night: a schedule at 02:00, saved sign-ins (Sign-in & MFA), triage and quarantine on, and a daily digest at
+07:30 to Slack / Teams / email.
+
 ## Sign-in & MFA
 
 Tests of an application behind a login start signed in, also with multi-factor authentication. Set up test users on
@@ -124,6 +160,71 @@ auth:
   sign in again. A saved session is also forgotten when its user name or sign-in page changes.
 - **When MFA cannot be answered:** an application that asks for a code without an authenticator key gives a clear error
   (triaged as *environment*). Then add the key, or let a person sign in once.
+
+**Setting up an authenticator key.** When you add an authenticator app for the test user in the application:
+1. Take a screenshot of the QR code and use **📷 Read the QR code from a screenshot**, or paste the image (Ctrl+V).
+   It is decoded in your browser and never uploaded. You can also choose "Can't scan the QR code?" and paste the key.
+2. Add the same key to the authenticator app on your phone. The form shows **Code now: 123 456**, and it must match
+   the phone; if it doesn't, check the key and the server clock.
+3. Save. The key is encrypted and never shown again; **Show the current code of the saved key** checks it later.
+
+The same helper is on Salesforce personas (*Authenticator (TOTP) secret*). Steps can type a current code with
+`{{totp.NAME}}`, where NAME is:
+- a login profile or a Salesforce persona with a key, or
+- an agent secret holding a key, e.g. for a VPN or second application: `{ "action": "fill", "target": "#otp", "data": { "value": "{{totp.VPN_KEY}}" } }`.
+
+**Codes by email or SMS.** Some applications email or text a code, e.g. Salesforce's *Verify your identity* from a new
+browser, a new-device check, or "confirm your email". Connect the mailbox or phone number that receives it (agent page,
+**Mailboxes & phone numbers for codes**), and the code is read and typed without a person:
+
+```yaml
+code_sources:
+  - { name: qa_inbox, type: email, host: imap.example.com, port: 993, username: qa@example.com, password: "${IMAP_PASSWORD}",
+      mailbox: INBOX, from_contains: salesforce.com }            # IMAP; Gmail / Outlook need an app password
+  - { name: qa_phone, type: sms, provider: twilio, account_sid: "AC…", auth_token: "${TWILIO_TOKEN}", phone_number: "+15550001111" }
+auth:
+  profiles:
+    - { name: buyer, ..., codes: { source: qa_inbox, to: qa+buyer@example.com } }   # `to`: for shared mailboxes
+salesforce:
+  personas:
+    - { name: ops, auth_method: password, ..., codes: { source: qa_inbox } }
+```
+
+- **Which code is read:** only messages received after the sign-in (or the test) started, newest first, each used once.
+  - The code is the number next to "code / passcode / verification / OTP", else a lone 6–8 digit number.
+  - Set `code_pattern` (first group) for other formats.
+- **Passwords:** mailbox and Twilio credentials are encrypted.
+- **Check:** shows that the source connects and the newest message's time and subject, never message content.
+- **Authenticator and email together:** with both a key and a code source, a page that says the code was emailed or
+  texted is answered from the source, and other code pages with the authenticator.
+- **Codes during a test** (e.g. "confirm your email"):
+  `{ "action": "wait_for_code", "target": "qa_inbox", "data": { "to": "qa@example.com", "save_as": "otp", "timeout_s": 90 } }`,
+  then `{{vars.otp}}`.
+- **Salesforce:** after one verification the session and the device cookie are saved, so the email is rarely needed again.
+
+**Sign in once (any MFA).** For MFA that a script cannot answer (a push approval on the phone, an SMS code, number
+matching, a hardware token), use **Sign in once…** next to a login profile or a Salesforce persona.
+- **What happens:** the sign-in page opens in a browser on the server and its screen is shown on the agent page.
+  - Click on the picture, type in the text box, use the key buttons.
+  - **Type user name**, **Type password** and **Type authenticator code** enter the stored values without showing them.
+  - Approve the prompt on your phone: the screen refreshes by itself.
+- **Saving:** **I'm signed in** saves the session (encrypted) and runs reuse it until it expires. If the page doesn't look
+  signed in, you're asked to confirm with **Save anyway**.
+- **Fewer prompts later:** tick "remember this device" when offered, so later automatic sign-ins rarely need MFA.
+- **Privacy:** typed text is never stored or logged.
+- **Limits:** the browser closes after saving or after 10 minutes without use, and at most `SIGNIN_MAX_SESSIONS`
+  (default 4) are open at once.
+
+**Sign-in health.** The dashboard's **Sign-in health** card lists the test users (login profiles and Salesforce
+personas) that may need a person before the next runs.
+- **Who is listed:** users who cannot sign in unattended (no stored password, or no answer for MFA), and whose saved
+  session is missing, expiring or expired.
+- **Warnings:** a session saved with *Sign in once* is announced to the project's notification channels subscribed to
+  **Saved sign-in expiring** (`auth.session_expiring`) when less than half of its lifetime (at most 24 h) is left, once
+  per saved session.
+- **When it has expired:** a run fails with "… cannot sign in by itself: use Sign in once… again", triaged as
+  *environment*.
+- **API:** `GET /auth/health` gives the same list.
 
 ## Recording tests
 
@@ -229,6 +330,7 @@ use `{{data.<column>}}` (nested: `{{data.address.city}}`).
 | `assert_screenshot` | optional element (whole viewport if empty) | `{"name": "cart", "max_diff_ratio": 0.001, "threshold": 0.1, "mask": [".clock"], "full_page": false, "on_missing": "create"}` |
 | `assert_performance` | optional page to load fresh (else the last page load is measured) | budgets `{"lcp": 2500, "fcp": 1800, "cls": 0.1, "tbt": 200, "ttfb": 800, "load": 3000, "transfer_kb": 1500, "requests": 80, "max_regression": 0.25, "report_only": false}`; also “Verify the page loads in under 2 seconds” |
 | `ai` | — | the instruction: `{"value": "Add the cheapest product to the cart", "max_actions": 12, "cache": true}`; also written as “AI: add the cheapest product to the cart” |
+| `wait_for_code` | code source (mailbox / phone number) | `{"save_as": "otp", "to": "qa@example.com", "timeout_s": 90}`: waits for an emailed / texted code, then `{{vars.otp}}` |
 | `assert_ai` | optional element to judge | the expectation in plain language; `{"value": "…", "min_confidence": 0.7, "on_unsure": "fail"}` — or write the action as "Verify with AI that …" |
 | `http_request` | path (relative to `api_base_url`, else `base_url`) or URL; also `"GET orders"` as the action | `{"method": "POST", "json": {...}, "query": {...}, "headers": {...}, "extract": {"orderId": "$.id"}, "status": 201}` |
 | `assert_status` | | `201`, `"2xx"` or `[200, 204]` (or in the sentence: "Verify the status code is 201") |

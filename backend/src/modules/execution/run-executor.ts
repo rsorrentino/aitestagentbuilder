@@ -28,6 +28,8 @@ import { Quarantine, QuarantineRepository } from '../quality/quarantine.js';
 import { salesforceSettings, testPersonas } from '../salesforce/personas.js';
 import { AppSessions } from '../auth/app-login.js';
 import { authSettings } from '../auth/profiles.js';
+import { totpFor } from '../salesforce/totp.js';
+import { codeFetcher, CodeFetcher } from '../auth/code-sources.js';
 import { SessionVault } from '../auth/session-vault.js';
 import { SalesforceSessions } from '../salesforce/session.js';
 import { TestDataRepository } from '../../core/repositories/test-data.repository.js';
@@ -85,22 +87,34 @@ export class RunExecutor {
   /** Action sequences that completed AI action steps, replayed without the AI */
   private aiActionCache = new AiActionCache();
 
-  constructor(private runId: string, private agent: Agent, private testCases: TestCase[]) {
+  constructor(private runId: string, private agent: Agent, private testCases: TestCase[], private options: { rerunFailed?: boolean } = {}) {
     this.config = decryptAgentConfig(agent.config);
     this.secrets = this.config.secrets ?? {};
     this.secretList = secretValues(this.config);
     const vault = new SessionVault();
+    // Emailed / SMS verification codes: one fetcher per run, so a message is used once
+    this.codes = Array.isArray(this.config.code_sources) && this.config.code_sources.length ? codeFetcher(this.config) : undefined;
     const sf = salesforceSettings(this.config);
     if (sf) {
       const maxAge = Number(this.config.salesforce?.session_max_age_hours);
-      this.salesforce = new SalesforceSessions(sf, { agentId: agent.id, vault, maxAgeHours: maxAge > 0 ? maxAge : 8 });
+      this.salesforce = new SalesforceSessions(sf, { agentId: agent.id, vault, maxAgeHours: maxAge > 0 ? maxAge : 8, codes: this.codes });
     }
     const auth = authSettings(this.config);
-    if (auth) this.appAuth = new AppSessions(auth, this.config.base_url, { agentId: agent.id, vault });
+    if (auth) this.appAuth = new AppSessions(auth, this.config.base_url, { agentId: agent.id, vault, codes: this.codes });
+  }
+
+  /** {{totp.NAME}}: current code of a login profile's, a Salesforce persona's, or a secret's authenticator key. */
+  private totpCode(name: string): string {
+    const key = (this.config.auth?.profiles ?? []).find((p: any) => p.name === name)?.totp_secret
+      ?? (this.config.salesforce?.personas ?? []).find((p: any) => p.name === name)?.totp_secret
+      ?? this.secrets[name];
+    if (!key) throw new Error(`Unknown authenticator "${name}" — name a login profile or Salesforce persona with an authenticator key, or a secret holding one`);
+    return totpFor(key);
   }
 
   /** Login profiles of other applications (agent config auth). */
   private appAuth?: AppSessions;
+  private codes?: CodeFetcher;
 
   /** Who a test starts signed in as: its persona, data.login_as, or the default login profile. */
   private loginFor(testCase: TestCase, persona?: string): string | undefined {
@@ -175,7 +189,7 @@ export class RunExecutor {
     const persona = ctx.persona;
     // AI action steps: the instruction goes to the AI, so secrets stay placeholders until an action runs
     const keepSecrets = classifyAction(step.action, step) === 'ai_action';
-    const extra = { data: ctx.testData?.row ?? null, fake: ctx.testData?.fake, keepSecrets };
+    const extra = { data: ctx.testData?.row ?? null, fake: ctx.testData?.fake, keepSecrets, totp: (name: string) => this.totpCode(name) };
     const resolve = (v: any): any => {
       if (typeof v === 'string') return resolvePlaceholders(v, this.secrets, ctx.api?.vars, extra);
       if (Array.isArray(v)) return v.map(resolve);
@@ -224,6 +238,7 @@ export class RunExecutor {
     const config = this.config;
     this.quarantined = await new QuarantineRepository().ids(this.agent.projectId).catch(() => new Map());
     const retries = Math.min(Math.max(Number(config.retries ?? 0), 0), 3);
+    const failedItems: PlanItem[] = [];
 
     emitRunEvent(this.runId, 'run_started', { total, agentId: this.agent.id, agentName: this.agent.name });
     this.log(`Starting run for agent "${this.agent.name}" — ${total} test(s) against ${config.base_url}`);
@@ -251,9 +266,30 @@ export class RunExecutor {
         else if (this.quarantined.has(testCase.id)) {
           counts.quarantined++;
           this.log(`  🧪 "${title}" is quarantined: its failure does not fail the run`, { testId: testCase.id }, 'warn');
-        } else counts.failed++;
+        } else {
+          counts.failed++;
+          failedItems.push(plan[i]);
+        }
 
         emitRunEvent(this.runId, 'run_progress', { status: 'running', completed: i + 1, total, ...counts });
+      }
+
+      // Unattended runs: failed tests get one more chance at the end, in a fresh browser
+      // (a transient outage or a stuck browser should not wake anyone up)
+      if (this.options.rerunFailed && failedItems.length && !this.cancelled) {
+        this.log(`Re-running ${failedItems.length} failed test(s) once, in a fresh browser`, {}, 'warn');
+        await this.browser.close().catch(() => undefined);
+        this.browser = await launchBrowser();
+        for (const item of failedItems) {
+          if (this.cancelled) throw new CancelledError();
+          const status = await this.runTestCase(item, retries + 1, { rerun: true });
+          if (status === 'passed') {
+            counts.failed--;
+            counts.passed++;
+            this.log(`  ↻ "${titleOf(item)}" passed when re-run: likely flaky or a transient problem`, { testId: item.testCase.id }, 'warn');
+          }
+        }
+        emitRunEvent(this.runId, 'run_progress', { status: 'running', completed: total, total, ...counts });
       }
 
       return counts.failed > 0 ? 'failed' : 'completed';
@@ -270,7 +306,7 @@ export class RunExecutor {
     }
   }
 
-  private async runTestCase(item: PlanItem, attempt: number): Promise<string> {
+  private async runTestCase(item: PlanItem, attempt: number, extra: { rerun?: boolean } = {}): Promise<string> {
     const { testCase, persona, row } = item;
     const config = this.config;
     const startedAt = new Date();
@@ -279,6 +315,7 @@ export class RunExecutor {
       title, module: testCase.module, priority: testCase.priority, attempt: attempt + 1,
       ...(persona ? { persona } : {}),
       ...(row ? { dataRow: row.index, dataLabel: row.label } : {}),
+      ...(extra.rerun ? { rerun: true } : {}),
       ...(this.quarantined.has(testCase.id) ? { quarantined: true } : {}),
     };
     const result = await this.runRepo.createResult({
@@ -350,6 +387,8 @@ export class RunExecutor {
         config,
         salesforce: this.salesforce,
         auth: this.appAuth,
+        codes: this.codes,
+        testStartedAt: startedAt,
         persona,
         quality,
         testData,
@@ -365,7 +404,7 @@ export class RunExecutor {
             get: (stepId, instruction) => this.aiActionCache.get({ agentId: this.agent.id, testCaseId: testCase.id, stepId, variant, instruction }),
             save: (stepId, instruction, actions) => this.aiActionCache.save({ agentId: this.agent.id, testCaseId: testCase.id, stepId, variant, instruction }, actions),
           },
-          resolve: (text) => resolvePlaceholders(text, this.secrets, ctxRef.api?.vars, { data: testData?.row ?? null, fake: testData?.fake }),
+          resolve: (text) => resolvePlaceholders(text, this.secrets, ctxRef.api?.vars, { data: testData?.row ?? null, fake: testData?.fake, totp: (n) => this.totpCode(n) }),
         },
         ai: {
           judge: async (system, user) => {

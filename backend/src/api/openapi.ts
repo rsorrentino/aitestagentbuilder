@@ -41,7 +41,7 @@ export function buildOpenApi(serverUrl: string) {
     },
     servers: [{ url: serverUrl }],
     security: [{ bearer: [] }, { apiKey: [] }],
-    tags: ['Auth', 'Projects', 'Admin', 'Agents', 'Test cases', 'Documents', 'Runs', 'Quality', 'Sign-in', 'Recorder', 'Test data', 'Schedules', 'Notifications', 'Analytics', 'Audit', 'AI']
+    tags: ['Auth', 'Projects', 'Admin', 'Agents', 'Test cases', 'Documents', 'Runs', 'Quality', 'Sign-in', 'Recorder', 'Test data', 'Schedules', 'Notifications', 'Integrations', 'Analytics', 'Audit', 'AI']
       .map((name) => ({ name })),
     paths: {
       // ── Auth ─────────────────────────────────────────────────────────────
@@ -143,6 +143,8 @@ export function buildOpenApi(serverUrl: string) {
       '/agents/{id}/ai-action-cache': {
         delete: op('Quality', 'Forget cached AI action sequences of an agent (optionally ?testCaseId=): the AI decides again next run', { parameters: [id(), q('testCaseId', { type: 'string' })] }),
       },
+      '/auth/health': { get: op('Sign-in', 'Sign-in health of the project: who can sign in unattended, sessions expiring or expired') },
+      '/auth/health/warn': { post: op('Sign-in', 'Send the session expiry warnings now (normally hourly)') },
       '/agents/{id}/auth/sessions': {
         get: op('Sign-in', 'Saved sessions of the agent\'s login profiles and Salesforce personas (never their contents)', { parameters: [id()] }),
         delete: op('Sign-in', 'Forget saved sessions (?kind=app|salesforce&identity=name)', { parameters: [id(), q('kind', { type: 'string' }), q('identity', { type: 'string' })] }),
@@ -150,6 +152,22 @@ export function buildOpenApi(serverUrl: string) {
       '/agents/{id}/auth/profiles/{name}/verify': {
         post: op('Sign-in', 'Sign in as a login profile now and save the session ({ fresh: true } ignores the saved one)', { parameters: [id(), id('name', 'Login profile name')] }),
       },
+      '/agents/{id}/code-sources/{name}/check': {
+        post: op('Sign-in', 'Check a mailbox / phone number for verification codes: connects and returns the newest message time and subject', { parameters: [id(), id('name', 'Code source name')] }),
+      },
+      '/agents/{id}/auth/totp': {
+        get: op('Sign-in', 'Current code of a saved authenticator key, to compare with the phone (the key is never returned)', { parameters: [id(), q('kind', { type: 'string' }), q('identity', { type: 'string' })] }),
+      },
+      '/agents/{id}/auth/interactive': {
+        post: op('Sign-in', 'Sign in once: open the sign-in page of a login profile or Salesforce persona in a server browser ({ kind, identity })', { parameters: [id()] }),
+      },
+      '/auth/interactive/{sid}': {
+        get: op('Sign-in', 'State of a sign-in browser', { parameters: [id('sid')] }),
+        delete: op('Sign-in', 'Close a sign-in browser without saving', { parameters: [id('sid')] }),
+      },
+      '/auth/interactive/{sid}/screenshot': { get: op('Sign-in', 'Current screen (JPEG)', { parameters: [id('sid')] }) },
+      '/auth/interactive/{sid}/input': { post: op('Sign-in', 'Click, type, press a key, scroll, navigate or type a stored value', { parameters: [id('sid')] }) },
+      '/auth/interactive/{sid}/finish': { post: op('Sign-in', 'Save the session to the vault and close the browser ({ force })', { parameters: [id('sid')] }) },
       '/recordings': {
         get: op('Recorder', 'Your open recording sessions in this project'),
         post: op('Recorder', 'Start recording: a server-side browser opens the agent\'s application ({ agentId, startPath?, persona? })'),
@@ -231,7 +249,28 @@ export function buildOpenApi(serverUrl: string) {
         delete: op('Notifications', 'Delete a channel', { parameters: [id()], responses: { 204: { description: 'Deleted' } } }),
       },
       '/notifications/{id}/test': { post: op('Notifications', 'Send a test notification', { parameters: [id()] }) },
+      '/notifications/{id}/digest': { post: op('Notifications', 'Send the daily digest of a channel now (channel subscribed to digest.daily)', { parameters: [id()] }) },
       '/notifications/{id}/deliveries': { get: op('Notifications', 'Recent deliveries', { parameters: [id()] }) },
+
+      // ── Integrations (Jira, GitHub, GitLab, Azure DevOps) ────────────────
+      '/integrations': {
+        get: op('Integrations', 'List integrations (secrets redacted)'),
+        post: op('Integrations', 'Add an integration (project admin): { type: jira, name, config: { base_url, deployment?, email, api_token, project_key, bug_issue_type?, defects: { enabled, categories, only_unattended, resolve_transition } } }', { responses: { 201: ok({}) } }),
+      },
+      '/integrations/{id}': {
+        put: op('Integrations', 'Update an integration (config is merged; omitted secrets are kept)', { parameters: [id()] }),
+        delete: op('Integrations', 'Delete an integration', { parameters: [id()], responses: { 204: { description: 'Deleted' } } }),
+      },
+      '/integrations/{id}/check': { post: op('Integrations', 'Check the connection (account and project)', { parameters: [id()] }) },
+      '/integrations/{id}/issues': { get: op('Integrations', 'Search issues: keys (PROJ-1, PROJ-2), JQL or words', { parameters: [id(), q('q', { type: 'string' }), q('limit', { type: 'integer', default: 25 })] }) },
+      '/integrations/{id}/import': { post: op('Integrations', 'Import stories as AI-written tests linked to them: { keys: [..] } or { query }, module?, agentId?', { parameters: [id()] }) },
+      '/testcases/{id}/links': {
+        get: op('Integrations', 'Issues a test covers', { parameters: [id()] }),
+        post: op('Integrations', 'Link a test to an issue: { integrationId, key }', { parameters: [id()], responses: { 201: ok({}) } }),
+      },
+      '/testcases/{id}/links/{integrationId}/{key}': { delete: op('Integrations', 'Unlink', { parameters: [id(), { name: 'integrationId', in: 'path', required: true, schema: { type: 'string' } }, { name: 'key', in: 'path', required: true, schema: { type: 'string' } }], responses: { 204: { description: 'Unlinked' } } }) },
+      '/requirements/coverage': { get: op('Integrations', 'Linked stories / issues with their tests\' latest results: passing, failing, partial, not_run') },
+      '/defects': { get: op('Integrations', 'Bugs filed by the platform (open / resolved)', { parameters: [q('status', { enum: ['open', 'resolved'] }), q('agentId', { type: 'string' })] }) },
 
       // ── Analytics, audit, AI ─────────────────────────────────────────────
       '/analytics': { get: op('Analytics', 'Trends, flaky, failing and slowest tests', { parameters: [q('days', { type: 'integer', default: 30 })] }) },

@@ -101,6 +101,24 @@ export default function RunDetail() {
     <Layout title={`Run ${shortId(run.id)}`} actions={actions}>
       {error && <div className="alert alert-error">⚠️ {error}</div>}
       {run.metadata?.error && <div className="alert alert-error">⚠️ {run.metadata.error}</div>}
+      {run.metadata?.preflight && (
+        <div className={`alert ${run.metadata.preflight.ok ? 'alert-info' : 'alert-error'}`} data-testid="preflight">
+          <strong>Pre-flight {run.metadata.preflight.ok ? 'passed' : 'failed'}</strong>
+          {run.metadata.preflight.attempts > 1 && ` after ${run.metadata.preflight.attempts} attempts`}:{' '}
+          {run.metadata.preflight.checks.map((c: any) => `${c.name} ${c.ok ? '✓' : '✗'} (${c.detail})`).join(' · ')}
+        </div>
+      )}
+      {(run.metadata?.integrations ?? []).map((r: any) => (r.filed?.length || r.commented?.length || r.resolved?.length || r.errors?.length) ? (
+        <div key={r.integration} className={`alert ${r.errors?.length ? 'alert-warning' : 'alert-info'}`} data-testid="run-integrations">
+          <strong>{r.integration}:</strong>{' '}
+          {r.filed?.length > 0 && <>filed {r.filed.map((f: any, n: number) => <span key={f.key}>{n ? ', ' : ''}<a href={f.url} target="_blank" rel="noreferrer">{f.key}</a></span>)}. </>}
+          {r.commented?.length > 0 && <>still failing: {r.commented.join(', ')}. </>}
+          {r.resolved?.length > 0 && <>resolved: {r.resolved.join(', ')}. </>}
+          {r.linked > 0 && <>results shown on {r.linked} linked stor{r.linked === 1 ? 'y' : 'ies'}. </>}
+          {r.errors?.length > 0 && <span className="text-danger">Problems: {r.errors.join('; ')}</span>}
+        </div>
+      ) : null)}
+      {run.metadata?.resumedFrom && <div className="alert alert-info">Started again after a server restart interrupted run <Link href={`/runs/${run.metadata.resumedFrom}`}>{run.metadata.resumedFrom}</Link>.</div>}
 
       <div className="stat-grid" style={{ marginBottom: 24 }}>
         <div className="stat-card">
@@ -172,6 +190,7 @@ export default function RunDetail() {
                       <td>
                         <span className={statusBadge(r.status)}>{r.status}</span>
                         {r.metadata?.quarantined && <div><span className="badge badge-warning" title="Quarantined (flaky): its failure does not fail the run">🧪 quarantined</span></div>}
+                        {r.metadata?.rerun && <div><span className="badge badge-info" title="Re-run once at the end of an unattended run, in a fresh browser">↻ re-run</span></div>}
                       </td>
                       <td className="text-sm">{formatDuration(r.duration)}</td>
                       <td style={{ maxWidth: 420, color: 'var(--danger)', fontSize: 12 }}>{r.error}</td>

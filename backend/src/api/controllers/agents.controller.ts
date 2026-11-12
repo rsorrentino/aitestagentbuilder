@@ -5,7 +5,9 @@
 
 import { LOCALE_RE } from '../../modules/quality/test-data-gen.js';
 import { validatePerformanceConfig } from '../../modules/quality/performance.js';
+import { validateUnattended } from '../../modules/automation/unattended.js';
 import { SessionVault } from '../../modules/auth/session-vault.js';
+import { codeFetcher } from '../../modules/auth/code-sources.js';
 import { Response } from 'express';
 import { AgentRepository } from '../../core/repositories/agent.repository.js';
 import { TestCaseRepository } from '../../core/repositories/test-case.repository.js';
@@ -51,6 +53,7 @@ export function buildAgentConfig(name: string, raw: any): { errors: string[]; co
     }
   }
   errors.push(...validatePerformanceConfig(cfg.checks));
+  errors.push(...validateUnattended(cfg.unattended));
   if (cfg.test_data !== undefined && cfg.test_data !== null) {
     const td = cfg.test_data;
     if (typeof td !== 'object' || Array.isArray(td)) errors.push('config.test_data must be an object { locale, seed, environment }');
@@ -96,7 +99,7 @@ export function publicAgent(agent: Agent): Agent {
   return { ...agent, config: redactAgentConfig(agent.config) };
 }
 
-const badSecret = (e: any) => /Invalid secret name|persona|salesforce\.|login profile|auth\./i.test(e?.message ?? '');
+const badSecret = (e: any) => /Invalid secret name|persona|salesforce\.|login profile|auth\.|code source|code_sources/i.test(e?.message ?? '');
 
 /** Identities whose saved session no longer fits (removed, or another user name / sign-in URL). */
 function staleIdentities(before: any, after: any): Array<{ kind: 'app' | 'salesforce'; identity: string }> {
@@ -181,7 +184,7 @@ export class AgentsController {
       res.status(400).json({ error: 'This agent has no Salesforce personas' });
       return;
     }
-    const sessions = new SalesforceSessions({ ...settings, reuseSessions: false });
+    const sessions = new SalesforceSessions({ ...settings, reuseSessions: false }, { codes: codeFetcher(config) });
     const name = req.params.name;
     let persona;
     try {

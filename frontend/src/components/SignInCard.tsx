@@ -6,6 +6,9 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { api, errorMessage, formatDate, REDACTED } from '../lib/api';
+import SignInOnce from './SignInOnce';
+import TotpKeyHelper from './TotpKeyHelper';
+import CodeSources from './CodeSources';
 
 interface Profile {
   name: string;
@@ -18,6 +21,7 @@ interface Profile {
   landing_path?: string;
   success?: { url_contains?: string; selector?: string };
   session?: { reuse?: boolean; max_age_hours?: number };
+  codes?: { source?: string; to?: string };
 }
 
 interface Props {
@@ -47,6 +51,7 @@ export default function SignInCard({ agentId, config, canAdmin, canEdit, onSaved
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [interactive, setInteractive] = useState<{ kind: 'app' | 'salesforce'; identity: string } | null>(null);
 
   const loadSessions = useCallback(async () => {
     try {
@@ -126,7 +131,8 @@ export default function SignInCard({ agentId, config, canAdmin, canEdit, onSaved
         {error && <div className="alert alert-error" role="alert">⚠️ {error}</div>}
         {notice && <div className="alert alert-success" role="status">{notice}</div>}
         <p className="text-sm text-muted mb-3">
-          Tests start signed in: the sign-in form is filled for you (two-step forms too), the authenticator code is typed when asked, and the
+          MFA by phone push, SMS or number matching? Use <strong>Sign in once…</strong>: you complete the sign-in yourself and runs reuse the session.
+          Otherwise tests start signed in: the sign-in form is filled for you (two-step forms too), the authenticator code is typed when asked, and the
           session is kept, encrypted, for the next tests and runs. “Remember this device” is ticked, so most applications stop asking for MFA.
         </p>
 
@@ -145,7 +151,11 @@ export default function SignInCard({ agentId, config, canAdmin, canEdit, onSaved
                         <div className="text-sm text-muted code">{p.login_url || 'login'}</div>
                       </td>
                       <td className="text-sm">{p.username}</td>
-                      <td className="text-sm">{p.totp_secret ? '🔑 authenticator key' : <span className="text-muted">none</span>}</td>
+                      <td className="text-sm">
+                        {p.totp_secret && <div>🔑 authenticator key</div>}
+                        {p.codes?.source && <div>📨 codes from {p.codes.source}</div>}
+                        {!p.totp_secret && !p.codes?.source && <span className="text-muted">none</span>}
+                      </td>
                       <td className="text-sm" data-testid={`session-${p.name}`}>
                         {s ? <>{s.expired ? <span className="text-danger">expired</span> : until(s.expiresAt)}<div className="text-muted">since {formatDate(s.capturedAt)}</div></> : <span className="text-muted">none yet</span>}
                         {r && (
@@ -157,6 +167,7 @@ export default function SignInCard({ agentId, config, canAdmin, canEdit, onSaved
                       <td>
                         <div className="flex gap-2" style={{ flexWrap: 'wrap' }}>
                           {canEdit && <button type="button" className="btn btn-secondary btn-sm" disabled={busy !== null} onClick={() => verify(p.name, !s)}>{busy === `verify-${p.name}` ? 'Signing in…' : 'Test sign-in'}</button>}
+                          {canEdit && <button type="button" className="btn btn-ghost btn-sm" disabled={busy !== null || !!interactive} onClick={() => setInteractive({ kind: 'app', identity: p.name })} title="Complete the sign-in yourself (any MFA) in a browser on the server">Sign in once…</button>}
                           {canEdit && s && <button type="button" className="btn btn-ghost btn-sm" disabled={busy !== null} onClick={() => forget('app', p.name)}>Forget session</button>}
                           {canAdmin && <button type="button" className="btn btn-ghost btn-sm" onClick={() => setEditing({ ...p, previous_name: p.name, password: '', totp_secret: '' })}>Edit</button>}
                           {canAdmin && <button type="button" className="btn btn-ghost btn-sm" onClick={() => remove(p.name)}>Delete</button>}
@@ -202,11 +213,28 @@ export default function SignInCard({ agentId, config, canAdmin, canEdit, onSaved
                 <input id="lp-pw" className="form-control" type="password" value={editing.password ?? ''} onChange={(e) => setEditing({ ...editing, password: e.target.value })}
                   placeholder={editing.previous_name ? 'unchanged' : ''} autoComplete="new-password" />
               </div>
-              <div>
+              <div style={{ gridColumn: '1 / -1' }}>
                 <label className="form-label" htmlFor="lp-totp">Authenticator key (optional)</label>
                 <input id="lp-totp" className="form-control code" type="password" value={editing.totp_secret ?? ''} onChange={(e) => setEditing({ ...editing, totp_secret: e.target.value })}
-                  placeholder={editing.previous_name ? 'unchanged' : 'Base32 key or otpauth:// link'} autoComplete="off" />
+                  placeholder={editing.previous_name ? 'unchanged' : 'Base32 key or otpauth:// link'} autoComplete="off" style={{ maxWidth: 480 }} />
+                <TotpKeyHelper value={editing.totp_secret ?? ''} onChange={(k) => setEditing((cur) => (cur ? { ...cur, totp_secret: k } : cur))}
+                  savedCode={editing.previous_name && profiles.find((x) => x.name === editing.previous_name)?.totp_secret
+                    ? async () => (await api.get(`/agents/${agentId}/auth/totp`, { params: { kind: 'app', identity: editing.previous_name } })).data
+                    : undefined} />
               </div>
+              {(config.code_sources ?? []).length > 0 && (
+                <div>
+                  <label className="form-label" htmlFor="lp-codes">Codes by email / SMS from</label>
+                  <select id="lp-codes" className="form-control" value={editing.codes?.source ?? ''} onChange={(e) => setEditing({ ...editing, codes: e.target.value ? { ...editing.codes, source: e.target.value } : undefined })}>
+                    <option value="">none</option>
+                    {(config.code_sources ?? []).map((c: any) => <option key={c.name}>{c.name}</option>)}
+                  </select>
+                  {editing.codes?.source && (
+                    <input className="form-control mt-1" aria-label="Sent to (optional)" value={editing.codes?.to ?? ''} placeholder="sent to (optional): qa+buyer@example.com"
+                      onChange={(e) => setEditing({ ...editing, codes: { source: editing.codes!.source, to: e.target.value || undefined } })} />
+                  )}
+                </div>
+              )}
               <div>
                 <label className="form-label" htmlFor="lp-landing">Page after sign-in (optional)</label>
                 <input id="lp-landing" className="form-control" value={editing.landing_path ?? ''} onChange={(e) => setEditing({ ...editing, landing_path: e.target.value })} placeholder="/dashboard" />
@@ -221,7 +249,8 @@ export default function SignInCard({ agentId, config, canAdmin, canEdit, onSaved
               </div>
             </div>
             <p className="form-hint mt-2">
-              Authenticator key: when you add an authenticator app for this user, choose “Can’t scan the QR code?” and copy the key, or copy the otpauth:// link.
+              Authenticator key: when you add an authenticator app for this user, take a screenshot of the QR code (or choose “Can’t scan the QR code?”
+              and copy the key) and add the same key to your phone, so you can check that both show the same code.
               Secrets are encrypted and never shown again.
             </p>
             <div className="flex gap-2">
@@ -230,6 +259,17 @@ export default function SignInCard({ agentId, config, canAdmin, canEdit, onSaved
             </div>
           </form>
         )}
+
+        {interactive && (
+          <SignInOnce agentId={agentId} kind={interactive.kind} identity={interactive.identity} onDone={(saved) => {
+            const who = interactive.identity;
+            setInteractive(null);
+            loadSessions();
+            if (saved) setNotice(`Session of ${who} saved: runs now start signed in as ${who}`);
+          }} />
+        )}
+
+        <CodeSources agentId={agentId} sources={config.code_sources ?? []} canAdmin={canAdmin} canEdit={canEdit} onSaved={onSaved} />
 
         {sfPersonas.length > 0 && (
           <div className="mt-3">
@@ -240,6 +280,7 @@ export default function SignInCard({ agentId, config, canAdmin, canEdit, onSaved
                 return (
                   <li key={p.name} className="mb-1">
                     <strong>{p.name}</strong>: {s ? <>{s.expired ? 'session expired' : `session saved, ${until(s.expiresAt)}`}{canEdit && <button type="button" className="btn btn-ghost btn-sm" onClick={() => forget('salesforce', p.name)}>Forget</button>}</> : <span className="text-muted">no saved session</span>}
+                    {canEdit && <button type="button" className="btn btn-ghost btn-sm" disabled={!!interactive} onClick={() => setInteractive({ kind: 'salesforce', identity: p.name })}>Sign in once…</button>}
                   </li>
                 );
               })}

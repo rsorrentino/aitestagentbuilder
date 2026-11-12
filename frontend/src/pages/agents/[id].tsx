@@ -18,6 +18,7 @@ import AgentQualityCard from '../../components/AgentQualityCard';
 import ApiTestsCard from '../../components/ApiTestsCard';
 import PageSpeedCard from '../../components/PageSpeedCard';
 import SignInCard from '../../components/SignInCard';
+import UnattendedCard from '../../components/UnattendedCard';
 
 export default function AgentDetailPage() {
   const router = useRouter();
@@ -212,6 +213,7 @@ export default function AgentDetailPage() {
 
       <AgentSecretsCard agentId={agent.id} secrets={cfg.secrets ?? {}} canEdit={session.can('admin')} onSaved={setAgent} />
 
+      <UnattendedCard key={`unattended-${agent.id}`} agentId={agent.id} config={cfg} canEdit={canEdit} onSaved={setAgent} />
       <ApiTestsCard key={`api-${agent.id}`} agentId={agent.id} config={cfg} canEdit={canEdit} onSaved={setAgent} />
       <PageSpeedCard key={`speed-${agent.id}`} agentId={agent.id} config={cfg} canEdit={canEdit} onSaved={setAgent} />
 
@@ -224,6 +226,7 @@ export default function AgentDetailPage() {
         agentId={agent.id}
         baseUrl={cfg.base_url}
         salesforce={cfg.salesforce}
+        codeSources={cfg.code_sources ?? []}
         canAdmin={session.can('admin')}
         canVerify={canEdit}
         onSaved={setAgent}

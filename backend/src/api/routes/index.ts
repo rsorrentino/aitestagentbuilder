@@ -33,6 +33,7 @@ import { registerAutomationRoutes } from './automation.js';
 import { registerQualityRoutes } from './quality.js';
 import { registerRecorderRoutes } from './recorder.js';
 import { registerAuthSessionRoutes } from './auth-sessions.js';
+import { registerIntegrationRoutes } from './integrations.js';
 import { AgentRepository } from '../../core/repositories/agent.repository.js';
 
 const router = Router();
@@ -198,6 +199,7 @@ registerAutomationRoutes(scoped, { viewer, editor, projectAdmin });
 registerQualityRoutes(scoped, { viewer, editor });
 registerRecorderRoutes(scoped, { editor });
 registerAuthSessionRoutes(scoped, { viewer, editor });
+registerIntegrationRoutes(scoped, { viewer, editor, projectAdmin });
 
 router.use(scoped);
 

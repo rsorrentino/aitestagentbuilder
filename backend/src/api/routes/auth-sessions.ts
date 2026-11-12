@@ -13,11 +13,19 @@ import { launchBrowser } from '../../modules/execution/browser.js';
 import { AppSessions } from '../../modules/auth/app-login.js';
 import { authSettings } from '../../modules/auth/profiles.js';
 import { SessionVault } from '../../modules/auth/session-vault.js';
+import { CODE_SELECTORS } from '../../modules/auth/app-login.js';
+import { Identity, profileIdentity, SignInError, SignInManager, SignInSession } from '../../modules/auth/interactive.js';
+import { findPersona, salesforceSettings } from '../../modules/salesforce/personas.js';
+import { parseTotpKey, secondsRemaining, totpFor } from '../../modules/salesforce/totp.js';
+import { checkSource, codeFetcher, codeSources } from '../../modules/auth/code-sources.js';
+import { authHealth, warnExpiringSessions } from '../../modules/auth/health.js';
 
 type Handler = (req: AuthenticatedRequest, res: Response) => Promise<void>;
 const wrap = (fn: Handler): RequestHandler => (req, res) => {
   fn(req as AuthenticatedRequest, res).catch((error: any) => {
-    if (!res.headersSent) res.status(500).json({ error: error.message });
+    if (res.headersSent) return;
+    if (error instanceof SignInError) res.status(error.status).json({ error: error.message });
+    else res.status(500).json({ error: error.message });
   });
 };
 
@@ -25,6 +33,17 @@ export function registerAuthSessionRoutes(router: Router, roles: { viewer: Reque
   const { viewer, editor } = roles;
   const agents = new AgentRepository();
   const vault = new SessionVault();
+
+  // Sign-in health of the project: who can sign in unattended, and the saved sessions to watch
+  router.get('/auth/health', viewer, wrap(async (req, res) => {
+    const list = await authHealth(req.project!.id);
+    res.json({ identities: list, attention: list.filter((x) => x.attention).length });
+  }));
+
+  // Send the expiry warnings now (normally hourly)
+  router.post('/auth/health/warn', editor, audit('auth.health.warn', 'project'), wrap(async (req, res) => {
+    res.json({ warned: await warnExpiringSessions(req.project!.id) });
+  }));
 
   router.get('/agents/:id/auth/sessions', viewer, wrap(async (req, res) => {
     const agent = await agents.findById(req.params.id, req.project!.id);
@@ -42,6 +61,112 @@ export function registerAuthSessionRoutes(router: Router, roles: { viewer: Reque
     res.json({ forgotten });
   }));
 
+  // Check a code source: it connects, and shows the newest message's time and subject (never its content)
+  router.post('/agents/:id/code-sources/:name/check', editor, audit('agent.code_source.check', 'agent'), wrap(async (req, res) => {
+    const agent = await agents.findById(req.params.id, req.project!.id);
+    if (!agent) return void res.status(404).json({ error: 'Agent not found' });
+    const config = decryptAgentConfig(agent.config);
+    const source = codeSources(config).find((x) => x.name === req.params.name);
+    if (!source) return void res.status(404).json({ error: `Unknown code source "${req.params.name}"` });
+    const mask = (t: string) => maskSecrets(t, secretValues(config));
+    try {
+      res.json(await checkSource(source));
+    } catch (e: any) {
+      res.json({ ok: false, error: mask(String(e?.message ?? e)).split('\n')[0] });
+    }
+  }));
+
+  // Current authenticator code of a saved key (to compare with the phone), never the key itself
+  router.get('/agents/:id/auth/totp', editor, audit('agent.auth_totp.show', 'agent'), wrap(async (req, res) => {
+    const agent = await agents.findById(req.params.id, req.project!.id);
+    if (!agent) return void res.status(404).json({ error: 'Agent not found' });
+    const config = decryptAgentConfig(agent.config);
+    const name = String(req.query.identity ?? '');
+    const key = req.query.kind === 'salesforce'
+      ? (config.salesforce?.personas ?? []).find((p: any) => p.name === name)?.totp_secret
+      : (config.auth?.profiles ?? []).find((p: any) => p.name === name)?.totp_secret;
+    if (!key) return void res.status(404).json({ error: `${name || 'That user'} has no saved authenticator key` });
+    try {
+      const k = parseTotpKey(key);
+      res.locals.audit = { entityId: agent.id, details: { kind: req.query.kind ?? 'app', identity: name } };
+      res.json({ code: totpFor(key), secondsLeft: secondsRemaining(Date.now(), k.period), digits: k.digits, ...(k.issuer ? { issuer: k.issuer } : {}), ...(k.account ? { account: k.account } : {}) });
+    } catch (e: any) {
+      res.status(400).json({ error: `The saved key is not valid: ${e.message}` });
+    }
+  }));
+
+  // ── "Sign in once": a person completes the sign-in (any MFA) in a browser on the server ──
+  const signins = SignInManager.get();
+  const userOf = (req: AuthenticatedRequest) => String(req.user?.userId ?? req.user?.email ?? 'local');
+  const signin = (req: AuthenticatedRequest) => signins.find(req.params.sid, req.project!.id, userOf(req));
+
+  router.post('/agents/:id/auth/interactive', editor, audit('agent.auth_interactive.start', 'agent'), wrap(async (req, res) => {
+    const agent = await agents.findById(req.params.id, req.project!.id);
+    if (!agent) return void res.status(404).json({ error: 'Agent not found' });
+    const config = decryptAgentConfig(agent.config);
+    const kind = req.body?.kind === 'salesforce' ? 'salesforce' : 'app';
+    const name = String(req.body?.identity ?? '');
+    let identity: Identity;
+    if (kind === 'app') {
+      const settings = authSettings(config);
+      if (!settings) return void res.status(400).json({ error: 'This agent has no login profiles' });
+      const sessions = new AppSessions(settings, config.base_url, { agentId: agent.id, vault });
+      identity = profileIdentity(sessions, sessions.profile(name), config.base_url);
+    } else {
+      const settings = salesforceSettings(config);
+      if (!settings) return void res.status(400).json({ error: 'This agent has no Salesforce personas' });
+      const persona = findPersona(settings, name);
+      const maxAge = Number(config.salesforce?.session_max_age_hours);
+      identity = {
+        kind: 'salesforce',
+        name: persona.name,
+        username: persona.username,
+        password: persona.password,
+        totpSecret: persona.totp_secret,
+        startUrl: settings.loginUrl.includes('://') ? settings.loginUrl : `https://${settings.loginUrl}`,
+        maxAgeHours: maxAge > 0 ? maxAge : 8,
+        // Signed in: no Salesforce login form or verification code on screen
+        signedIn: async (page) => !(await page.locator('#username').isVisible().catch(() => false))
+          && !(await Promise.all(CODE_SELECTORS.slice(0, 8).map((sel) => page.locator(sel).first().isVisible().catch(() => false)))).some(Boolean),
+      };
+    }
+    const session = new SignInSession(req.project!.id, userOf(req), agent.id, identity, secretValues(config));
+    await signins.open(session);
+    res.locals.audit = { entityId: agent.id, details: { kind, identity: identity.name, signin: session.id } };
+    res.status(201).json(await session.state());
+  }));
+
+  router.get('/auth/interactive/:sid', editor, wrap(async (req, res) => {
+    res.json(await signin(req).state());
+  }));
+
+  router.get('/auth/interactive/:sid/screenshot', editor, wrap(async (req, res) => {
+    const shot = await signin(req).screenshot();
+    res.setHeader('Content-Type', 'image/jpeg');
+    res.setHeader('Cache-Control', 'no-store');
+    res.end(shot);
+  }));
+
+  router.post('/auth/interactive/:sid/input', editor, wrap(async (req, res) => {
+    const s = signin(req);
+    await s.input(req.body ?? {});
+    res.json(await s.state());
+  }));
+
+  router.post('/auth/interactive/:sid/finish', editor, audit('agent.auth_interactive.save', 'agent'), wrap(async (req, res) => {
+    const s = signin(req);
+    const out = await s.finish(vault, { force: req.body?.force === true, user: req.user?.email });
+    res.locals.audit = { entityId: s.agentId, details: { kind: s.identity.kind, identity: s.identity.name, signedIn: out.signedIn } };
+    await signins.close(s.id);
+    res.json(out);
+  }));
+
+  router.delete('/auth/interactive/:sid', editor, wrap(async (req, res) => {
+    signin(req);
+    await signins.close(req.params.sid);
+    res.status(204).send();
+  }));
+
   // Sign in as a login profile now (fresh, or reusing the saved session): checks the setup and saves the session
   router.post('/agents/:id/auth/profiles/:name/verify', editor, audit('agent.auth_profile.verify', 'agent'), wrap(async (req, res) => {
     const agent = await agents.findById(req.params.id, req.project!.id);
@@ -49,7 +174,7 @@ export function registerAuthSessionRoutes(router: Router, roles: { viewer: Reque
     const config = decryptAgentConfig(agent.config);
     const settings = authSettings(config);
     if (!settings) return void res.status(400).json({ error: 'This agent has no login profiles' });
-    const sessions = new AppSessions(settings, config.base_url, { agentId: agent.id, vault });
+    const sessions = new AppSessions(settings, config.base_url, { agentId: agent.id, vault, codes: codeFetcher(config) });
     let profile;
     try {
       profile = sessions.profile(req.params.name);

@@ -8,6 +8,7 @@ import { audit } from '../../infra/audit/audit.js';
 import { AgentRepository } from '../../core/repositories/agent.repository.js';
 import { ScheduleService, validateCron, validateTimezone } from '../../modules/automation/schedule.service.js';
 import { getNotificationService, validateChannel } from '../../modules/automation/notification.service.js';
+import { sendDigest } from '../../modules/automation/digest.js';
 import { AnalyticsService } from '../../modules/automation/analytics.service.js';
 import { OrchestratorService, RunValidationError } from '../../modules/orchestration/services/orchestrator.service.js';
 
@@ -118,6 +119,12 @@ export function registerAutomationRoutes(
     });
     res.locals.audit = { entityId: created.id, details: { name, type, events } };
     res.status(201).json(created);
+  }));
+
+  router.post('/notifications/:id/digest', projectAdmin, audit('notification.digest', 'notification_channel'), wrap(async (req, res) => {
+    const channel = await notifications.get(req.params.id, req.project!.id);
+    if (!channel) return void res.status(404).json({ error: 'Channel not found' });
+    res.json(await sendDigest({ id: channel.id, projectId: channel.projectId }));
   }));
 
   router.put('/notifications/:id', projectAdmin, audit('notification.update', 'notification_channel'), wrap(async (req, res) => {

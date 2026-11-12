@@ -77,7 +77,7 @@ export class SessionVault {
        VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP, $6, $7, $8)
        ON CONFLICT (agent_id, kind, identity) DO UPDATE SET state = EXCLUDED.state, cookies = EXCLUDED.cookies,
          captured_at = EXCLUDED.captured_at, expires_at = EXCLUDED.expires_at, captured_by = EXCLUDED.captured_by,
-         captured_by_user = EXCLUDED.captured_by_user, last_used_at = NULL
+         captured_by_user = EXCLUDED.captured_by_user, last_used_at = NULL, warned_at = NULL
        RETURNING *`,
       [agentId, kind, identity, encryptSecret(JSON.stringify(state)), state.cookies.length, expires, opts.capturedBy ?? 'auto', opts.user ?? null]);
     return toInfo(res.rows[0]);

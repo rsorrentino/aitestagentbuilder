@@ -241,15 +241,16 @@ export class RunRepository {
     return result.rows.map(row => this.mapRowToRun(row, []));
   }
 
-  /** Runs left in pending/running state by a previous process are marked failed. */
-  async failInterruptedRuns(): Promise<number> {
+  /** Runs left in pending/running state by a previous process are marked failed (returned, so they can be started again). */
+  async failInterruptedRuns(): Promise<Array<{ id: string; agentId: string; projectId: string; startedAt: Date; metadata: Record<string, any> }>> {
     const result = await this.db.query(
       `UPDATE runs SET status = 'failed', finished_at = NOW(),
               metadata = COALESCE(metadata, '{}'::jsonb) || '{"error": "Interrupted: the server restarted while the run was in progress"}'::jsonb
-        WHERE status IN ('pending', 'running')`,
+        WHERE status IN ('pending', 'running')
+        RETURNING id, agent_id, project_id, started_at, metadata`,
     );
     await this.db.query(`UPDATE results SET status = 'error', error = 'Interrupted by server restart', finished_at = NOW() WHERE status = 'running'`);
-    return result.rowCount ?? 0;
+    return result.rows.map((r) => ({ id: r.id, agentId: r.agent_id, projectId: r.project_id, startedAt: new Date(r.started_at), metadata: r.metadata ?? {} }));
   }
 
   private mapRowToRun(row: any, results: TestResult[]): TestRun {

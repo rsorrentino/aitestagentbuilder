@@ -60,6 +60,8 @@ Without credentials against a server with login on, every tool answers with an e
 | `ingest_test_book` | Upload a test specification and let the AI extract test cases |
 | `run_api_check` | Send one HTTP request from this machine and compare the status and body |
 | `generate_report` | HTML / JUnit / JSON reports of a run |
+| `import_stories` | Import Jira stories (keys or JQL) as AI-written tests linked to them |
+| `requirement_coverage` | Linked stories and whether their tests pass, plus the open bugs the platform filed |
 
 Evidence links are signed and expire (24 h by default), so the agent or a browser can open them without logging in.
 

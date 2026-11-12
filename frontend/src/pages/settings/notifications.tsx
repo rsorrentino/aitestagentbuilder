@@ -18,7 +18,17 @@ const EVENTS = [
   { value: 'run.failed', label: 'Run failed' },
   { value: 'run.completed', label: 'Run passed' },
   { value: 'run.cancelled', label: 'Run cancelled' },
+  { value: 'auth.session_expiring', label: 'Saved sign-in expiring (needs a person)' },
+  { value: 'digest.daily', label: 'Daily digest (one message every morning)' },
 ];
+
+const browserTz = () => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  } catch {
+    return 'UTC';
+  }
+};
 
 export default function NotificationsPage() {
   const session = useSession();
@@ -32,6 +42,9 @@ export default function NotificationsPage() {
   const [target, setTarget] = useState('');
   const [secret, setSecret] = useState('');
   const [events, setEvents] = useState<string[]>(['run.failed']);
+  const [digestTime, setDigestTime] = useState('07:00');
+  const [digestTz, setDigestTz] = useState('UTC');
+  useEffect(() => { setDigestTz(browserTz()); }, []);
 
   const load = useCallback(async () => {
     try {
@@ -52,6 +65,7 @@ export default function NotificationsPage() {
     const config: Record<string, any> = type === 'email'
       ? { recipients: target.split(',').map((s) => s.trim()).filter(Boolean) }
       : { [typeMeta.field]: target.trim(), ...(type === 'webhook' && secret ? { secret } : {}) };
+    if (events.includes('digest.daily')) Object.assign(config, { digest_time: digestTime, digest_timezone: digestTz });
     try {
       await api.post('/notifications', { name, type, config, events });
       setName(''); setTarget(''); setSecret('');
@@ -126,6 +140,19 @@ export default function NotificationsPage() {
                 ))}
               </div>
             </div>
+            {events.includes('digest.daily') && (
+              <div className="flex gap-2 mb-3" style={{ alignItems: 'end', flexWrap: 'wrap' }}>
+                <div>
+                  <label className="form-label" htmlFor="ch-digest-time">Digest time</label>
+                  <input id="ch-digest-time" type="time" className="form-control" value={digestTime} onChange={(e) => setDigestTime(e.target.value)} />
+                </div>
+                <div>
+                  <label className="form-label" htmlFor="ch-digest-tz">Time zone</label>
+                  <input id="ch-digest-tz" className="form-control" value={digestTz} onChange={(e) => setDigestTz(e.target.value)} placeholder="Europe/Rome" />
+                </div>
+                <p className="form-hint">Every morning: each agent&apos;s last 24 h, new and still-failing tests, flaky re-runs, sign-ins that need a person.</p>
+              </div>
+            )}
             <button className="btn btn-primary btn-sm" type="submit" disabled={events.length === 0}>Create channel</button>
           </div>
         </form>
@@ -151,7 +178,7 @@ export default function NotificationsPage() {
                       <div className="text-sm text-muted">{c.type}{!c.enabled ? ' · disabled' : ''}</div>
                     </td>
                     <td className="text-sm" style={{ maxWidth: 280, wordBreak: 'break-all' }}>{describeTarget(c)}</td>
-                    <td className="text-sm">{c.events.join(', ')}</td>
+                    <td className="text-sm">{c.events.join(', ')}{c.events.includes('digest.daily') && <div className="text-muted">digest at {c.config?.digest_time ?? '07:00'} {c.config?.digest_timezone ?? 'UTC'}</div>}</td>
                     <td className="text-sm">
                       {c.lastDelivery ? (
                         <>
@@ -168,6 +195,12 @@ export default function NotificationsPage() {
                             const res = await api.post(`/notifications/${c.id}/test`).catch((e) => e.response);
                             if (!res?.data?.ok) throw new Error(res?.data?.error ?? 'Delivery failed');
                           }, `Test sent to “${c.name}”`)}>Send test</button>
+                          {c.events.includes('digest.daily') && (
+                            <button className="btn btn-secondary btn-sm" onClick={() => act(async () => {
+                              const res = await api.post(`/notifications/${c.id}/digest`).catch((e) => e.response);
+                              if (!res?.data?.ok) throw new Error(res?.data?.error ?? 'Delivery failed');
+                            }, `Digest sent to “${c.name}”`)}>Send digest now</button>
+                          )}
                           <button className="btn btn-secondary btn-sm" onClick={() => act(() => api.put(`/notifications/${c.id}`, { enabled: !c.enabled }))}>{c.enabled ? 'Disable' : 'Enable'}</button>
                           <button className="btn btn-danger btn-sm" onClick={() => confirm(`Delete channel “${c.name}”?`) && act(() => api.delete(`/notifications/${c.id}`))}>Delete</button>
                         </div>

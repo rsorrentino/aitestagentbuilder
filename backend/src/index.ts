@@ -10,6 +10,7 @@ import getDatabaseClient from './infra/db/client.js';
 import { runMigrations } from './infra/db/migrate.js';
 import { initializeWebSocket } from './infra/websocket/server.js';
 import { RecorderManager } from './modules/recorder/recorder.js';
+import { SignInManager } from './modules/auth/interactive.js';
 import { seedAdminUser } from './api/controllers/auth.controller.js';
 import { RunRepository } from './core/repositories/run.repository.js';
 import { OrchestratorService } from './modules/orchestration/services/orchestrator.service.js';
@@ -55,7 +56,7 @@ async function start(): Promise<void> {
   const encrypted = await encryptLegacySecrets();
   if (encrypted > 0) logger.info(`Encrypted plaintext secrets of ${encrypted} agent(s)`);
   const interrupted = await new RunRepository().failInterruptedRuns();
-  if (interrupted > 0) logger.warn(`Marked ${interrupted} interrupted run(s) as failed`);
+  if (interrupted.length > 0) logger.warn(`Marked ${interrupted.length} interrupted run(s) as failed`);
 
   const app = createApp();
   const server = createServer(app);
@@ -72,6 +73,12 @@ async function start(): Promise<void> {
 
   server.listen(PORT, () => {
     logger.info(`API listening on http://localhost:${PORT}${API_PREFIX}`);
+    // Unattended runs cut short by the restart are started again
+    if (interrupted.length) {
+      OrchestratorService.get().resumeInterruptedRuns(interrupted)
+        .then((ids) => { if (ids.length) logger.warn(`Started ${ids.length} interrupted run(s) again`); })
+        .catch((e) => logger.error('Resuming interrupted runs failed', { error: e.message }));
+    }
     logger.info(`Auth ${isAuthEnabled() ? 'ENABLED' : 'disabled (local mode)'}`);
     const order = getLLMRouter().providerOrder('chat');
     if (order.length) logger.info(`AI providers: ${order.join(' → ')}`);
@@ -84,6 +91,7 @@ async function start(): Promise<void> {
     stopBackgroundJobs();
     await OrchestratorService.get().shutdown();
     await RecorderManager.get().shutdown();
+    await SignInManager.get().shutdown();
     await CopilotClient.shutdown();
     server.close();
     await db.close().catch(() => undefined);

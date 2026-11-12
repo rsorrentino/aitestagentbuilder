@@ -15,6 +15,9 @@
  *                                                      phishing-resistant method, so use JWT or Login-As
  *   rep@acme.sim     Rep-Pass-1!     JBSWY3DPEHPK3PXP  Standard User + Sales_Ops permission set (TOTP MFA)
  *   viewer@acme.sim  Viewer-Pass-1!  —                 Read Only (no MFA)
+ *   ops@acme.sim     Ops-Pass-1!     —                 Standard User; a new browser must be verified with a code emailed
+ *                                                      to ops@acme.sim (device activation), then a cookie trusts it.
+ *                                                      Emails: GET /demo/salesforce/_sim/outbox, or setSimulatorMailer()
  * Connected app: GET /demo/salesforce/_sim/connected-app (consumer key, secret and private key).
  */
 
@@ -28,12 +31,15 @@ const ORG_ID = '00DSIM000000001AAA';
 interface SimUser {
   id: string; username: string; password: string; securityToken: string; name: string;
   profile: string; permsets: string[]; totp?: string; phishingResistantOnly?: boolean; admin?: boolean;
+  /** Logins from an unknown browser need a code emailed to this address */
+  deviceActivationEmail?: string;
 }
 
 export const SIM_USERS: SimUser[] = [
   { id: '005SIM0000000ADM', username: 'admin@acme.sim', password: 'Admin-Pass-1!', securityToken: 'ADMTOKEN', name: 'Ada Admin', profile: 'System Administrator', permsets: [], totp: 'KRSXG5CTMVRXEZLU', phishingResistantOnly: true, admin: true },
   { id: '005SIM0000000REP', username: 'rep@acme.sim', password: 'Rep-Pass-1!', securityToken: 'REPTOKEN', name: 'Sam Sales', profile: 'Standard User', permsets: ['Sales_Ops'], totp: 'JBSWY3DPEHPK3PXP' },
   { id: '005SIM0000000VWR', username: 'viewer@acme.sim', password: 'Viewer-Pass-1!', securityToken: 'VWRTOKEN', name: 'Val Viewer', profile: 'Read Only', permsets: [] },
+  { id: '005SIM0000000OPS', username: 'ops@acme.sim', password: 'Ops-Pass-1!', securityToken: 'OPSTOKEN', name: 'Olly Ops', profile: 'Standard User', permsets: [], deviceActivationEmail: 'ops@acme.sim' },
 ];
 
 type Crud = { read?: boolean; create?: boolean; edit?: boolean; delete?: boolean };
@@ -89,7 +95,20 @@ export const SIM_CONNECTED_APP = {
 interface Session { userId: string; impersonatedBy?: string; expires: number }
 const sessions = new Map<string, Session>();
 const otps = new Map<string, { sid: string; expires: number }>();
-const challenges = new Map<string, { userId: string; startUrl?: string; expires: number }>();
+const challenges = new Map<string, { userId: string; startUrl?: string; expires: number; code?: string }>();
+/** Browsers verified by an emailed code (device activation): "userId:cookie" */
+const trustedDevices = new Set<string>();
+
+export interface SimEmail { to: string; from: string; subject: string; text: string; at: string }
+const outbox: SimEmail[] = [];
+let mailer: (mail: SimEmail) => void | Promise<void> = (mail) => {
+  outbox.push(mail);
+  if (outbox.length > 50) outbox.shift();
+};
+/** Where the simulator "sends" its emails (tests deliver them to a real mailbox). */
+export function setSimulatorMailer(fn: (mail: SimEmail) => void | Promise<void>): void {
+  mailer = fn;
+}
 
 const newId = () => crypto.randomBytes(18).toString('base64url');
 const userById = (id: string) => SIM_USERS.find((u) => u.id === id);
@@ -275,6 +294,7 @@ export function salesforceSimulator(): Router {
 
   // --- fixtures for tests and demos
   router.get('/_sim/connected-app', (_req, res) => res.json(SIM_CONNECTED_APP));
+  router.get('/_sim/outbox', (_req, res) => res.json([...outbox].reverse()));
   router.get('/_sim/users', (_req, res) => res.json(SIM_USERS.map((u) => ({
     username: u.username, password: u.password, security_token: u.securityToken, totp_secret: u.totp ?? null, profile: u.profile, permission_sets: u.permsets, id: u.id,
   }))));
@@ -284,7 +304,7 @@ export function salesforceSimulator(): Router {
     if (uiUser(req)) return void res.redirect(`${base(req)}${safeStart(req.query.startURL)}`);
     res.send(loginPage(base(req), undefined, String(req.query.startURL ?? '')));
   });
-  router.post('/', (req, res) => {
+  router.post('/', async (req, res) => {
     const user = SIM_USERS.find((u) => u.username === String(req.body.username ?? '').trim());
     if (!user || user.password !== req.body.pw) {
       return void res.send(loginPage(base(req), "Please check your username and password. If you still can't log in, contact your Salesforce administrator.", req.body.startURL));
@@ -293,6 +313,19 @@ export function salesforceSimulator(): Router {
       return void res.send(loginPage(base(req),
         'Your Salesforce administrator requires a phishing-resistant verification method (security key or built-in authenticator) for this user. Authenticator-app codes are not accepted.',
         req.body.startURL));
+    }
+    // Device activation: an unknown browser is verified with a code sent by email
+    const device = String((req.headers.cookie ?? '').split(';').map((c) => c.trim()).find((c) => c.startsWith('sim_device='))?.slice(11) ?? '');
+    if (user.deviceActivationEmail && !trustedDevices.has(`${user.id}:${device}`)) {
+      const id = newId();
+      const code = String(crypto.randomInt(100000, 1000000));
+      challenges.set(id, { userId: user.id, startUrl: req.body.startURL, expires: Date.now() + 10 * 60_000, code });
+      await Promise.resolve(mailer({
+        to: user.deviceActivationEmail, from: 'Salesforce <noreply@salesforce.com>', subject: 'Verify your identity in Salesforce',
+        text: `You're trying to log in to Salesforce from a new browser.\n\nVerification Code: ${code}\n\nIf you didn't try to log in, contact your administrator.`,
+        at: new Date().toISOString(),
+      })).catch(() => undefined);
+      return void res.redirect(`${base(req)}/_ui/identity/verification/method/EmailVerificationUi?challenge=${id}`);
     }
     if (user.totp) {
       const id = newId();
@@ -323,6 +356,37 @@ export function salesforceSimulator(): Router {
       return void res.redirect(`${base(req)}/_ui/identity/verification/method/TotpVerificationUi?challenge=${id}&error=1`);
     }
     challenges.delete(id);
+    startSession(req, res, user.id, challenge.startUrl);
+  });
+
+  router.get('/_ui/identity/verification/method/EmailVerificationUi', (req, res) => {
+    const id = String(req.query.challenge ?? '');
+    const challenge = challenges.get(id);
+    if (!challenge?.code) return void res.redirect(`${base(req)}/`);
+    const user = userById(challenge.userId);
+    res.send(page(base(req), 'Verify Your Identity', `
+      <h1>Verify Your Identity</h1>
+      <p>You're trying to log in from a new browser. To verify your identity, enter the verification code we emailed to ${esc(user?.deviceActivationEmail ?? '')}.</p>
+      <form method="post">
+        <input type="hidden" name="challenge" value="${esc(id)}">
+        <label for="emc">Verification Code</label><input id="emc" name="emc" inputmode="numeric" autocomplete="one-time-code">
+        <button id="save" type="submit">Verify</button>
+        ${req.query.error ? '<div id="error" class="loginError" role="alert">The verification code you entered is invalid or has expired.</div>' : ''}
+      </form>`));
+  });
+  router.post('/_ui/identity/verification/method/EmailVerificationUi', (req, res) => {
+    const id = String(req.body.challenge ?? '');
+    const challenge = challenges.get(id);
+    const user = challenge && challenge.expires > Date.now() ? userById(challenge.userId) : undefined;
+    if (!challenge?.code || !user) return void res.redirect(`${base(req)}/`);
+    if (String(req.body.emc ?? '').trim() !== challenge.code) {
+      return void res.redirect(`${base(req)}/_ui/identity/verification/method/EmailVerificationUi?challenge=${id}&error=1`);
+    }
+    challenges.delete(id);
+    // The browser is now trusted: no code at the next logins
+    const device = newId();
+    trustedDevices.add(`${user.id}:${device}`);
+    res.cookie('sim_device', device, { ...cookieOpts(req), maxAge: 365 * 86_400_000 });
     startSession(req, res, user.id, challenge.startUrl);
   });
 

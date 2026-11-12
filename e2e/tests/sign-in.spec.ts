@@ -52,3 +52,121 @@ test('a login profile signs tests in', async ({ page, request }) => {
   await expect(page.getByText('Saved session of shopper forgotten')).toBeVisible();
   await expect(page.getByTestId('session-shopper')).toContainText('none yet');
 });
+
+test('a person signs in once in the server browser and the session is saved', async ({ page, request }) => {
+  const auth = await (await request.get(`${API_URL}/auth/config`)).json();
+  test.skip(auth.authEnabled, 'runs in local mode (no login)');
+
+  const agent = await (await request.post(`${API_URL}/agents`, {
+    data: { name: unique('Sign in once'), config: { base_url: `${BACKEND}/demo/`, auth: { profiles: [{ name: 'shopper', login_url: 'login', username: 'demo', password: 'demo123' }] } } },
+  })).json();
+
+  await page.goto(`/agents/${agent.id}`);
+  const row = page.getByRole('table', { name: 'Login profiles' }).locator('tr', { hasText: 'shopper' });
+  await row.getByRole('button', { name: 'Sign in once…' }).click();
+  const panel = page.getByRole('region', { name: 'Sign in as shopper' });
+  await expect(panel.getByTestId('signin-screen')).toBeVisible();
+
+  // Saving before signing in is refused, with the option to save anyway
+  await panel.getByRole('button', { name: /I'm signed in/ }).click();
+  await expect(panel.getByRole('alert')).toContainText('does not look signed in');
+  await expect(panel.getByRole('button', { name: 'Save anyway' })).toBeVisible();
+
+  await panel.getByRole('button', { name: 'Type user name' }).click();
+  await panel.getByRole('button', { name: 'Type password' }).click();
+  await panel.getByRole('button', { name: '⌨ Enter' }).click();
+  await expect(panel).toContainText('/demo/dashboard');
+  await panel.getByRole('button', { name: /I'm signed in/ }).click();
+  await expect(page.getByText('Session of shopper saved')).toBeVisible();
+  await expect(page.getByTestId('session-shopper')).toContainText('h left');
+
+  const sessions = await (await request.get(`${API_URL}/agents/${agent.id}/auth/sessions`)).json();
+  expect(sessions[0]).toMatchObject({ identity: 'shopper', capturedBy: 'interactive' });
+});
+
+test('an authenticator key is read from a QR code screenshot and checked against the live code', async ({ page, request }) => {
+  const auth = await (await request.get(`${API_URL}/auth/config`)).json();
+  test.skip(auth.authEnabled, 'runs in local mode (no login)');
+  const QRCode = (await import('qrcode')).default;
+  const link = 'otpauth://totp/ACME:qa%40example.com?secret=JBSWY3DPEHPK3PXP&issuer=ACME';
+  const png = await QRCode.toBuffer(link, { width: 300, margin: 4 });
+
+  const agent = await (await request.post(`${API_URL}/agents`, {
+    data: { name: unique('QR key'), config: { base_url: `${BACKEND}/demo/` } },
+  })).json();
+  await page.goto(`/agents/${agent.id}`);
+  await page.getByRole('button', { name: '＋ Add login profile' }).click();
+  const form = page.getByRole('form', { name: 'Login profile' });
+  await form.getByLabel('Name', { exact: true }).fill('qa');
+  await form.getByLabel('User name / email').fill('demo');
+  await form.getByLabel('QR code image').setInputFiles({ name: 'qr.png', mimeType: 'image/png', buffer: png });
+  await expect(form.getByText('Key read from the QR code')).toBeVisible();
+  await expect(form.getByLabel('Authenticator key (optional)')).toHaveValue(link);
+  const live = form.getByTestId('totp-live');
+  await expect(live).toContainText('ACME · qa@example.com');
+  await expect(live).toContainText(/Code now: \d{3} \d{3}/);
+  await form.getByRole('button', { name: 'Save profile' }).click();
+  await expect(page.getByText('Login profile “qa” saved')).toBeVisible();
+
+  // The saved key is never sent back, but its current code can be shown to compare with the phone
+  const row = page.getByRole('table', { name: 'Login profiles' }).locator('tr', { hasText: 'qa' });
+  await expect(row).toContainText('🔑 authenticator key');
+  await row.getByRole('button', { name: 'Edit' }).click();
+  await form.getByRole('button', { name: 'Show the current code of the saved key' }).click();
+  await expect(form.getByTestId('totp-helper')).toContainText(/\d{3} \d{3}/);
+});
+
+test('a mailbox for emailed codes is added, checked and used by a login profile', async ({ page, request }) => {
+  const auth = await (await request.get(`${API_URL}/auth/config`)).json();
+  test.skip(auth.authEnabled, 'runs in local mode (no login)');
+  const agent = await (await request.post(`${API_URL}/agents`, {
+    data: { name: unique('Codes'), config: { base_url: `${BACKEND}/demo/`, auth: { profiles: [{ name: 'shopper', login_url: 'login', username: 'demo', password: 'demo123' }] } } },
+  })).json();
+
+  await page.goto(`/agents/${agent.id}`);
+  const region = page.getByRole('region', { name: 'Code sources' });
+  await region.getByRole('button', { name: '＋ Mailbox' }).click();
+  const form = page.getByRole('form', { name: 'Code source' });
+  await form.getByLabel('Name', { exact: true }).fill('qa_inbox');
+  await form.getByLabel('IMAP server').fill('127.0.0.1');
+  await form.getByLabel('Port').fill('9');
+  await form.getByLabel('User name').fill('qa');
+  await form.getByLabel('Password / app password').fill('imap-secret-xyz');
+  await form.getByLabel('TLS').uncheck();
+  await form.getByRole('button', { name: 'Save' }).click();
+  await expect(region).toContainText('IMAP qa@127.0.0.1');
+
+  await region.getByRole('button', { name: 'Check' }).click();
+  await expect(page.getByTestId('source-check-qa_inbox')).toContainText('✗');
+  await expect(page.getByTestId('source-check-qa_inbox')).not.toContainText('imap-secret-xyz');
+
+  const row = page.getByRole('table', { name: 'Login profiles' }).locator('tr', { hasText: 'shopper' });
+  await row.getByRole('button', { name: 'Edit' }).click();
+  await page.getByLabel('Codes by email / SMS from').selectOption('qa_inbox');
+  await page.getByLabel('Sent to (optional)').fill('qa+shopper@example.com');
+  await page.getByRole('button', { name: 'Save profile' }).click();
+  await expect(row).toContainText('📨 codes from qa_inbox');
+
+  const saved = await (await request.get(`${API_URL}/agents/${agent.id}`)).json();
+  expect(saved.config.code_sources[0].password).toBe('••••••••');
+  expect(saved.config.auth.profiles[0].codes).toEqual({ source: 'qa_inbox', to: 'qa+shopper@example.com' });
+});
+
+test('the dashboard shows which test users need a person to sign in', async ({ page, request }) => {
+  const auth = await (await request.get(`${API_URL}/auth/config`)).json();
+  test.skip(auth.authEnabled, 'runs in local mode (no login)');
+  const agentName = unique('AAA health');
+  const agent = await (await request.post(`${API_URL}/agents`, {
+    data: { name: agentName, config: { base_url: `${BACKEND}/demo/`, auth: { profiles: [{ name: 'hand_signed', login_url: 'login', username: 'demo' }] } } },
+  })).json();
+
+  await page.goto('/');
+  const card = page.getByRole('region', { name: 'Sign-in health' });
+  await expect(card).toContainText('may need a person');
+  const item = card.locator('li', { hasText: agentName });
+  await expect(item).toContainText('hand_signed');
+  await expect(item).toContainText('no saved session · no user name / password stored');
+  await expect(item).toContainText('Sign in once');
+  await item.getByRole('link', { name: 'hand_signed' }).click();
+  await expect(page).toHaveURL(new RegExp(`/agents/${agent.id}`));
+});

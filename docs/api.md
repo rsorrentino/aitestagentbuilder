@@ -132,16 +132,67 @@ Screenshots are served at `GET /artifacts/<path from evidence.screenshots>`.
 | POST | `/demo/seed` | Creates/updates the *Demo Shop* agent and its 3 tests → `{ agentId, created }` |
 | GET | `/demo/` (outside `/api/v1`) | The demo web app itself (login `demo` / `demo123`) |
 
+## Unattended runs and digest
+
+Run metadata for unattended runs:
+- `preflight` (`{ ok, attempts, checks: [{ name, ok, detail, blocking }] }`)
+- `resumedFrom` / `resumedAs` (runs started again after a restart)
+- `testIds` (when given)
+
+Re-run results carry `metadata.rerun: true`.
+
+| Method | Path | Role | Description |
+|---|---|---|---|
+| POST | `/notifications/:id/digest` | project admin | Send the daily digest of a channel now |
+
+Notification events:
+- `run.completed`, `run.failed`, `run.cancelled`
+- `auth.session_expiring`
+- `digest.daily`, with channel config `digest_time` (HH:MM) and `digest_timezone`; the webhook payload's `run.digest`
+  has the per-agent details
+
+## Integrations
+
+See [integrations.md](integrations.md). Secrets (`api_token`, `token`, `pat`, `webhook_secret`) are encrypted and returned as `••••••••`.
+
+| Method | Path | Role | Description |
+|---|---|---|---|
+| GET | `/integrations` | viewer | List integrations (with `lastCheck`) |
+| POST | `/integrations` | project admin | Add one: `{ type: "jira", name, config }` |
+| PUT | `/integrations/:id` | project admin | Update `name`, `enabled`, `config` (merged; omitted secrets kept) |
+| DELETE | `/integrations/:id` | project admin | Delete (links and bug tracking; the issues stay in Jira) |
+| POST | `/integrations/:id/check` | editor | Check the connection → `{ ok, account, details }` or `{ ok: false, error }` |
+| GET | `/integrations/:id/issues?q=` | viewer | Search: keys (`SHOP-1, SHOP-2`), JQL, or words |
+| POST | `/integrations/:id/import` | editor | `{ keys: [..] }` or `{ query }`, `module?`, `agentId?`: the AI writes tests from each story and links them (needs an AI provider) |
+| GET | `/testcases/:id/links` | viewer | Issues a test covers |
+| POST | `/testcases/:id/links` | editor | `{ integrationId, key }` (the issue must exist) |
+| DELETE | `/testcases/:id/links/:integrationId/:key` | editor | Unlink |
+| GET | `/requirements/coverage` | viewer | `{ summary, requirements: [{ key, title, url, state, tests: [{ id, title, status, at, runId }] }] }`, state = passing / failing / partial / not_run |
+| GET | `/defects?status=open\|resolved&agentId=` | viewer | Bugs filed by the platform: key, url, status, tests, occurrences, first/last run |
+
+After each run, `run.metadata.integrations` lists per integration what happened: `filed` (`[{ key, url, title }]`),
+`commented`, `resolved`, `linked` (stories updated) and `errors`. Integration errors never fail a run.
+
 ## Sign-in & MFA
 
 | Method | Path | Role | Description |
 |---|---|---|---|
+| GET | `/auth/health` | viewer | Sign-in health of the project: `{ identities: [{ agentId, agentName, kind, identity, unattended: yes\|maybe\|no, how, session: ok\|expiring\|expired\|none, expiresAt, attention, hint }], attention }` |
+| POST | `/auth/health/warn` | editor | Send the expiry warnings now (normally hourly) → `{ warned }` |
 | GET | `/agents/:id/auth/sessions` | viewer | Saved sessions of the agent's login profiles and Salesforce personas: `[{ kind: app\|salesforce, identity, capturedAt, expiresAt, expired, lastUsedAt, capturedBy, cookies }]` (never their contents) |
 | DELETE | `/agents/:id/auth/sessions?kind=&identity=` | editor | Forget saved sessions (all, or one) → `{ forgotten }` |
 | POST | `/agents/:id/auth/profiles/:name/verify` | editor | Sign in as a login profile now (`{ fresh: true }` ignores the saved session) and save the session → `{ ok, message, reused, usedMfa, landedUrl, session }` or `{ ok: false, error }` |
 
+| POST | `/agents/:id/code-sources/:name/check` | editor | Connect to a mailbox / phone number → `{ ok, recent, newest: { at, from, subject } }` (never message content) or `{ ok: false, error }` |
+| GET | `/agents/:id/auth/totp?kind=app\|salesforce&identity=` | editor | Current code of a saved authenticator key `{ code, secondsLeft, digits, issuer, account }` (the key is never returned) |
+| POST | `/agents/:id/auth/interactive` | editor | *Sign in once*: `{ kind: app\|salesforce, identity }` opens the sign-in page in a server browser → `{ id, url, title, viewport, canFill }` |
+| GET | `/auth/interactive/:sid`, `/auth/interactive/:sid/screenshot` | editor | State / current screen (JPEG) |
+| POST | `/auth/interactive/:sid/input` | editor | `{ type: click, x, y }`, `{ type: text, text }`, `{ type: key, key: Enter\|Tab\|Escape\|… }`, `{ type: scroll, dy }`, `{ type: navigate, url }`, `{ type: fill, what: username\|password\|code }` (stored values, never returned) |
+| POST | `/auth/interactive/:sid/finish` | editor | Save the session (409 when the page does not look signed in; `{ force: true }` saves anyway) → `{ signedIn, session }` and closes the browser |
+| DELETE | `/auth/interactive/:sid` | editor | Close without saving |
+
 Login profiles are part of the agent config (`config.auth`), with `password` and `totp_secret` encrypted and returned
-as `••••••••`.
+as `••••••••`. Code sources are in `config.code_sources` (`password` / `auth_token` encrypted the same way).
 
 ## Recorder
 
