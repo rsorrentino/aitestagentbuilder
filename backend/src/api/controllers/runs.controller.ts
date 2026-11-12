@@ -30,7 +30,7 @@ export class RunsController {
 
   async startRun(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
-      const { agentId, testIds, metadata } = req.body ?? {};
+      const { agentId, testIds, metadata, baseUrl } = req.body ?? {};
       if (!agentId) {
         res.status(400).json({ error: 'agentId is required' });
         return;
@@ -39,6 +39,7 @@ export class RunsController {
         agentId,
         projectId: req.project!.id,
         testIds: Array.isArray(testIds) ? testIds : undefined,
+        ...(baseUrl ? { baseUrl: String(baseUrl) } : {}),
         metadata: { ...(metadata ?? {}), triggeredBy: metadata?.triggeredBy ?? (req.apiKey ? 'api' : 'user'), startedBy: req.user?.email },
       });
       res.locals.audit = { entityId: run.id, details: { agentId, tests: run.totalTests } };

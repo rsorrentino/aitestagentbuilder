@@ -5,11 +5,70 @@ Connect the platform to the tools your team already uses: **Settings → Integra
 | Integration | Status |
 |---|---|
 | Jira Cloud, Jira Data Center / Server | Available: story import, results on stories, coverage, automatic bugs |
-| GitHub | Next: deployment / push / pull request triggers, commit status, PR comment, issues |
+| GitHub (github.com, Enterprise Server) | Available: runs on pull requests, pushes and deployments (preview URLs), commit status checks, pull request comment, bugs as issues, issues as requirements, Actions workflow |
 | GitLab, Azure DevOps | Planned (same framework) |
 
 Every integration is project-scoped, its secrets are encrypted at rest (AES-256-GCM, the same as agent
 secrets) and never returned by the API, and every change is in the audit log.
+
+## GitHub
+
+### Connect
+
+**Settings → Integrations → Connect → GitHub.**
+
+| Field | |
+|---|---|
+| Repository | `owner/name` |
+| Token | A [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new) (or GitHub App installation token) for the repository with **Commit statuses**, **Issues** and **Pull requests**: read & write (Metadata: read is implied). Use a bot account |
+| API URL | Only for GitHub Enterprise Server: `https://github.example.com/api/v3` |
+| Webhook secret | Generated for you; copy it to GitHub (below). At least 16 characters |
+
+### Run tests on every pull request, push and deployment
+
+Add **triggers**: an event and the agent to run.
+
+| Event | Filter | |
+|---|---|---|
+| Pull request opened / updated | target branches, e.g. `main, release/*` | Opened, new commits, reopened, ready for review. Drafts are skipped |
+| Push | branches | Branch pushes (not tags or deletions) |
+| Deployment succeeded | environments, e.g. `preview*, staging` | With **Test the deployed address**, the run tests the deployment's URL instead of the agent's `base_url`: every preview deployment (Vercel, Netlify, your own) gets tested |
+
+Then on GitHub, **Settings → Webhooks → Add webhook** (the integration's **Setup** shows the exact values):
+Payload URL `https://<your server>/api/v1/hooks/github/<integration id>`, content type `application/json`, the
+webhook secret, events *Pull requests*, *Pushes*, *Deployment statuses*. GitHub's “ping” confirms the connection.
+
+Webhooks are verified with their HMAC-SHA256 signature (`X-Hub-Signature-256`); unsigned or wrongly signed
+requests are refused, redeliveries are ignored, and an event that matches no trigger is acknowledged and ignored
+(the reason is in GitHub's *Recent deliveries*).
+
+### Results on the commit and the pull request
+
+- **Status check** `AI tests / <agent>` on the commit: pending while the run is going, then success, failure
+  (“2 of 40 failed”) or error (application unreachable, cancelled), linking to the run. Make it a required
+  check in branch protection to block merging when the tests fail.
+- **Pull request comment**, one per agent, edited on every run instead of adding more: passed / failed counts,
+  the failed tests with their errors, quarantined failures not counted, the triage, bugs filed, the tested address.
+
+Runs started any other way report to the commit too when they carry `metadata.git`
+(`{ provider: "github", repository, sha, pr? }`) — that is what the Actions workflow below does.
+
+### Without webhooks: GitHub Actions
+
+When GitHub cannot reach your server (it is behind a firewall), let a workflow call the API instead.
+**Setup → GitHub Actions workflow** generates `.github/workflows/ai-tests.yml` for an agent: on pull requests,
+pushes to `main` and by hand, it starts the run (`wait` mode), passes the commit and pull request (so the status
+and comment appear as above), downloads the JUnit report as an artifact and fails the job when tests fail.
+It needs one repository secret, `ATAB_API_KEY`: an API key (Account → API keys) with the editor role.
+To test a preview deployment, set `ATAB_BASE_URL` to its address (e.g. a previous step's output).
+
+### Bugs and requirements on GitHub
+
+Everything described for Jira below works with GitHub issues too: with **File issues for new failures**,
+new failures become issues labelled `atab` (not duplicated, commented when failing again at most once a day),
+**closed** as completed when the tests pass. GitHub has no attachment API, so the screenshot stays on the run page
+the issue links to. Issues can be imported as tests (`#12`, or words) and linked to tests; the issue then has one
+“Automated test results” comment, updated after each run.
 
 ## Jira
 

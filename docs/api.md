@@ -106,7 +106,7 @@ The step actions are listed in the [README](../README.md#-writing-tests).
 
 | Method | Path | Description |
 |---|---|---|
-| POST | `/runs` | `{ agentId, testIds?, metadata? }` → run (`201`). `400` if no test matches the selection |
+| POST | `/runs` | `{ agentId, testIds?, baseUrl?, metadata? }` → run (`201`); `baseUrl` tests another address than the agent's (preview deployments). `400` if no test matches the selection |
 | GET | `/runs` | Run summaries (`?agentId&limit`), newest first, with `agentName` |
 | GET | `/runs/:id` | Run with `results[]` (each has `metadata.title`, `metadata.steps[]`, `evidence.screenshots[]`) |
 | POST | `/runs/:id/cancel` | Cancel a pending/running run (`409` otherwise) |
@@ -169,6 +169,15 @@ See [integrations.md](integrations.md). Secrets (`api_token`, `token`, `pat`, `w
 | DELETE | `/testcases/:id/links/:integrationId/:key` | editor | Unlink |
 | GET | `/requirements/coverage` | viewer | `{ summary, requirements: [{ key, title, url, state, tests: [{ id, title, status, at, runId }] }] }`, state = passing / failing / partial / not_run |
 | GET | `/defects?status=open\|resolved&agentId=` | viewer | Bugs filed by the platform: key, url, status, tests, occurrences, first/last run |
+| GET | `/integrations/:id/workflow?agentId=&branch=&apiUrl=` | viewer | GitHub: `{ path, secret, yaml }` of a GitHub Actions workflow running the agent's tests |
+| POST | `/hooks/github/:integrationId` | none (HMAC) | GitHub webhook: `X-Hub-Signature-256` with the integration's `webhook_secret`; `push`, `pull_request`, `deployment_status` start the runs of matching `config.triggers` → `202 { runs: [{ agentId, runId }] }` or `202 { ignored: reason }` |
+
+GitHub config: `{ repository, token, api_url?, webhook_secret?, commit_status (default true), pr_comment (default true),
+triggers: [{ event: push | pull_request | deployment_status, agent_id, branches?, environments?, use_deployment_url?, include_drafts?, test_ids? }], defects }`.
+
+Runs carrying `metadata.git` (`{ provider: "github", repository, sha, pr?, ref? }`, set by webhooks or sent by CI to
+`POST /runs`) get a commit status and, with `pr`, a pull request comment; `run.metadata.integrations[].status` and
+`.comment` say what was reported.
 
 After each run, `run.metadata.integrations` lists per integration what happened: `filed` (`[{ key, url, title }]`),
 `commented`, `resolved`, `linked` (stories updated) and `errors`. Integration errors never fail a run.
