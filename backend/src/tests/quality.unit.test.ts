@@ -556,9 +556,11 @@ describe('page speed', () => {
     const server = http.createServer((req, res) => {
       if (req.url === '/app.js') {
         res.writeHead(200, { 'Content-Type': 'text/javascript' });
-        // A 120 ms long task, then a late banner that pushes the content down (layout shift)
-        return void res.end(`const t = Date.now(); while (Date.now() - t < 120) {}
-          setTimeout(() => { const b = document.createElement('div'); b.style.height = '200px'; b.textContent = 'Banner'; document.body.prepend(b); }, 50);`);
+        // After the first paint: a 120 ms long task, then a late banner that pushes the content down (layout shift)
+        return void res.end(`requestAnimationFrame(() => setTimeout(() => {
+            const t = Date.now(); while (Date.now() - t < 120) {}
+            const b = document.createElement('div'); b.style.height = '200px'; b.textContent = 'Banner'; document.body.prepend(b);
+          }, 50));`);
       }
       res.writeHead(200, { 'Content-Type': 'text/html' });
       res.end('<!doctype html><html><body><h1 style="font-size:60px">Hello speed</h1><p>Some text to paint.</p><script src="/app.js"></script></body></html>');
@@ -571,7 +573,7 @@ describe('page speed', () => {
       await context.addInitScript({ content: PERF_INIT_SCRIPT });
       const page = await context.newPage();
       await page.goto(url);
-      await page.waitForTimeout(300);
+      await page.getByText('Banner').waitFor();
       const m = await measurePage(page);
       assert.ok(m.ttfb! >= 0 && m.fcp! > 0 && m.lcp! >= m.fcp!, JSON.stringify(m));
       assert.ok(m.tbt! >= 50, `long task counted: ${JSON.stringify(m)}`);

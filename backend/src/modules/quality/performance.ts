@@ -8,7 +8,7 @@
  *
  * Metrics come from the browser's own timing APIs (Navigation / Paint / Largest
  * Contentful Paint / Layout Shift / Long Tasks), for the last full page load:
- * ttfb, fcp, lcp, cls, tbt (sum of long-task time over 50 ms), dom_content_loaded,
+ * ttfb, fcp, lcp, cls, tbt (long-task time over 50 ms after first contentful paint, as in Lighthouse), dom_content_loaded,
  * load, transfer_kb and requests. They are lab values from the test machine, so
  * set budgets with headroom, and use throttling to approximate slower devices:
  *
@@ -64,7 +64,7 @@ export const PERF_INIT_SCRIPT = `(() => {
   const watch = (type, fn) => { try { new PerformanceObserver((l) => l.getEntries().forEach(fn)).observe({ type, buffered: true }); } catch (e) {} };
   watch('layout-shift', (e) => { if (!e.hadRecentInput) s.cls += e.value; });
   watch('largest-contentful-paint', (e) => { s.lcp = e.renderTime || e.startTime; });
-  watch('longtask', (e) => { s.longTasks.push(e.duration); });
+  watch('longtask', (e) => { s.longTasks.push({ start: e.startTime, duration: e.duration }); });
 })();`;
 
 const THROTTLE: Record<string, { latency: number; downloadThroughput: number; uploadThroughput: number }> = {
@@ -165,7 +165,9 @@ const MEASURE_SCRIPT = `(async () => {
     fcp: paint ? paint.startTime : undefined,
     lcp: lcp || undefined,
     cls,
-    tbt: s ? s.longTasks.reduce((sum, d) => sum + Math.max(0, d - 50), 0) : undefined,
+    // Lighthouse counts blocking time after first contentful paint (tasks before it delay FCP instead)
+    tbt: s ? s.longTasks.filter((t) => !paint || t.start + t.duration > paint.startTime)
+      .reduce((sum, t) => sum + Math.max(0, t.duration - 50), 0) : undefined,
     dom_content_loaded: nav && nav.domContentLoadedEventEnd ? nav.domContentLoadedEventEnd : undefined,
     load: nav && nav.loadEventEnd ? nav.loadEventEnd : undefined,
     transfer_kb: bytes / 1024,

@@ -169,7 +169,7 @@ const PAGES: Record<string, (q: URLSearchParams) => string> = {
     <input type="password" class="p" style="top:260px" placeholder="Password">
     <div id="out" class="p" style="top:320px"></div></body></html>`,
   // Page speed: '/speed' answers after ?delay ms (time to first byte); '/heavy' blocks the main thread
-  '/heavy': () => page('Heavy', '<p>Busy</p><script>const t = Date.now(); while (Date.now() - t < 300) {}</script>'),
+  '/heavy': () => page('Heavy', '<p>Busy</p><script>requestAnimationFrame(() => setTimeout(() => { const t = Date.now(); while (Date.now() - t < 300) {} }, 50));</script>'),
   // Echoes a form back: data-driven tests fill it and check the result
   '/signup': () => page('Signup', `<form onsubmit="event.preventDefault(); document.getElementById('out').textContent =
     'Welcome ' + document.getElementById('name').value + ' <' + document.getElementById('email').value + '>' + ' x' + document.getElementById('qty').value;">
