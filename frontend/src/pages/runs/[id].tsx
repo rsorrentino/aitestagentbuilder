@@ -18,7 +18,7 @@ import RunTriage from '../../components/RunTriage';
 function latest(results: any[]): any[] {
   const map = new Map<string, any>();
   for (const r of results ?? []) {
-    const key = `${r.testCaseId}@${r.metadata?.persona ?? ''}#${r.metadata?.dataRow ?? ''}`;
+    const key = `${r.testCaseId}@${r.metadata?.persona ?? ''}#${r.metadata?.dataRow ?? ''}~${r.metadata?.browser ?? ''}`;
     const prev = map.get(key);
     if (!prev || new Date(r.startedAt) >= new Date(prev.startedAt)) map.set(key, r);
   }

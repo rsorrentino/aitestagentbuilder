@@ -6,6 +6,7 @@
 import { LOCALE_RE } from '../../modules/quality/test-data-gen.js';
 import { validatePerformanceConfig } from '../../modules/quality/performance.js';
 import { validateUnattended } from '../../modules/automation/unattended.js';
+import { validateTargets } from '../../modules/execution/targets.js';
 import { SessionVault } from '../../modules/auth/session-vault.js';
 import { codeFetcher } from '../../modules/auth/code-sources.js';
 import { Response } from 'express';
@@ -54,6 +55,7 @@ export function buildAgentConfig(name: string, raw: any): { errors: string[]; co
   }
   errors.push(...validatePerformanceConfig(cfg.checks));
   errors.push(...validateUnattended(cfg.unattended));
+  errors.push(...validateTargets(cfg));
   if (cfg.test_data !== undefined && cfg.test_data !== null) {
     const td = cfg.test_data;
     if (typeof td !== 'object' || Array.isArray(td)) errors.push('config.test_data must be an object { locale, seed, environment }');

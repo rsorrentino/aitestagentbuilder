@@ -150,11 +150,11 @@ export class QuarantineRepository {
     const res = await this.db.query(
       `WITH variant AS (
          -- final attempt of each persona / data row of a test in a run
-         SELECT DISTINCT ON (r.run_id, r.test_case_id, COALESCE(r.metadata->>'persona', '') || COALESCE('#' || (r.metadata->>'dataRow'), ''))
+         SELECT DISTINCT ON (r.run_id, r.test_case_id, COALESCE(r.metadata->>'persona', '') || COALESCE('#' || (r.metadata->>'dataRow'), '') || COALESCE('~' || (r.metadata->>'browser'), ''))
                 r.run_id, r.test_case_id, r.status, COALESCE((r.metadata->>'attempt')::int, 1) AS attempt, ru.started_at
            FROM results r JOIN runs ru ON ru.id = r.run_id
           WHERE ru.agent_id = $1 AND r.test_case_id = ANY($2) AND r.status <> 'running' AND ru.status IN ('completed', 'failed')
-          ORDER BY r.run_id, r.test_case_id, COALESCE(r.metadata->>'persona', '') || COALESCE('#' || (r.metadata->>'dataRow'), ''), r.started_at DESC
+          ORDER BY r.run_id, r.test_case_id, COALESCE(r.metadata->>'persona', '') || COALESCE('#' || (r.metadata->>'dataRow'), '') || COALESCE('~' || (r.metadata->>'browser'), ''), r.started_at DESC
        ), final AS (
          -- one outcome per test and run: a failing persona or row fails the test
          SELECT test_case_id, MIN(started_at) AS started_at,

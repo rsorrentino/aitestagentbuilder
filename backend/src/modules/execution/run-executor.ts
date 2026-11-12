@@ -17,7 +17,8 @@ import { ARTIFACTS_PATH } from '../../infra/config/paths.js';
 import logger from '../../infra/logger/index.js';
 import { decryptAgentConfig, resolvePlaceholders, secretValues } from '../../core/domain/agent-secrets.js';
 import { maskSecrets } from '../../infra/security/secrets.js';
-import { launchBrowser, outlinePage } from './browser.js';
+import { outlinePage } from './browser.js';
+import { deviceOptions, GridConfig, launchTarget, markGridSession, resolveTargets, Target } from './targets.js';
 import { classifyAction, executeStep, isSelectorFailure, QualityContext, StepContext } from './step-runner.js';
 import { TestCaseRepository } from '../../core/repositories/test-case.repository.js';
 import { describeA11y, scanAccessibility } from '../quality/accessibility.js';
@@ -56,10 +57,16 @@ interface PlanItem {
   row?: { index: number; label: string; values: Record<string, any> };
   /** The data set could not be loaded: the test fails with this error */
   dataError?: string;
+  /** Browser / device the test runs in (agent setting browsers) */
+  target?: Target;
+  /** Shown in the title and kept with the result when the agent lists browsers or uses a grid */
+  browser?: string;
+  /** The target's browser could not be started: the test fails with this error */
+  launchError?: string;
 }
 
 function titleOf(item: PlanItem): string {
-  return `${item.testCase.title}${item.persona ? ` [as ${item.persona}]` : ''}${item.row ? ` [${item.row.label}]` : ''}`;
+  return `${item.testCase.title}${item.persona ? ` [as ${item.persona}]` : ''}${item.row ? ` [${item.row.label}]` : ''}${item.browser ? ` [${item.browser}]` : ''}`;
 }
 
 class CancelledError extends Error {
@@ -163,7 +170,7 @@ export class RunExecutor {
   private plan(): PlanItem[] {
     // "all" means every Salesforce persona, or every login profile when the agent has no Salesforce section
     const settings = this.salesforce?.settings ?? (this.appAuth ? { personas: this.appAuth.settings.profiles } as any : null);
-    return this.testCases.flatMap((testCase) => {
+    const base: PlanItem[] = this.testCases.flatMap((testCase) => {
       const personas: Array<string | undefined> = testPersonas(testCase.data, settings);
       const ref = testCase.data?.dataset;
       const ds = ref !== undefined && ref !== null && ref !== '' ? this.datasets.get(String(ref)) : undefined;
@@ -175,6 +182,43 @@ export class RunExecutor {
       return (personas.length ? personas : [undefined]).flatMap((persona) =>
         rows.map((r) => ({ testCase, ...(persona ? { persona } : {}), ...r })));
     });
+    // … and once per browser / device: all tests of a browser run together (one browser start, one grid session)
+    const targets = resolveTargets(this.config);
+    const named = (Array.isArray(this.config.browsers) && this.config.browsers.length > 0) || !!this.grid;
+    return targets.flatMap((target) => base.map((item) => ({ ...item, target, ...(named ? { browser: target.name } : {}) })));
+  }
+
+  private get grid(): GridConfig | undefined {
+    return this.config.grid?.provider ? this.config.grid : undefined;
+  }
+
+  /** Close the current browser; on a grid, mark the session passed / failed first. */
+  private async closeBrowser(passed: boolean): Promise<void> {
+    if (!this.browser) return;
+    await markGridSession(this.browser, this.grid, passed, passed ? 'All tests passed' : 'Some tests failed').catch(() => undefined);
+    await this.browser.close().catch(() => undefined);
+    this.browser = undefined;
+  }
+
+  /**
+   * Make the target's browser the current one (started on this server or on the grid). With several
+   * targets, a browser that cannot start fails its tests and the others still run.
+   */
+  private async useTarget(target: Target, state: { current?: Target; passed: boolean; error?: string; single: boolean }, fresh = false): Promise<void> {
+    if (!fresh && state.current === target) return;
+    await this.closeBrowser(state.passed);
+    state.current = target;
+    state.passed = true;
+    state.error = undefined;
+    try {
+      this.browser = await launchTarget(target, this.grid, { name: `${this.agent.name} — ${target.name}`, build: `${this.agent.name} · ${this.runId}` });
+      const where = this.grid ? ` on ${this.grid.provider}` : '';
+      this.log(`Browser started: ${target.name}${target.device ? ` (emulated in ${target.engine})` : ''}${where} — ${this.browser.browserType().name()} ${this.browser.version()}`);
+    } catch (e: any) {
+      if (state.single) throw e;
+      state.error = this.mask(e.message);
+      this.log(`✗ ${state.error}`, {}, 'error');
+    }
   }
 
   private mask(text: string): string {
@@ -243,23 +287,28 @@ export class RunExecutor {
     emitRunEvent(this.runId, 'run_started', { total, agentId: this.agent.id, agentName: this.agent.name });
     this.log(`Starting run for agent "${this.agent.name}" — ${total} test(s) against ${config.base_url}`);
 
+    const single = new Set(plan.map((p) => p.target)).size <= 1;
+    const state: { current?: Target; passed: boolean; error?: string; single: boolean } = { passed: true, single };
     try {
-      this.browser = await launchBrowser();
-      this.log(`Browser started (${this.browser.browserType().name()} ${this.browser.version()})`);
+      if (!plan.length) await this.useTarget(resolveTargets(config)[0], state);
 
       for (let i = 0; i < total; i++) {
         if (this.cancelled) throw new CancelledError();
-        const { testCase, persona, row } = plan[i];
-        const title = titleOf(plan[i]);
-        emitRunEvent(this.runId, 'test_started', { testId: testCase.id, title, persona, ...(row ? { dataRow: row.index } : {}), index: i + 1, total });
+        await this.useTarget(plan[i].target!, state);
+        const item = state.error ? { ...plan[i], launchError: state.error } : plan[i];
+        const { testCase, persona, row } = item;
+        const title = titleOf(item);
+        emitRunEvent(this.runId, 'test_started', { testId: testCase.id, title, persona, ...(row ? { dataRow: row.index } : {}), ...(item.browser ? { browser: item.browser } : {}), index: i + 1, total });
 
         let status: string = 'failed';
         for (let attempt = 0; attempt <= retries; attempt++) {
           if (attempt > 0) this.log(`Retrying "${title}" (attempt ${attempt + 1}/${retries + 1})`, { testId: testCase.id }, 'warn');
-          status = await this.runTestCase(plan[i], attempt);
+          status = await this.runTestCase(item, attempt);
           if (status !== 'failed' && status !== 'error') break;
           if (this.cancelled) throw new CancelledError();
+          if (item.launchError) break;
         }
+        if (status === 'failed' || status === 'error') state.passed = false;
 
         if (status === 'passed') counts.passed++;
         else if (status === 'skipped') counts.skipped++;
@@ -268,7 +317,8 @@ export class RunExecutor {
           this.log(`  🧪 "${title}" is quarantined: its failure does not fail the run`, { testId: testCase.id }, 'warn');
         } else {
           counts.failed++;
-          failedItems.push(plan[i]);
+          // A browser that could not start is not retried at the end
+          if (!item.launchError) failedItems.push(plan[i]);
         }
 
         emitRunEvent(this.runId, 'run_progress', { status: 'running', completed: i + 1, total, ...counts });
@@ -278,16 +328,20 @@ export class RunExecutor {
       // (a transient outage or a stuck browser should not wake anyone up)
       if (this.options.rerunFailed && failedItems.length && !this.cancelled) {
         this.log(`Re-running ${failedItems.length} failed test(s) once, in a fresh browser`, {}, 'warn');
-        await this.browser.close().catch(() => undefined);
-        this.browser = await launchBrowser();
-        for (const item of failedItems) {
+        let restarted: Target | undefined;
+        for (const failed of failedItems) {
           if (this.cancelled) throw new CancelledError();
+          if (restarted !== failed.target) {
+            await this.useTarget(failed.target!, state, true);
+            restarted = failed.target;
+          }
+          const item = state.error ? { ...failed, launchError: state.error } : failed;
           const status = await this.runTestCase(item, retries + 1, { rerun: true });
           if (status === 'passed') {
             counts.failed--;
             counts.passed++;
             this.log(`  ↻ "${titleOf(item)}" passed when re-run: likely flaky or a transient problem`, { testId: item.testCase.id }, 'warn');
-          }
+          } else state.passed = false;
         }
         emitRunEvent(this.runId, 'run_progress', { status: 'running', completed: total, total, ...counts });
       }
@@ -302,7 +356,7 @@ export class RunExecutor {
       await this.runRepo.updateRun(this.runId, { metadata: { error: error.message } as any }).catch(() => undefined);
       throw error;
     } finally {
-      await this.browser?.close().catch(() => undefined);
+      await this.closeBrowser(state.passed);
     }
   }
 
@@ -315,6 +369,7 @@ export class RunExecutor {
       title, module: testCase.module, priority: testCase.priority, attempt: attempt + 1,
       ...(persona ? { persona } : {}),
       ...(row ? { dataRow: row.index, dataLabel: row.label } : {}),
+      ...(item.browser ? { browser: item.browser } : {}),
       ...(extra.rerun ? { rerun: true } : {}),
       ...(this.quarantined.has(testCase.id) ? { quarantined: true } : {}),
     };
@@ -354,9 +409,11 @@ export class RunExecutor {
     const measuresSpeed = perf.mode !== 'off' || (testCase.steps ?? []).some((s) => classifyAction(s.action, s) === 'assert_performance');
 
     try {
+      if (item.launchError) throw new Error(item.launchError);
       context = await this.browser!.newContext({
         viewport: { width: 1280, height: 800 },
         ignoreHTTPSErrors: true,
+        ...(item.target ? deviceOptions(item.target) : {}),
         ...(videoDir ? { recordVideo: { dir: videoDir, size: { width: 1280, height: 800 } } } : {}),
       });
       if (evidence.trace !== 'off') {
@@ -542,7 +599,7 @@ export class RunExecutor {
 
     const icon = status === 'passed' ? '✓' : status === 'skipped' ? '○' : '✗';
     this.log(`${icon} ${title}: ${status}${error ? ` — ${error}` : ''}`, { testId: testCase.id }, status === 'passed' ? 'info' : 'warn');
-    emitRunEvent(this.runId, 'test_result', { testId: testCase.id, resultId: result.id, title, persona, ...(row ? { dataRow: row.index } : {}), status, error, duration });
+    emitRunEvent(this.runId, 'test_result', { testId: testCase.id, resultId: result.id, title, persona, ...(row ? { dataRow: row.index } : {}), ...(item.browser ? { browser: item.browser } : {}), status, error, duration });
     return status;
   }
 
