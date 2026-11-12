@@ -6,6 +6,8 @@ import { Router, RequestHandler, Response } from 'express';
 import { AuthenticatedRequest } from '../../infra/auth/auth.middleware.js';
 import { audit } from '../../infra/audit/audit.js';
 import { BlockRepository, ElementRepository, LibraryError, validateBlock, validateElement } from '../../modules/library/library.js';
+import { convertText } from '../../modules/authoring/plain-english.js';
+import { AgentRepository } from '../../core/repositories/agent.repository.js';
 
 type Handler = (req: AuthenticatedRequest, res: Response) => Promise<void>;
 const wrap = (fn: Handler): RequestHandler => (req, res) => {
@@ -19,6 +21,23 @@ export function registerLibraryRoutes(router: Router, roles: { viewer: RequestHa
   const { viewer, editor } = roles;
   const blocks = new BlockRepository();
   const elements = new ElementRepository();
+
+  // ── plain English → steps ─────────────────────────────────────────────────
+  router.post('/steps/from-text', editor, wrap(async (req, res) => {
+    const text = typeof req.body?.text === 'string' ? req.body.text : '';
+    if (!text.trim()) return void res.status(400).json({ error: 'text is required: one step per line, e.g. "Go to /cart, then check that Total shows 42.00"' });
+    if (text.length > 20_000) return void res.status(400).json({ error: 'text is too long (20,000 characters at most)' });
+    let baseUrl: string | undefined;
+    let aiProvider: string | undefined;
+    if (req.body?.agentId) {
+      const agent = await new AgentRepository().findById(String(req.body.agentId), req.project!.id);
+      if (!agent) return void res.status(400).json({ error: 'agentId must be an agent of this project' });
+      baseUrl = agent.config?.base_url;
+      aiProvider = agent.config?.ai?.provider;
+    }
+    const [b, e] = await Promise.all([blocks.list(req.project!.id), elements.list(req.project!.id)]);
+    res.json(await convertText(text, { blocks: b, elements: e }, { baseUrl, path: typeof req.body?.path === 'string' ? req.body.path : undefined, aiProvider }));
+  }));
 
   // ── blocks ────────────────────────────────────────────────────────────────
   router.get('/blocks', viewer, wrap(async (req, res) => {

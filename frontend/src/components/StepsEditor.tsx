@@ -73,9 +73,75 @@ interface Props {
   idPrefix?: string;
 }
 
+/** Write steps in plain English; the rules (and the AI for the rest) turn them into steps to review. */
+function PlainEnglish({ onSteps, idPrefix }: { onSteps: (steps: any[], replace: boolean) => void; idPrefix: string }) {
+  const [text, setText] = useState('');
+  const [agents, setAgents] = useState<any[]>([]);
+  const [agentId, setAgentId] = useState('');
+  const [path, setPath] = useState('/');
+  const [result, setResult] = useState<any>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => { api.get('/agents').then((r) => setAgents(r.data)).catch(() => undefined); }, []);
+
+  const convert = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      setResult((await api.post('/steps/from-text', { text, ...(agentId ? { agentId, path } : {}) })).data);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const VIA: Record<string, [string, string]> = { rules: ['badge badge-success', 'understood'], ai: ['badge badge-info', 'AI'], none: ['badge badge-warning', 'not understood'] };
+
+  return (
+    <div className="card mb-3" style={{ background: 'var(--gray-50)' }} data-testid="plain-english">
+      <div className="card-body">
+        <label className="form-label" htmlFor={`${idPrefix}-english`}>Steps in plain English (one per line, or joined with “then”)</label>
+        <textarea id={`${idPrefix}-english`} className="form-control" rows={5} value={text} onChange={(e) => setText(e.target.value)}
+          placeholder={'Sign in with user alice\nGo to /cart, then check that Total shows 42.00\nType "SPRING" into the Coupon field and click Apply\nVerify the page shows "Saved"'} />
+        <div className="flex gap-2 mt-2" style={{ flexWrap: 'wrap', alignItems: 'center' }}>
+          <select className="form-control" style={{ width: 220 }} value={agentId} onChange={(e) => setAgentId(e.target.value)} aria-label="Look at the page of">
+            <option value="">Without looking at the app</option>
+            {agents.map((a) => <option key={a.id} value={a.id}>Look at {a.name}</option>)}
+          </select>
+          {agentId && <input className="form-control" style={{ width: 140 }} value={path} onChange={(e) => setPath(e.target.value)} aria-label="Starting page" placeholder="/" />}
+          <button type="button" className="btn btn-primary btn-sm" onClick={convert} disabled={busy || !text.trim()}>{busy ? 'Converting…' : 'Convert to steps'}</button>
+        </div>
+        <p className="form-hint">Library blocks and elements are used by name. What the rules do not understand goes to the AI, which looks at the chosen app&apos;s page for real labels.
+          The result is ordinary steps: they replay exactly, without the AI.</p>
+        {error && <div className="alert alert-error">⚠️ {error}</div>}
+        {result && (
+          <>
+            <table className="data-table text-sm" data-testid="english-result">
+              <tbody>
+                {result.lines.map((l: any, i: number) => (
+                  <tr key={i}>
+                    <td style={{ width: '40%' }}>{l.text}</td>
+                    <td><span className={VIA[l.via][0]}>{VIA[l.via][1]}</span></td>
+                    <td>{l.steps.map((st: any, n: number) => <div key={n}><code>{st.action}</code> {st.target} {st.data ? <span className="text-muted">{JSON.stringify(st.data)}</span> : null}</div>)}{l.note && <div className="text-muted">{l.note}</div>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div className="flex gap-2 mt-2">
+              <button type="button" className="btn btn-primary btn-sm" disabled={!result.steps.length} onClick={() => { onSteps(result.steps, false); setResult(null); setText(''); }}>Add {result.steps.length} step(s)</button>
+              <button type="button" className="btn btn-secondary btn-sm" disabled={!result.steps.length} onClick={() => { onSteps(result.steps, true); setResult(null); setText(''); }}>Replace all steps</button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function StepsEditor({ steps, setSteps, exclude, idPrefix = 'step' }: Props) {
   const [library, setLibrary] = useState<Library>({ blocks: [], elements: [] });
   const [notice, setNotice] = useState<string | null>(null);
+  const [english, setEnglish] = useState(false);
   useEffect(() => { loadLibrary().then(setLibrary); }, []);
 
   const update = (i: number, patch: Partial<StepRow>) => setSteps((prev) => prev.map((s, idx) => (idx === i ? { ...s, ...patch } : s)));
@@ -105,6 +171,19 @@ export default function StepsEditor({ steps, setSteps, exclude, idPrefix = 'step
   const blocks = library.blocks.filter((b) => b.name !== exclude);
   return (
     <div>
+      <div className="mb-2">
+        <button type="button" className="btn btn-secondary btn-sm" onClick={() => setEnglish((v) => !v)} aria-expanded={english}>✍ Write in plain English</button>
+      </div>
+      {english && (
+        <PlainEnglish idPrefix={idPrefix} onSteps={(converted, replace) => {
+          const rows = toRows(converted);
+          setSteps((prev) => {
+            const kept = replace ? [] : prev.filter((r) => r.action.trim() && !(r.action === 'navigate' && r.target === '/' && prev.length === 1));
+            return [...kept, ...rows];
+          });
+          setEnglish(false);
+        }} />
+      )}
       <datalist id={`${idPrefix}-actions`}>{[...STEP_ACTIONS, 'use_block'].map((a) => <option key={a} value={a} />)}</datalist>
       <datalist id={`${idPrefix}-blocks`}>{blocks.map((b) => <option key={b.name} value={b.name} />)}</datalist>
       <datalist id={`${idPrefix}-elements`}>{library.elements.map((e) => <option key={e.name} value={`{{el.${e.name}}}`}>{e.locator}</option>)}</datalist>

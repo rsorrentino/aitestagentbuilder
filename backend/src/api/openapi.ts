@@ -253,6 +253,7 @@ export function buildOpenApi(serverUrl: string) {
       '/notifications/{id}/deliveries': { get: op('Notifications', 'Recent deliveries', { parameters: [id()] }) },
 
       // ── Library ──────────────────────────────────────────────────────────
+      '/steps/from-text': { post: op('Library', 'Plain English to steps: { text, agentId? (the AI looks at that app), path? } → { steps, lines: [{ text, steps, via, note? }] }') },
       '/blocks': { get: op('Library', 'Reusable step blocks'), post: op('Library', 'Create a block { name, description?, params: [{ name, default? }], steps }', { responses: { 201: ok({}) } }) },
       '/blocks/{id}': {
         get: op('Library', 'A block and where it is used', { parameters: [id()] }),

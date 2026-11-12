@@ -362,6 +362,32 @@ Persona matrix: `data.personas` on the test case (list or `"all"`) runs it once 
 
   It exits with code 1 when any test fails, so it works as a CI gate. Publish `reports/report-<run>.xml` as JUnit.
 
+## Writing tests in plain English
+
+In the test (or block) editor, **✍ Write in plain English**, one step per line or joined with “then”:
+
+```text
+Sign in with user alice
+Go to /cart, then check that Total shows 42.00
+Type "SPRING" into the Coupon field and click Apply
+Verify the page shows "Saved SPRING"
+```
+
+**Convert to steps** shows how each line was understood, then adds ordinary steps you can review and edit. They replay
+exactly on every run, without the AI.
+
+- Rules understand the usual phrasings without any AI (the same sentence always gives the same steps): go to / open a
+  path or URL; click, tap; type … into …, fill … with …, set … to …; select … from …; check / uncheck; press Enter;
+  wait 2 seconds, wait for …; check that / verify / make sure … shows / contains / is visible / is hidden, the page shows …,
+  the title / URL contains …; log in as *persona*; a library block by name, with its parameters (“Create opportunity
+  with account=Acme, amount=5000”).
+- Names of library elements become `{{el.…}}` (“click the Pay button” → `{{el.Checkout.PayButton}}`); other labels stay
+  readable (“Email”, “Save”) and are found by label, placeholder, role or text when the test runs.
+- Lines the rules do not understand go to the AI, with the action vocabulary and the library. Choose an agent (*Look at …*)
+  and the AI also sees that application's page, so it uses real labels and selectors. Without an AI provider, those lines
+  are listed for you to rephrase.
+- API: `POST /steps/from-text { text, agentId?, path? }`. MCP: `steps_from_text`.
+
 ## Library: blocks and elements
 
 **Library** (left menu) keeps what many tests share, so a change in the application is fixed once.

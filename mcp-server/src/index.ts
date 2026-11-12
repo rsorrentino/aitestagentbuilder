@@ -253,6 +253,16 @@ export const TOOLS = [
     },
   },
   {
+    name: 'steps_from_text',
+    description: 'Turn test steps written in plain English (one per line, or joined with "then") into executable steps, using the project library. ' +
+      'Give agentId to let the AI look at that application for real labels. Use the result in create_test_case.',
+    inputSchema: {
+      type: 'object',
+      properties: { text: { type: 'string' }, agentId: { type: 'string' }, path: { type: 'string', description: 'Page the steps start on (default /)' } },
+      required: ['text'],
+    },
+  },
+  {
     name: 'get_library',
     description: 'Reusable step blocks (use with { action: "use_block", target: "<block>", data: { params: {...} } }) and named elements ' +
       '(use as {{el.Name}} in targets) of the project. Prefer them when writing tests: a change in the application is then fixed once.',
@@ -399,6 +409,11 @@ export class TestAgentMCPServer {
       const statusOk = args.expectedStatus === undefined || res.status === args.expectedStatus;
       const bodyOk = args.expectedBody === undefined || JSON.stringify(res.data) === JSON.stringify(args.expectedBody);
       return { passed: statusOk && bodyOk, status: res.status, body: res.data, expectedStatus: args.expectedStatus, bodyMatches: bodyOk };
+    },
+
+    steps_from_text: async (args: { text: string; agentId?: string; path?: string }) => {
+      const { data } = await this.api.post('/steps/from-text', args);
+      return { steps: data.steps, notUnderstood: data.lines.filter((l: any) => l.via === 'none').map((l: any) => ({ line: l.text, note: l.note })), usedAi: data.usedAi };
     },
 
     get_library: async () => {

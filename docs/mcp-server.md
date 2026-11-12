@@ -60,6 +60,7 @@ Without credentials against a server with login on, every tool answers with an e
 | `ingest_test_book` | Upload a test specification and let the AI extract test cases |
 | `run_api_check` | Send one HTTP request from this machine and compare the status and body |
 | `generate_report` | HTML / JUnit / JSON reports of a run |
+| `steps_from_text` | Plain-English steps to executable steps (rules, library, AI looking at the live page) |
 | `get_library` | The project's reusable step blocks and named elements, to build tests from them |
 | `import_stories` | Import Jira stories (keys or JQL) as AI-written tests linked to them |
 | `requirement_coverage` | Linked stories and whether their tests pass, plus the open bugs the platform filed |

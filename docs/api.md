@@ -164,6 +164,8 @@ Notification events:
 | GET | `/elements/:id` | viewer | An element with `usage` |
 | POST / PUT / DELETE | `/elements[/:id]` | editor | As for blocks |
 
+| POST | `/steps/from-text` | editor | `{ text, agentId?, path? }` → `{ steps, lines: [{ text, steps, via: rules \| ai \| none, note? }], usedAi, pageOutline }`: plain English to steps |
+
 Steps: `{ "action": "use_block", "target": "<block>", "data": { "params": { … } } }`; `{{el.Name}}` in any target or value.
 
 ## Integrations
