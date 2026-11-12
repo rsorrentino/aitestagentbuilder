@@ -48,6 +48,7 @@ export default function Layout({ children, title, actions }: LayoutProps) {
         { href: '/testcases', icon: '🧪', label: 'Test Cases' },
         { href: '/testdata', icon: '🎲', label: 'Test Data' },
         { href: '/recorder', icon: '⏺', label: 'Recorder', show: session.can('editor') },
+        { href: '/requirements', icon: '🧭', label: 'Requirements' },
         { href: '/documents', icon: '📄', label: 'Documents' },
         { href: '/analytics', icon: '📈', label: 'Analytics' },
       ],
@@ -57,6 +58,7 @@ export default function Layout({ children, title, actions }: LayoutProps) {
       items: [
         { href: '/schedules', icon: '⏰', label: 'Schedules' },
         { href: '/settings/notifications', icon: '🔔', label: 'Notifications' },
+        { href: '/settings/integrations', icon: '🔗', label: 'Integrations' },
         { href: '/projects', icon: '🗂️', label: 'Projects & Members' },
         { href: '/audit', icon: '📜', label: 'Audit Log', show: session.can('admin') },
       ],

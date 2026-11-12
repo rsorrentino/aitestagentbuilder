@@ -253,6 +253,26 @@ export const TOOLS = [
     },
   },
   {
+    name: 'import_stories',
+    description: 'Import Jira stories as tests: the AI writes test cases from each story (description and acceptance criteria) and links them ' +
+      'to it, so the story shows their results after every run. Needs a Jira integration (Settings → Integrations).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        keys: { type: 'array', items: { type: 'string' }, description: 'Issue keys, e.g. ["SHOP-12"]' },
+        query: { type: 'string', description: 'JQL or words, instead of keys' },
+        module: { type: 'string' },
+        agentId: { type: 'string', description: 'Tag the tests for this agent' },
+        integrationId: { type: 'string', description: 'Default: the first Jira integration' },
+      },
+    },
+  },
+  {
+    name: 'requirement_coverage',
+    description: 'Stories / issues linked to tests and whether they pass (passing, failing, partly run, not run), plus the bugs the platform filed.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
     name: 'generate_report',
     description: 'Generate HTML / JUnit / JSON reports of a run.',
     inputSchema: {
@@ -373,6 +393,27 @@ export class TestAgentMCPServer {
       const statusOk = args.expectedStatus === undefined || res.status === args.expectedStatus;
       const bodyOk = args.expectedBody === undefined || JSON.stringify(res.data) === JSON.stringify(args.expectedBody);
       return { passed: statusOk && bodyOk, status: res.status, body: res.data, expectedStatus: args.expectedStatus, bodyMatches: bodyOk };
+    },
+
+    import_stories: async (args: { keys?: string[]; query?: string; module?: string; agentId?: string; integrationId?: string }) => {
+      let id = args.integrationId;
+      if (!id) {
+        const { data } = await this.api.get('/integrations');
+        id = data.find((i: any) => i.type === 'jira' && i.enabled)?.id;
+        if (!id) throw new Error('No Jira integration: add one in Settings → Integrations');
+      }
+      const { integrationId: _ignored, ...body } = args;
+      const { data } = await this.api.post(`/integrations/${encodeURIComponent(id)}/import`, body);
+      return data;
+    },
+
+    requirement_coverage: async () => {
+      const [{ data: coverage }, { data: defects }] = await Promise.all([this.api.get('/requirements/coverage'), this.api.get('/defects', { params: { status: 'open' } })]);
+      return {
+        summary: coverage.summary,
+        requirements: coverage.requirements.map((r: any) => ({ key: r.key, title: r.title, url: r.url, state: r.state, tests: r.tests.map((t: any) => `${t.title}: ${t.status ?? 'not run'}`) })),
+        openBugs: defects.map((d: any) => ({ key: d.key, url: d.url, title: d.title, occurrences: d.occurrences })),
+      };
     },
 
     generate_report: async (args: { runId: string; formats?: string[] }) => {

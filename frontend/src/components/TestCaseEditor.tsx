@@ -5,6 +5,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { api, errorMessage, PRIORITIES, STEP_ACTIONS, TEST_TYPES } from '../lib/api';
+import IssueLinks from './IssueLinks';
 
 interface StepRow { action: string; target: string; value: string }
 
@@ -203,6 +204,8 @@ export default function TestCaseEditor({ initial, onSaved, onCancel }: TestCaseE
           <label className="form-label" htmlFor="tc-expected">Expected results (one per line)</label>
           <textarea id="tc-expected" className="form-control" rows={2} value={expected} onChange={(e) => setExpected(e.target.value)} />
         </div>
+
+        {initial?.id && <IssueLinks testCaseId={initial.id} canEdit />}
 
         <div className="flex gap-3">
           <button className="btn btn-primary btn-sm" onClick={save} disabled={saving || !title.trim() || !module.trim()}>

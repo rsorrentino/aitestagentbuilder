@@ -108,6 +108,16 @@ export default function RunDetail() {
           {run.metadata.preflight.checks.map((c: any) => `${c.name} ${c.ok ? '✓' : '✗'} (${c.detail})`).join(' · ')}
         </div>
       )}
+      {(run.metadata?.integrations ?? []).map((r: any) => (r.filed?.length || r.commented?.length || r.resolved?.length || r.errors?.length) ? (
+        <div key={r.integration} className={`alert ${r.errors?.length ? 'alert-warning' : 'alert-info'}`} data-testid="run-integrations">
+          <strong>{r.integration}:</strong>{' '}
+          {r.filed?.length > 0 && <>filed {r.filed.map((f: any, n: number) => <span key={f.key}>{n ? ', ' : ''}<a href={f.url} target="_blank" rel="noreferrer">{f.key}</a></span>)}. </>}
+          {r.commented?.length > 0 && <>still failing: {r.commented.join(', ')}. </>}
+          {r.resolved?.length > 0 && <>resolved: {r.resolved.join(', ')}. </>}
+          {r.linked > 0 && <>results shown on {r.linked} linked stor{r.linked === 1 ? 'y' : 'ies'}. </>}
+          {r.errors?.length > 0 && <span className="text-danger">Problems: {r.errors.join('; ')}</span>}
+        </div>
+      ) : null)}
       {run.metadata?.resumedFrom && <div className="alert alert-info">Started again after a server restart interrupted run <Link href={`/runs/${run.metadata.resumedFrom}`}>{run.metadata.resumedFrom}</Link>.</div>}
 
       <div className="stat-grid" style={{ marginBottom: 24 }}>

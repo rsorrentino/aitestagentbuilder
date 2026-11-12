@@ -233,4 +233,53 @@ export const MIGRATIONS: Migration[] = [
     name: 'daily digest',
     sql: `ALTER TABLE notification_channels ADD COLUMN IF NOT EXISTS last_digest_at TIMESTAMP;`,
   },
+  {
+    version: 11,
+    name: 'integrations (Jira, GitHub, …), requirement links, filed defects',
+    sql: `
+      CREATE TABLE IF NOT EXISTS integrations (
+        id VARCHAR(255) PRIMARY KEY,
+        project_id VARCHAR(255) NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        type VARCHAR(30) NOT NULL,
+        name VARCHAR(255) NOT NULL,
+        config JSONB NOT NULL,
+        enabled BOOLEAN NOT NULL DEFAULT true,
+        last_check JSONB,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        created_by VARCHAR(255)
+      );
+      CREATE INDEX IF NOT EXISTS idx_integrations_project ON integrations(project_id);
+
+      CREATE TABLE IF NOT EXISTS test_links (
+        test_case_id VARCHAR(255) NOT NULL REFERENCES test_cases(id) ON DELETE CASCADE,
+        integration_id VARCHAR(255) NOT NULL REFERENCES integrations(id) ON DELETE CASCADE,
+        issue_key VARCHAR(255) NOT NULL,
+        issue_url TEXT,
+        issue_title TEXT,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (test_case_id, integration_id, issue_key)
+      );
+      CREATE INDEX IF NOT EXISTS idx_test_links_issue ON test_links(integration_id, issue_key);
+
+      CREATE TABLE IF NOT EXISTS defects (
+        id VARCHAR(255) PRIMARY KEY,
+        project_id VARCHAR(255) NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        integration_id VARCHAR(255) NOT NULL REFERENCES integrations(id) ON DELETE CASCADE,
+        agent_id VARCHAR(255) NOT NULL,
+        signature TEXT NOT NULL,
+        issue_key VARCHAR(255) NOT NULL,
+        issue_url TEXT,
+        title TEXT,
+        status VARCHAR(20) NOT NULL DEFAULT 'open',
+        tests JSONB NOT NULL DEFAULT '[]'::jsonb,
+        first_run_id VARCHAR(255),
+        last_run_id VARCHAR(255),
+        occurrences INTEGER NOT NULL DEFAULT 1,
+        last_commented_at TIMESTAMP,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        resolved_at TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_defects_open ON defects(integration_id, agent_id, status);
+    `,
+  },
 ];

@@ -151,6 +151,28 @@ Notification events:
 - `digest.daily`, with channel config `digest_time` (HH:MM) and `digest_timezone`; the webhook payload's `run.digest`
   has the per-agent details
 
+## Integrations
+
+See [integrations.md](integrations.md). Secrets (`api_token`, `token`, `pat`, `webhook_secret`) are encrypted and returned as `••••••••`.
+
+| Method | Path | Role | Description |
+|---|---|---|---|
+| GET | `/integrations` | viewer | List integrations (with `lastCheck`) |
+| POST | `/integrations` | project admin | Add one: `{ type: "jira", name, config }` |
+| PUT | `/integrations/:id` | project admin | Update `name`, `enabled`, `config` (merged; omitted secrets kept) |
+| DELETE | `/integrations/:id` | project admin | Delete (links and bug tracking; the issues stay in Jira) |
+| POST | `/integrations/:id/check` | editor | Check the connection → `{ ok, account, details }` or `{ ok: false, error }` |
+| GET | `/integrations/:id/issues?q=` | viewer | Search: keys (`SHOP-1, SHOP-2`), JQL, or words |
+| POST | `/integrations/:id/import` | editor | `{ keys: [..] }` or `{ query }`, `module?`, `agentId?`: the AI writes tests from each story and links them (needs an AI provider) |
+| GET | `/testcases/:id/links` | viewer | Issues a test covers |
+| POST | `/testcases/:id/links` | editor | `{ integrationId, key }` (the issue must exist) |
+| DELETE | `/testcases/:id/links/:integrationId/:key` | editor | Unlink |
+| GET | `/requirements/coverage` | viewer | `{ summary, requirements: [{ key, title, url, state, tests: [{ id, title, status, at, runId }] }] }`, state = passing / failing / partial / not_run |
+| GET | `/defects?status=open\|resolved&agentId=` | viewer | Bugs filed by the platform: key, url, status, tests, occurrences, first/last run |
+
+After each run, `run.metadata.integrations` lists per integration what happened: `filed` (`[{ key, url, title }]`),
+`commented`, `resolved`, `linked` (stories updated) and `errors`. Integration errors never fail a run.
+
 ## Sign-in & MFA
 
 | Method | Path | Role | Description |

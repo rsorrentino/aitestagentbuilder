@@ -22,6 +22,7 @@ import logger from '../../../infra/logger/index.js';
 import { triageRun } from '../../quality/triage.js';
 import { applyQuarantinePolicy } from '../../quality/quarantine.js';
 import { runEvents } from '../../automation/run-events.js';
+import { syncRun } from '../../integrations/sync.js';
 
 export class RunValidationError extends Error {
   constructor(message: string, public statusCode = 400) {
@@ -237,6 +238,8 @@ export class OrchestratorService {
       });
       if (finalStatus === 'failed') await this.triage(runId, agent);
       if (finalStatus !== 'cancelled') await this.updateQuarantine(runId, agent, plan);
+      // Jira / GitHub / …: file or update defects, show results on linked stories
+      if (finalStatus !== 'cancelled') await syncRun(runId).catch((e) => logger.warn('Integration sync failed', { runId, error: e.message }));
       const done = await this.runRepo.findRunById(runId);
       emitRunEvent(runId, 'run_completed', {
         status: finalStatus,
