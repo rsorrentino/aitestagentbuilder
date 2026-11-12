@@ -253,6 +253,17 @@ export const TOOLS = [
     },
   },
   {
+    name: 'discover_app',
+    description: 'Explore an agent\'s application as a test user (never following sign-out or destructive links) and return its screens, ' +
+      'their elements and proposed tests for screens no test visits yet. Waits up to 10 minutes. Then create tests with create_test_case ' +
+      '(or POST /discoveries/{id}/tests).',
+    inputSchema: {
+      type: 'object',
+      properties: { agentId: { type: 'string' }, loginAs: { type: 'string' }, maxPages: { type: 'number' }, maxDepth: { type: 'number' } },
+      required: ['agentId'],
+    },
+  },
+  {
     name: 'steps_from_text',
     description: 'Turn test steps written in plain English (one per line, or joined with "then") into executable steps, using the project library. ' +
       'Give agentId to let the AI look at that application for real labels. Use the result in create_test_case.',
@@ -409,6 +420,21 @@ export class TestAgentMCPServer {
       const statusOk = args.expectedStatus === undefined || res.status === args.expectedStatus;
       const bodyOk = args.expectedBody === undefined || JSON.stringify(res.data) === JSON.stringify(args.expectedBody);
       return { passed: statusOk && bodyOk, status: res.status, body: res.data, expectedStatus: args.expectedStatus, bodyMatches: bodyOk };
+    },
+
+    discover_app: async (args: { agentId: string; loginAs?: string; maxPages?: number; maxDepth?: number }) => {
+      const { agentId, ...options } = args;
+      let { data } = await this.api.post(`/agents/${encodeURIComponent(agentId)}/discover`, options);
+      const until = Date.now() + 10 * 60_000;
+      while (data.status === 'running' && Date.now() < until) {
+        await new Promise((r) => setTimeout(r, 2000));
+        data = (await this.api.get(`/discoveries/${data.id}`)).data;
+      }
+      return {
+        discoveryId: data.id, status: data.status, error: data.error, signedInAs: data.signedInAs,
+        screens: (data.pages ?? []).map((p: any) => ({ screen: p.heading || p.title || p.name, page: p.pattern, tested: !!p.covered, elements: p.elements.map((e: any) => `{{el.${e.name}}} = ${e.locator}`) })),
+        proposedTests: (data.proposals ?? []).map((t: any, i: number) => ({ index: i, title: t.title, steps: t.steps })),
+      };
     },
 
     steps_from_text: async (args: { text: string; agentId?: string; path?: string }) => {

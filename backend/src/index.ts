@@ -2,6 +2,7 @@
  * Server entry point.
  */
 
+import { DiscoveryRepository } from './modules/discovery/discovery.js';
 import { createServer } from 'http';
 import './infra/config/env.js';
 import { createApp, API_PREFIX } from './app.js';
@@ -56,6 +57,7 @@ async function start(): Promise<void> {
   const encrypted = await encryptLegacySecrets();
   if (encrypted > 0) logger.info(`Encrypted plaintext secrets of ${encrypted} agent(s)`);
   const interrupted = await new RunRepository().failInterruptedRuns();
+  await new DiscoveryRepository().failInterrupted().catch(() => undefined);
   if (interrupted.length > 0) logger.warn(`Marked ${interrupted.length} interrupted run(s) as failed`);
 
   const app = createApp();

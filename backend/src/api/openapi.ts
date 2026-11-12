@@ -254,6 +254,12 @@ export function buildOpenApi(serverUrl: string) {
 
       // ── Library ──────────────────────────────────────────────────────────
       '/steps/from-text': { post: op('Library', 'Plain English to steps: { text, agentId? (the AI looks at that app), path? } → { steps, lines: [{ text, steps, via, note? }] }') },
+      '/agents/{id}/discover': { post: op('Library', 'Explore the agent\'s application (app map): { maxPages, maxDepth, loginAs, startPaths, exclude } → 202', { parameters: [id()], responses: { 202: { description: 'Discovery started' } } }) },
+      '/discoveries': { get: op('Library', 'Recent app discoveries', { parameters: [q('agentId', { type: 'string' })] }) },
+      '/discoveries/{id}': { get: op('Library', 'A discovery: screens, elements, proposed tests', { parameters: [id()] }) },
+      '/discoveries/{id}/cancel': { post: op('Library', 'Stop a running discovery', { parameters: [id()] }) },
+      '/discoveries/{id}/elements': { post: op('Library', 'Add discovered elements to the library { names? }', { parameters: [id()] }) },
+      '/discoveries/{id}/tests': { post: op('Library', 'Create proposed tests { indexes? } (and the elements they use)', { parameters: [id()], responses: { 201: ok({}) } }) },
       '/blocks': { get: op('Library', 'Reusable step blocks'), post: op('Library', 'Create a block { name, description?, params: [{ name, default? }], steps }', { responses: { 201: ok({}) } }) },
       '/blocks/{id}': {
         get: op('Library', 'A block and where it is used', { parameters: [id()] }),

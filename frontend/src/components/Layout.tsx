@@ -47,6 +47,7 @@ export default function Layout({ children, title, actions }: LayoutProps) {
         { href: '/runs', icon: '▶️', label: 'Runs' },
         { href: '/testcases', icon: '🧪', label: 'Test Cases' },
         { href: '/library', icon: '🧩', label: 'Library' },
+        { href: '/discovery', icon: '🗺️', label: 'App map' },
         { href: '/testdata', icon: '🎲', label: 'Test Data' },
         { href: '/recorder', icon: '⏺', label: 'Recorder', show: session.can('editor') },
         { href: '/requirements', icon: '🧭', label: 'Requirements' },

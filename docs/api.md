@@ -168,6 +168,17 @@ Notification events:
 
 Steps: `{ "action": "use_block", "target": "<block>", "data": { "params": { … } } }`; `{{el.Name}}` in any target or value.
 
+## App map (discovery)
+
+| Method | Path | Role | Description |
+|---|---|---|---|
+| POST | `/agents/:id/discover` | editor | `{ maxPages (25, ≤200), maxDepth (3, ≤6), loginAs?, startPaths?, exclude? }` → `202` discovery (`409` while one runs in the project) |
+| GET | `/discoveries[?agentId=]` | viewer | Recent discoveries (counts) |
+| GET | `/discoveries/:id` | viewer | `{ status, progress, pages: [{ url, pattern, title, heading, name, elements: [{ name, role, label, locator, alternatives? }], covered }], proposals: [{ title, module, steps, data?, source, elements }], skipped, signedInAs }` |
+| POST | `/discoveries/:id/cancel` | editor | Stop a running discovery |
+| POST | `/discoveries/:id/elements` | editor | `{ names? }`: add elements to the library (existing names kept) → `{ created, skipped }` |
+| POST | `/discoveries/:id/tests` | editor | `{ indexes? }`: create proposed tests (and the elements they use) → `{ tests, elements }` |
+
 ## Integrations
 
 See [integrations.md](integrations.md). Secrets (`api_token`, `token`, `pat`, `webhook_secret`) are encrypted and returned as `••••••••`.

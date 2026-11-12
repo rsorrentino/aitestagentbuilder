@@ -36,6 +36,7 @@ import { registerAuthSessionRoutes } from './auth-sessions.js';
 import { registerIntegrationRoutes } from './integrations.js';
 import { registerHookRoutes } from './hooks.js';
 import { registerLibraryRoutes } from './library.js';
+import { registerDiscoveryRoutes } from './discovery.js';
 import { AgentRepository } from '../../core/repositories/agent.repository.js';
 
 const router = Router();
@@ -205,6 +206,7 @@ registerRecorderRoutes(scoped, { editor });
 registerAuthSessionRoutes(scoped, { viewer, editor });
 registerIntegrationRoutes(scoped, { viewer, editor, projectAdmin });
 registerLibraryRoutes(scoped, { viewer, editor });
+registerDiscoveryRoutes(scoped, { viewer, editor });
 
 router.use(scoped);
 

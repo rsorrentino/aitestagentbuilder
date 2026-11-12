@@ -317,4 +317,27 @@ export const MIGRATIONS: Migration[] = [
       CREATE UNIQUE INDEX IF NOT EXISTS idx_elements_name ON elements(project_id, lower(name));
     `,
   },
+  {
+    version: 13,
+    name: 'app discovery (crawled screens, proposed elements and tests)',
+    sql: `
+      CREATE TABLE IF NOT EXISTS discoveries (
+        id VARCHAR(255) PRIMARY KEY,
+        project_id VARCHAR(255) NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        agent_id VARCHAR(255) NOT NULL,
+        status VARCHAR(20) NOT NULL,
+        options JSONB NOT NULL,
+        progress JSONB,
+        pages JSONB NOT NULL DEFAULT '[]'::jsonb,
+        proposals JSONB NOT NULL DEFAULT '[]'::jsonb,
+        skipped JSONB,
+        signed_in_as VARCHAR(255),
+        error TEXT,
+        started_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        finished_at TIMESTAMP,
+        created_by VARCHAR(255)
+      );
+      CREATE INDEX IF NOT EXISTS idx_discoveries_project ON discoveries(project_id, started_at DESC);
+    `,
+  },
 ];

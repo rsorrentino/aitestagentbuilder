@@ -362,6 +362,34 @@ Persona matrix: `data.personas` on the test case (list or `"all"`) runs it once 
 
   It exits with code 1 when any test fails, so it works as a CI gate. Publish `reports/report-<run>.xml` as JUnit.
 
+## App map (discovery)
+
+**App map** (left menu) explores an agent's application and maps it:
+
+1. Choose the agent and who to **sign in as** (a login profile or Salesforce persona; saved sessions are reused).
+2. The explorer follows the application's links, breadth-first, up to *Screens at most* (default 25, up to 200) and
+   *Clicks deep* (default 3). Each kind of page is visited once: `/orders/101` and `/orders/102` are the screen `/orders/:id`,
+   Salesforce record pages likewise.
+3. On each screen it reads the accessibility tree — so it sees React, Angular and Vue apps the same way, and fields inside
+   Salesforce Lightning web components — and the `data-testid` attributes.
+
+It **never** follows sign-out or destructive links (log out, delete, remove, cancel, unsubscribe, deactivate …), other sites,
+files, `mailto:` links or Salesforce Setup, and never fills or submits forms. *Skip* excludes paths (`/admin/*`). Run it
+against a test environment all the same.
+
+The result:
+
+- **Screens**, each with its named elements (`{{el.Cart.CheckoutButton}}` → `[data-testid="checkout"]` when the element has a
+  test id, else `role=button[name="Checkout"]`), and whether one of the agent's tests (its test selection) already visits it
+  (a `navigate` to that page; tests without one count for the start page).
+- **Add to the library** the elements you choose.
+- **Proposed tests** for screens no test visits yet: a smoke test per screen (it opens and shows its heading and main
+  fields); with an AI provider also up to two functional tests per screen, using only the elements found. *Create* adds them
+  (tag `discovered`, signed in as the chosen user) together with the elements they use.
+
+API: `POST /agents/:id/discover { maxPages, maxDepth, loginAs, startPaths, exclude }`, `GET /discoveries/:id`,
+`POST /discoveries/:id/elements { names }`, `POST /discoveries/:id/tests { indexes }`. MCP: `discover_app`.
+
 ## Writing tests in plain English
 
 In the test (or block) editor, **✍ Write in plain English**, one step per line or joined with “then”:
