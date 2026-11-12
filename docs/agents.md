@@ -264,7 +264,7 @@ A healed step passes with the note `(self-healed from "<old selector>")`. The ru
   agent secrets, persona passwords and TOTP secrets, OAuth tokens, session ids and cookie values.
 
 **Page speed.** `assert_performance` measures the last full page load with the browser's own timing APIs.
-- **Metrics:** TTFB, FCP, LCP, CLS, TBT (long-task time over 50 ms), DOMContentLoaded, load, bytes transferred and
+- **Metrics:** TTFB, FCP, LCP, CLS, TBT (long-task time over 50 ms after first contentful paint, as in Lighthouse), DOMContentLoaded, load, bytes transferred and
   request count. Single-page-app route changes are not page loads: give the step a target to load a page fresh.
 - **Budgets:** from the step, else the agent's `performance_budgets`, else the "good" Core Web Vitals thresholds
   (LCP 2.5 s, FCP 1.8 s, CLS 0.1, TBT 200 ms, TTFB 800 ms). A sentence such as “Verify the page loads in under
