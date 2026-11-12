@@ -3,6 +3,8 @@
  * results in the database, and streams progress over WebSocket.
  */
 
+import { mockAccess } from '../mocks/mocks.js';
+import { DbConnections } from '../database/db.js';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -18,12 +20,12 @@ import logger from '../../infra/logger/index.js';
 import { decryptAgentConfig, resolvePlaceholders, secretValues } from '../../core/domain/agent-secrets.js';
 import { maskSecrets } from '../../infra/security/secrets.js';
 import { outlinePage } from './browser.js';
-import { deviceOptions, GridConfig, launchTarget, markGridSession, resolveTargets, Target } from './targets.js';
+import { deviceOptions, GridConfig, launchTarget, markGridSession, parallelism, resolveTargets, Target } from './targets.js';
 import { classifyAction, executeStep, isSelectorFailure, QualityContext, StepContext } from './step-runner.js';
-import { TestCaseRepository } from '../../core/repositories/test-case.repository.js';
 import { describeA11y, scanAccessibility } from '../quality/accessibility.js';
 import { evidenceConfig, keepEvidence, redactTrace } from '../quality/evidence.js';
-import { applyHealing, HealingCache, healedStepsOf } from '../quality/healing.js';
+import { HealingCache, healedStepsOf } from '../quality/healing.js';
+import { BlockRepository, elementRef, ElementRepository, expandSteps, LibraryElement, resolveElements, RunStep, saveHealing, StepBlock } from '../library/library.js';
 import { failureSignature } from '../quality/triage.js';
 import { Quarantine, QuarantineRepository } from '../quality/quarantine.js';
 import { salesforceSettings, testPersonas } from '../salesforce/personas.js';
@@ -48,6 +50,10 @@ export interface StepLog {
   message: string;
   durationMs: number;
   healedSelector?: string;
+  /** From a library block: its name, the step's number in it, and the path ("3.2") */
+  block?: string;
+  blockStepId?: number;
+  path?: string;
 }
 
 /** One test execution: a test case, optionally as a persona and with a data set row. */
@@ -69,6 +75,37 @@ function titleOf(item: PlanItem): string {
   return `${item.testCase.title}${item.persona ? ` [as ${item.persona}]` : ''}${item.row ? ` [${item.row.label}]` : ''}${item.browser ? ` [${item.browser}]` : ''}`;
 }
 
+/** Consecutive groups of the same browser / device (the plan is ordered by target). */
+function byTarget<T extends { item: PlanItem }>(entries: T[]): Array<{ target: Target; items: T[] }> {
+  const groups: Array<{ target: Target; items: T[] }> = [];
+  for (const e of entries) {
+    const last = groups[groups.length - 1];
+    if (last && last.target === e.item.target) last.items.push(e);
+    else groups.push({ target: e.item.target!, items: [e] });
+  }
+  return groups;
+}
+
+/** Run `fn` over the items, `size` at a time; the first error stops new work and is rethrown. */
+async function runPool<T>(items: T[], size: number, fn: (item: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  let failed = false;
+  let failure: unknown;
+  const worker = async () => {
+    while (!failed && next < items.length) {
+      const item = items[next++];
+      try {
+        await fn(item);
+      } catch (e) {
+        if (!failed) failure = e;
+        failed = true;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(size, items.length)) }, worker));
+  if (failed) throw failure;
+}
+
 class CancelledError extends Error {
   constructor() {
     super('Run cancelled');
@@ -79,6 +116,11 @@ export class RunExecutor {
   private runRepo = new RunRepository();
   private cancelled = false;
   private browser?: Browser;
+  /** Library of the project: reusable step blocks and named elements (loaded at the start of the run) */
+  private blocks = new Map<string, StepBlock>();
+  private elements = new Map<string, LibraryElement>();
+  /** The agent's databases (database steps), opened on first use */
+  private db = new DbConnections([]);
 
   /** Agent config with decrypted secrets — kept in memory only for this run. */
   private config: any;
@@ -235,7 +277,7 @@ export class RunExecutor {
     const keepSecrets = classifyAction(step.action, step) === 'ai_action';
     const extra = { data: ctx.testData?.row ?? null, fake: ctx.testData?.fake, keepSecrets, totp: (name: string) => this.totpCode(name) };
     const resolve = (v: any): any => {
-      if (typeof v === 'string') return resolvePlaceholders(v, this.secrets, ctx.api?.vars, extra);
+      if (typeof v === 'string') return resolvePlaceholders(resolveElements(v, this.elements), this.secrets, ctx.api?.vars, extra);
       if (Array.isArray(v)) return v.map(resolve);
       if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, resolve(x)]));
       return v;
@@ -276,6 +318,11 @@ export class RunExecutor {
   /** Runs every test; resolves with the final run status. */
   async execute(): Promise<'completed' | 'failed' | 'cancelled'> {
     await this.loadDatasets();
+    this.db = new DbConnections(Array.isArray(this.config.databases) ? this.config.databases : []);
+    [this.blocks, this.elements] = await Promise.all([
+      new BlockRepository().byName(this.agent.projectId).catch(() => new Map<string, StepBlock>()),
+      new ElementRepository().byName(this.agent.projectId).catch(() => new Map<string, LibraryElement>()),
+    ]);
     const plan = this.plan();
     const total = plan.length;
     const counts = { passed: 0, failed: 0, skipped: 0, quarantined: 0 };
@@ -289,59 +336,68 @@ export class RunExecutor {
 
     const single = new Set(plan.map((p) => p.target)).size <= 1;
     const state: { current?: Target; passed: boolean; error?: string; single: boolean } = { passed: true, single };
+    const workers = parallelism(config);
+    let completed = 0;
+
+    /** One test (with its retries); tests of the same browser run `workers` at a time. */
+    const runItem = async ({ item: planned, index }: { item: PlanItem; index: number }) => {
+      if (this.cancelled) throw new CancelledError();
+      const item = state.error ? { ...planned, launchError: state.error } : planned;
+      const { testCase, persona, row } = item;
+      const title = titleOf(item);
+      emitRunEvent(this.runId, 'test_started', { testId: testCase.id, title, persona, ...(row ? { dataRow: row.index } : {}), ...(item.browser ? { browser: item.browser } : {}), index: index + 1, total });
+
+      let status: string = 'failed';
+      for (let attempt = 0; attempt <= retries; attempt++) {
+        if (attempt > 0) this.log(`Retrying "${title}" (attempt ${attempt + 1}/${retries + 1})`, { testId: testCase.id }, 'warn');
+        status = await this.runTestCase(item, attempt);
+        if (status !== 'failed' && status !== 'error') break;
+        if (this.cancelled) throw new CancelledError();
+        if (item.launchError) break;
+      }
+      if (status === 'failed' || status === 'error') state.passed = false;
+
+      if (status === 'passed') counts.passed++;
+      else if (status === 'skipped') counts.skipped++;
+      else if (this.quarantined.has(testCase.id)) {
+        counts.quarantined++;
+        this.log(`  🧪 "${title}" is quarantined: its failure does not fail the run`, { testId: testCase.id }, 'warn');
+      } else {
+        counts.failed++;
+        // A browser that could not start is not retried at the end
+        if (!item.launchError) failedItems.push(planned);
+      }
+      completed++;
+      emitRunEvent(this.runId, 'run_progress', { status: 'running', completed, total, ...counts });
+    };
+
     try {
       if (!plan.length) await this.useTarget(resolveTargets(config)[0], state);
+      if (workers > 1) this.log(`Running up to ${workers} tests at a time per browser`);
 
-      for (let i = 0; i < total; i++) {
+      for (const group of byTarget(plan.map((item, index) => ({ item, index })))) {
         if (this.cancelled) throw new CancelledError();
-        await this.useTarget(plan[i].target!, state);
-        const item = state.error ? { ...plan[i], launchError: state.error } : plan[i];
-        const { testCase, persona, row } = item;
-        const title = titleOf(item);
-        emitRunEvent(this.runId, 'test_started', { testId: testCase.id, title, persona, ...(row ? { dataRow: row.index } : {}), ...(item.browser ? { browser: item.browser } : {}), index: i + 1, total });
-
-        let status: string = 'failed';
-        for (let attempt = 0; attempt <= retries; attempt++) {
-          if (attempt > 0) this.log(`Retrying "${title}" (attempt ${attempt + 1}/${retries + 1})`, { testId: testCase.id }, 'warn');
-          status = await this.runTestCase(item, attempt);
-          if (status !== 'failed' && status !== 'error') break;
-          if (this.cancelled) throw new CancelledError();
-          if (item.launchError) break;
-        }
-        if (status === 'failed' || status === 'error') state.passed = false;
-
-        if (status === 'passed') counts.passed++;
-        else if (status === 'skipped') counts.skipped++;
-        else if (this.quarantined.has(testCase.id)) {
-          counts.quarantined++;
-          this.log(`  🧪 "${title}" is quarantined: its failure does not fail the run`, { testId: testCase.id }, 'warn');
-        } else {
-          counts.failed++;
-          // A browser that could not start is not retried at the end
-          if (!item.launchError) failedItems.push(plan[i]);
-        }
-
-        emitRunEvent(this.runId, 'run_progress', { status: 'running', completed: i + 1, total, ...counts });
+        await this.useTarget(group.target, state);
+        await runPool(group.items, workers, runItem);
       }
 
       // Unattended runs: failed tests get one more chance at the end, in a fresh browser
       // (a transient outage or a stuck browser should not wake anyone up)
       if (this.options.rerunFailed && failedItems.length && !this.cancelled) {
         this.log(`Re-running ${failedItems.length} failed test(s) once, in a fresh browser`, {}, 'warn');
-        let restarted: Target | undefined;
-        for (const failed of failedItems) {
+        for (const group of byTarget(failedItems.map((item) => ({ item, index: 0 })))) {
           if (this.cancelled) throw new CancelledError();
-          if (restarted !== failed.target) {
-            await this.useTarget(failed.target!, state, true);
-            restarted = failed.target;
-          }
-          const item = state.error ? { ...failed, launchError: state.error } : failed;
-          const status = await this.runTestCase(item, retries + 1, { rerun: true });
-          if (status === 'passed') {
-            counts.failed--;
-            counts.passed++;
-            this.log(`  ↻ "${titleOf(item)}" passed when re-run: likely flaky or a transient problem`, { testId: item.testCase.id }, 'warn');
-          } else state.passed = false;
+          await this.useTarget(group.target, state, true);
+          await runPool(group.items, workers, async ({ item: failed }) => {
+            if (this.cancelled) throw new CancelledError();
+            const item = state.error ? { ...failed, launchError: state.error } : failed;
+            const status = await this.runTestCase(item, retries + 1, { rerun: true });
+            if (status === 'passed') {
+              counts.failed--;
+              counts.passed++;
+              this.log(`  ↻ "${titleOf(item)}" passed when re-run: likely flaky or a transient problem`, { testId: item.testCase.id }, 'warn');
+            } else state.passed = false;
+          });
         }
         emitRunEvent(this.runId, 'run_progress', { status: 'running', completed: total, total, ...counts });
       }
@@ -357,6 +413,7 @@ export class RunExecutor {
       throw error;
     } finally {
       await this.closeBrowser(state.passed);
+      await this.db.closeAll();
     }
   }
 
@@ -445,6 +502,8 @@ export class RunExecutor {
         salesforce: this.salesforce,
         auth: this.appAuth,
         codes: this.codes,
+        db: this.db,
+        mocks: mockAccess(this.agent.projectId),
         testStartedAt: startedAt,
         persona,
         quality,
@@ -477,8 +536,9 @@ export class RunExecutor {
       };
 
       ctxRef.api = ctx.api;
-      const steps: TestStep[] = testCase.steps ?? [];
-      if (steps.length === 0) throw new Error('Test case has no steps');
+      if (!(testCase.steps ?? []).length) throw new Error('Test case has no steps');
+      // use_block steps become the library block's steps
+      const steps: RunStep[] = expandSteps(testCase.steps ?? [], this.blocks);
 
       // Persona tests (and tests of agents with a default login profile) without an explicit login step start signed in.
       const loginAs = this.loginFor(testCase, persona);
@@ -498,11 +558,12 @@ export class RunExecutor {
           continue;
         }
         const log = await this.runStep(step, ctx, testCase);
+        if (step.origin) Object.assign(log, { block: step.origin.block, blockStepId: step.origin.blockStepId, path: step.origin.path });
         stepLogs.push(log);
         await this.streamScreenshot(page, testCase.id);
         if (log.status === 'failed') {
           status = 'failed';
-          error = `Step ${log.stepId} (${log.action}): ${log.message}`;
+          error = `Step ${log.path ?? log.stepId} (${log.action})${log.block ? ` in block "${log.block}"` : ''}: ${log.message}`;
           break;
         }
       }
@@ -615,7 +676,8 @@ export class RunExecutor {
     const started = Date.now();
     const base = { stepId: step.stepId, action: step.action, target: step.target };
     const kind = classifyAction(step.action, step);
-    this.log(`  Step ${step.stepId}: ${step.action}${step.target ? ` → ${step.target}` : ''}`, { testId: testCase.id, stepId: step.stepId });
+    const origin = (step as RunStep).origin;
+    this.log(`  Step ${origin?.path ?? step.stepId}${origin ? ` [${origin.block}]` : ''}: ${step.action}${step.target ? ` → ${step.target}` : ''}`, { testId: testCase.id, stepId: step.stepId });
 
     try {
       const outcome = await executeStep(this.resolveStep(step, ctx), ctx);
@@ -624,6 +686,17 @@ export class RunExecutor {
       let message = this.mask(String(e.message || e).split('\n')[0]);
       if (step.target && /Timeout \d+ms exceeded/.test(message)) {
         message = `Element "${step.target}" was not found or not actionable (${message})`;
+      }
+      // A library element whose main locator broke: its earlier locators are tried before the AI
+      const elName = elementRef(step.target);
+      for (const alt of elName ? this.elements.get(elName.toLowerCase())?.alternatives ?? [] : []) {
+        try {
+          const outcome = await executeStep(this.resolveStep(step, ctx), ctx, alt);
+          this.log(`  🩹 Element ${elName}: its alternative locator "${alt}" worked`, { testId: testCase.id, stepId: step.stepId }, 'warn');
+          return { ...base, ...outcome, message: `${this.mask(outcome.message)} (element ${elName}: alternative locator "${alt}")`, healedSelector: alt, durationMs: Date.now() - started };
+        } catch {
+          // next alternative
+        }
       }
       const healed = await this.trySelfHeal(step, ctx, kind, message, testCase);
       if (healed) return { ...base, ...healed, durationMs: Date.now() - started };
@@ -743,13 +816,16 @@ export class RunExecutor {
   /** Write healed selectors back into the test case (agent config ai.auto_apply_healing). */
   private async writeBackHealing(testCase: TestCase, healed: ReturnType<typeof healedStepsOf>): Promise<boolean> {
     try {
-      const repo = new TestCaseRepository();
-      const current = await repo.findById(testCase.id, this.agent.projectId);
-      if (!current) return false;
-      const { steps, applied } = applyHealing(current.steps, healed);
+      const { applied } = await saveHealing(this.agent.projectId, testCase.id, healed);
       if (!applied.length) return false;
-      await repo.update(current.id, { steps }, this.agent.projectId);
-      this.log(`  🩹 Saved ${applied.length} healed selector(s) to "${testCase.title}"`, { testId: testCase.id });
+      for (const a of applied) {
+        if (a.savedTo.startsWith('element ')) {
+          const el = this.elements.get(a.savedTo.slice(8).toLowerCase());
+          if (el) el.locator = a.to;
+        }
+      }
+      this.log(`  🩹 Saved ${applied.length} healed selector(s): ${applied.map((a) => a.savedTo).join(', ')}`, { testId: testCase.id });
+      if (applied.some((a) => a.savedTo.startsWith('block '))) this.blocks = await new BlockRepository().byName(this.agent.projectId);
       return true;
     } catch (e: any) {
       logger.warn('Could not save healed selectors', { error: e.message });

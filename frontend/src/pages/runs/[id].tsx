@@ -214,8 +214,8 @@ export default function RunDetail() {
                               <thead><tr><th>#</th><th>Action</th><th>Target</th><th>Status</th><th>Details</th><th>Time</th></tr></thead>
                               <tbody>
                                 {r.metadata.steps.map((s: any) => (
-                                  <tr key={s.stepId}>
-                                    <td>{s.stepId}</td>
+                                  <tr key={`${s.path ?? s.stepId}-${s.action}`}>
+                                    <td>{s.path ?? s.stepId}{s.block && <div className="text-muted" title="from a library block">🧩 {s.block}</div>}</td>
                                     <td>{s.action}</td>
                                     <td className="code">{s.healedSelector ? `${s.target} → ${s.healedSelector}` : s.target}</td>
                                     <td><span className={statusBadge(s.status)}>{s.status}</span></td>

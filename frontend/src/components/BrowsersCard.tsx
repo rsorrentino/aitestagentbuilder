@@ -34,6 +34,7 @@ export default function BrowsersCard({ agentId, config, canEdit, onSaved }: Prop
   const [otherDevices, setOtherDevices] = useState(current.filter((b) => !ENGINES.some((e) => e.value === b) && !DEVICES.includes(b)).join(', '));
   const [provider, setProvider] = useState<string>(g.provider ?? '');
   const [grid, setGrid] = useState({ username: g.username ?? '', access_key: '', os: g.os ?? '', os_version: g.os_version ?? '', ws_endpoint: g.ws_endpoint ?? '', region: g.region ?? '' });
+  const [parallel, setParallel] = useState(String(config.parallel ?? 1));
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
   const toggle = (v: string) => setSelected((s) => (s.includes(v) ? s.filter((x) => x !== v) : [...s, v]));
@@ -49,10 +50,10 @@ export default function BrowsersCard({ agentId, config, canEdit, onSaved }: Prop
     // An empty access key is left out: the stored one is kept (same provider)
     const gridConfig = provider ? Object.fromEntries(Object.entries({ provider, ...grid }).filter(([, v]) => v !== '')) : null;
     try {
-      const res = await api.put(`/agents/${agentId}`, { config: { browsers, grid: gridConfig } });
+      const res = await api.put(`/agents/${agentId}`, { config: { browsers, grid: gridConfig, parallel: Number(parallel) || 1 } });
       onSaved(res.data);
       setGrid((x) => ({ ...x, access_key: '' }));
-      setMessage({ ok: true, text: `Saved: every test runs ${runsPerTest} time${runsPerTest === 1 ? '' : 's'}${provider ? ` on ${PROVIDERS.find((p) => p.value === provider)?.label}` : ''}` });
+      setMessage({ ok: true, text: `Saved: every test runs ${runsPerTest} time${runsPerTest === 1 ? '' : 's'}${provider ? ` on ${PROVIDERS.find((p) => p.value === provider)?.label}` : ''}${Number(parallel) > 1 ? `, ${parallel} at a time` : ''}` });
     } catch (err) {
       setMessage({ ok: false, text: errorMessage(err) });
     } finally {
@@ -63,8 +64,8 @@ export default function BrowsersCard({ agentId, config, canEdit, onSaved }: Prop
   return (
     <form className="card mb-6" onSubmit={save} aria-label="Browsers and devices">
       <div className="card-header">
-        <h3>🌐 Browsers &amp; devices</h3>
-        <span className="text-sm text-muted">each test runs {runsPerTest}× per run</span>
+        <h3>🌐 Browsers, devices &amp; parallel runs</h3>
+        <span className="text-sm text-muted">each test runs {runsPerTest}× per run{Number(parallel) > 1 ? `, ${parallel} at a time` : ''}</span>
       </div>
       <div className="card-body">
         <div className="form-group">
@@ -88,6 +89,16 @@ export default function BrowsersCard({ agentId, config, canEdit, onSaved }: Prop
             placeholder="Other Playwright devices, e.g. Galaxy S24, iPhone 13 Mini" aria-label="Other devices" />
         </div>
 
+        <div className="form-group">
+          <label className="form-label" htmlFor={`parallel-${agentId}`}>Tests at the same time</label>
+          <input id={`parallel-${agentId}`} type="number" min={1} max={16} className="form-control" style={{ width: 100 }} value={parallel}
+            onChange={(e) => setParallel(e.target.value)} disabled={!canEdit} />
+          <p className="form-hint">
+            Per browser, each test in its own browser context. Tests must not depend on each other or change the same records
+            (use test data such as <code>{'{{fake.email}}'}</code>). Parallel tests signing in as the same user sign in once and share the session.
+            On a cloud grid, your plan&apos;s parallel sessions are the limit.
+          </p>
+        </div>
         <div className="form-group">
           <label className="form-label" htmlFor={`grid-${agentId}`}>Run on</label>
           <select id={`grid-${agentId}`} className="form-control" style={{ maxWidth: 320 }} value={provider} onChange={(e) => setProvider(e.target.value)} disabled={!canEdit}>

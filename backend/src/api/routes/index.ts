@@ -35,6 +35,9 @@ import { registerRecorderRoutes } from './recorder.js';
 import { registerAuthSessionRoutes } from './auth-sessions.js';
 import { registerIntegrationRoutes } from './integrations.js';
 import { registerHookRoutes } from './hooks.js';
+import { registerLibraryRoutes } from './library.js';
+import { registerDiscoveryRoutes } from './discovery.js';
+import { registerMockEndpoint, registerMockRoutes } from './mocks.js';
 import { AgentRepository } from '../../core/repositories/agent.repository.js';
 
 const router = Router();
@@ -84,6 +87,8 @@ router.post('/auth/login', rateLimiters.strict, (req, res) => auth.login(req, re
 router.post('/auth/refresh', (req, res) => auth.refresh(req, res));
 // Webhooks from GitHub & co. (signed, no login)
 registerHookRoutes(router);
+// Mock APIs answer without a login (unguessable address)
+registerMockEndpoint(router);
 
 // ── Everything below requires an identity ────────────────────────────────────
 router.use(requireAuth);
@@ -203,6 +208,9 @@ registerQualityRoutes(scoped, { viewer, editor });
 registerRecorderRoutes(scoped, { editor });
 registerAuthSessionRoutes(scoped, { viewer, editor });
 registerIntegrationRoutes(scoped, { viewer, editor, projectAdmin });
+registerLibraryRoutes(scoped, { viewer, editor });
+registerDiscoveryRoutes(scoped, { viewer, editor });
+registerMockRoutes(scoped, { viewer, editor });
 
 router.use(scoped);
 

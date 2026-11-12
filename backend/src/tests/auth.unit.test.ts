@@ -94,3 +94,39 @@ describe('sign-in health', () => {
     assert.equal(unattendedOf('salesforce', { auth_method: 'password', password: 'p', codes: { source: 'sf_inbox' } }).unattended, 'yes');
   });
 });
+
+describe('parallel sign-ins', async () => {
+  const { KeyedLock } = await import('../modules/auth/keyed-lock.js');
+  const { freshTotp, totp } = await import('../modules/salesforce/totp.js');
+
+  it('runs work for the same key one at a time, other keys in parallel', async () => {
+    const lock = new KeyedLock();
+    const order: string[] = [];
+    const job = (name: string, ms: number) => async () => { order.push(`${name}+`); await new Promise((r) => setTimeout(r, ms)); order.push(`${name}-`); return name; };
+    const results = await Promise.all([lock.run('alice', job('a1', 30)), lock.run('alice', job('a2', 1)), lock.run('bob', job('b1', 1))]);
+    assert.deepEqual(results, ['a1', 'a2', 'b1']);
+    assert.ok(order.indexOf('a1-') < order.indexOf('a2+'), 'the second alice waits for the first');
+    assert.ok(order.indexOf('b1-') < order.indexOf('a1-'), 'bob does not wait for alice');
+    await assert.rejects(lock.run('alice', async () => { throw new Error('boom'); }), /boom/);
+    assert.equal(await lock.run('alice', async () => 'after an error'), 'after an error');
+  });
+
+  it('never types the same authenticator code twice', async (t) => {
+    t.mock.timers.enable({ apis: ['Date'], now: Date.UTC(2026, 0, 1, 12, 0, 5) });
+    const key = 'JBSWY3DPEHPK3PXP';
+    const waits: number[] = [];
+    const wait = async (ms: number) => { waits.push(ms); t.mock.timers.tick(ms); };
+    const first = await freshTotp(key, wait);
+    assert.equal(first, totp(key, Date.UTC(2026, 0, 1, 12, 0, 5)));
+    assert.deepEqual(waits, []);
+    const second = await freshTotp(key, wait);
+    assert.equal(waits.length, 1, 'waited for the next period');
+    assert.notEqual(second, first);
+    assert.equal(second, totp(key, Date.now()));
+    // A code about to expire is not used either
+    t.mock.timers.setTime(Date.UTC(2026, 0, 1, 12, 1, 58));
+    waits.length = 0;
+    await freshTotp(key, wait);
+    assert.equal(waits.length, 1);
+  });
+});

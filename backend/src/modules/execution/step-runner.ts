@@ -6,6 +6,7 @@
  * ("Click the login button", "Verify the dashboard is shown").
  */
 
+import { cellText, checkResult, DbConnections } from '../database/db.js';
 import type { Locator, Page } from 'playwright';
 import { TestStep } from '../../core/domain/test-case.js';
 import { SalesforceSessions } from '../salesforce/session.js';
@@ -27,6 +28,8 @@ export type StepKind =
   | 'assert_accessible' | 'assert_screenshot'
   | 'http_request' | 'assert_status' | 'assert_json' | 'assert_header' | 'assert_response_time' | 'mock_route' | 'block_route'
   | 'assert_ai' | 'assert_performance' | 'ai_action' | 'wait_for_code'
+  | 'db_query' | 'assert_db' | 'db_execute'
+  | 'mock_service_respond' | 'assert_mock_service_called'
   | 'manual';
 
 export interface StepOutcome {
@@ -46,6 +49,10 @@ export interface StepContext {
   auth?: AppSessions;
   /** Verification codes from the agent's mailboxes / phone numbers (code sources). */
   codes?: CodeFetcher;
+  /** The agent's databases (database steps) */
+  db?: DbConnections;
+  /** The project's mock APIs (mock_service_respond, assert_mock_service_called) */
+  mocks?: ReturnType<typeof import('../mocks/mocks.js')['mockAccess']>;
   /** When the test started: codes sent before are ignored. */
   testStartedAt?: Date;
   /** Persona this test runs as (persona matrix), used when a step names none. */
@@ -110,6 +117,11 @@ export function classifyAction(rawAction: string, step: Pick<TestStep, 'target' 
     'ai': 'ai_action', 'ai action': 'ai_action', 'ai step': 'ai_action', 'do with ai': 'ai_action',
     'wait for code': 'wait_for_code', 'read code': 'wait_for_code', 'read email code': 'wait_for_code', 'read sms code': 'wait_for_code',
     'get verification code': 'wait_for_code', 'wait for verification code': 'wait_for_code',
+    'db query': 'db_query', 'query database': 'db_query', 'query db': 'db_query', 'run query': 'db_query', 'sql query': 'db_query', 'sql': 'db_query',
+    'assert db': 'assert_db', 'assert database': 'assert_db', 'check database': 'assert_db', 'verify database': 'assert_db', 'db check': 'assert_db',
+    'mock respond': 'mock_service_respond', 'mock service respond': 'mock_service_respond', 'set mock response': 'mock_service_respond',
+    'assert mock called': 'assert_mock_service_called', 'assert mock service called': 'assert_mock_service_called', 'verify mock called': 'assert_mock_service_called',
+    'db execute': 'db_execute', 'execute sql': 'db_execute', 'run sql': 'db_execute', 'db update': 'db_execute',
   };
   if (exact[a]) return exact[a];
   // "Log in as buyer", "Sign in as the admin user"
@@ -485,6 +497,61 @@ export async function executeStep(step: TestStep, ctx: StepContext, targetOverri
       ctx.quality?.aiActions?.push(record);
       const how = record.replayed ? 'replayed from earlier runs, no AI call' : `${record.rounds} AI round(s)${record.provider ? `, ${record.provider}` : ''}`;
       return { status: 'passed', message: `AI did "${instruction}" (${how}): ${describeActions(record.actions) || 'nothing to do'}` };
+    }
+    case 'db_query':
+    case 'assert_db':
+    case 'db_execute': {
+      if (!ctx.db) throw new Error('Database steps need a run context');
+      const sql = String(step.data?.sql ?? step.data?.query ?? value ?? '').trim();
+      const params = Array.isArray(step.data?.params) ? step.data!.params : [];
+      const r = await ctx.db.query(target || undefined, sql, params, { write: kind === 'db_execute' });
+      const preview = r.rows.length ? ` First row: ${JSON.stringify(r.rows[0], (_k, v) => (typeof v === 'bigint' ? String(v) : v)).slice(0, 300)}` : '';
+      if (kind === 'db_execute') return { status: 'passed', message: `${r.database}: ${r.rowCount} row(s) affected` };
+      // Keep values for later steps: save_as = first column of the first row, extract = { var: column }
+      if (ctx.api && r.rows[0]) {
+        const first = r.rows[0];
+        const pick = (col: string) => {
+          const key = Object.keys(first).find((k) => k.toLowerCase() === col.toLowerCase());
+          if (key === undefined) throw new Error(`No column "${col}" in the result (columns: ${Object.keys(first).join(', ')})`);
+          return cellText(first[key]);
+        };
+        if (step.data?.save_as) {
+          if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(String(step.data.save_as))) throw new Error('data.save_as must be a variable name');
+          ctx.api.vars[String(step.data.save_as)] = cellText(Object.values(first)[0]);
+        }
+        for (const [name, col] of Object.entries(step.data?.extract ?? {})) ctx.api.vars[name] = pick(String(col));
+      } else if (step.data?.save_as || step.data?.extract) {
+        throw new Error(`The query returned no rows, so there is nothing to keep in ${step.data?.save_as ? `{{vars.${step.data.save_as}}}` : 'variables'}`);
+      }
+      if (kind === 'assert_db') {
+        const expect = { rows: step.data?.rows, equals: step.data?.equals, contains: step.data?.contains, empty: step.data?.empty };
+        if (expect.rows === undefined && !expect.equals && expect.contains === undefined && expect.empty === undefined) expect.empty = false;
+        const problems = checkResult(r, expect);
+        if (problems.length) throw new Error(`Database ${r.database}: ${problems.join('; ')}`);
+        return { status: 'passed', message: `${r.database}: ${r.rowCount} row(s) as expected.${preview}` };
+      }
+      return { status: 'passed', message: `${r.database}: ${r.rowCount} row(s).${preview}` };
+    }
+    case 'mock_service_respond': {
+      if (!ctx.mocks) throw new Error('Mock steps need a run context');
+      const d = step.data ?? {};
+      if (!d.path || !String(d.path).startsWith('/')) need('data.path (e.g. /payments)');
+      const s = await ctx.mocks.respond(target || undefined, { method: String(d.method ?? '*').toUpperCase(), path: String(d.path), status: Number(d.status ?? 200), body: d.body, headers: d.headers, delay_ms: d.delay_ms, times: d.times });
+      return { status: 'passed', message: `${s.name}: the next ${d.times ?? 1} ${String(d.method ?? 'request').toUpperCase()} ${d.path} answer${(d.times ?? 1) > 1 ? '' : 's'} ${d.status ?? 200}` };
+    }
+    case 'assert_mock_service_called': {
+      if (!ctx.mocks) throw new Error('Mock steps need a run context');
+      const d = step.data ?? {};
+      const { service, calls } = await ctx.mocks.calls(target || undefined, ctx.testStartedAt);
+      const { pathRegex } = await import('../mocks/mocks.js');
+      const matching = calls.filter((c) => (!d.method || c.method === String(d.method).toUpperCase()) && (!d.path || pathRegex(String(d.path)).test(c.path))
+        && (d.body_contains === undefined || JSON.stringify(c.body ?? '').includes(String(d.body_contains))));
+      const what = `${d.method ? String(d.method).toUpperCase() : 'any'} ${d.path ?? '*'}${d.body_contains !== undefined ? ` containing "${d.body_contains}"` : ''}`;
+      if (d.times !== undefined ? matching.length !== Number(d.times) : matching.length === 0) {
+        const seen = calls.slice(-5).map((c) => `${c.method} ${c.path}`).join(', ') || 'none';
+        throw new Error(`${service.name}: expected ${d.times !== undefined ? `${d.times} call(s)` : 'a call'} ${what} during this test, got ${matching.length} (latest calls: ${seen})`);
+      }
+      return { status: 'passed', message: `${service.name}: ${matching.length} call(s) ${what}` };
     }
     case 'wait_for_code': {
       if (!ctx.codes) throw new Error('This agent has no code sources (Agent → Sign-in & MFA → mailboxes and phone numbers)');

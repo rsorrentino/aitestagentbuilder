@@ -45,7 +45,7 @@ export const signatureLabel = (agentId: string, signature: string) => `atab-${cr
 /** Bug title and description for a triage group (pure). */
 export function defectText(run: Pick<TestRun, 'id' | 'agentName' | 'agentId'>, group: any): { title: string; body: string } {
   const step = group.sample?.action ? `${group.sample.action}${group.sample.target ? ` → ${group.sample.target}` : ''}` : 'a step';
-  const error = String(group.sample?.error ?? 'Unknown error').replace(/^Step \d+ \([^)]*\):\s*/, '');
+  const error = String(group.sample?.error ?? 'Unknown error').replace(/^Step [\d.]+ \([^)]*\)(?: in block "[^"]*")?:\s*/, '');
   const title = `[Automated test] ${run.agentName ?? run.agentId}: ${error.split('\n')[0].slice(0, 120)}`;
   const tests = (group.tests ?? []).map((t: any) => `- ${t.title}${t.persona ? ` (as ${t.persona})` : ''}`).join('\n');
   const body = [
@@ -202,7 +202,7 @@ export function pullRequestComment(run: TestRun): string {
     lines.push('', '| Failed test | Error |', '|---|---|');
     for (const r of failed.slice(0, 10)) {
       const m = (r.metadata ?? {}) as any;
-      lines.push(`| ${cell(m.title ?? r.testCaseId)}${m.persona ? ` (as ${cell(m.persona)})` : ''} | ${cell(String(r.error ?? m.error ?? '').replace(/^Step \d+ \([^)]*\):\s*/, ''))} |`);
+      lines.push(`| ${cell(m.title ?? r.testCaseId)}${m.persona ? ` (as ${cell(m.persona)})` : ''} | ${cell(String(r.error ?? m.error ?? '').replace(/^Step [\d.]+ \([^)]*\)(?: in block "[^"]*")?:\s*/, ''))} |`);
     }
     if (failed.length > 10) lines.push(`| … and ${failed.length - 10} more | |`);
   }

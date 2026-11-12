@@ -46,6 +46,8 @@ export default function Layout({ children, title, actions }: LayoutProps) {
         { href: '/agents', icon: '🤖', label: 'Agents' },
         { href: '/runs', icon: '▶️', label: 'Runs' },
         { href: '/testcases', icon: '🧪', label: 'Test Cases' },
+        { href: '/library', icon: '🧩', label: 'Library' },
+        { href: '/discovery', icon: '🗺️', label: 'App map' },
         { href: '/testdata', icon: '🎲', label: 'Test Data' },
         { href: '/recorder', icon: '⏺', label: 'Recorder', show: session.can('editor') },
         { href: '/requirements', icon: '🧭', label: 'Requirements' },
@@ -66,6 +68,7 @@ export default function Layout({ children, title, actions }: LayoutProps) {
     {
       label: 'Tools',
       items: [
+        { href: '/mocks', icon: '🎭', label: 'Mock APIs' },
         { href: '/wizard/salesforce', icon: '⚡', label: 'SF Wizard' },
         { href: '/settings/ai-providers', icon: '⚙️', label: 'AI Providers' },
         { href: '/admin/users', icon: '👥', label: 'Users', show: isAdmin && authEnabled },

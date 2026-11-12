@@ -223,3 +223,56 @@ ${indent(CI_RUN_SCRIPT, 6)}
       failTaskOnMissingResultsFile: false
 `;
 }
+
+/**
+ * Jenkins declarative pipeline (Jenkinsfile): runs the agent's tests, publishes the JUnit report,
+ * fails the build when tests fail. With a code host integration for the repository, the commit
+ * also gets a status and the pull request (multibranch CHANGE_ID) a comment.
+ */
+export function jenkinsfile(o: { apiUrl: string; projectId: string; agentId: string; agentName: string }): string {
+  // Groovy ''' strings still interpret backslashes
+  const script = CI_RUN_SCRIPT.replace(/\\/g, '\\\\');
+  return `// AI tests for "${o.agentName}" — add this stage to your Jenkinsfile (or use it as one)
+// Needs: curl and jq on the agent; a "Secret text" credential with id atab-api-key holding an
+// API key of AI Test Agent Builder (Account → API keys) with the editor role on this project.
+pipeline {
+  agent any
+  options { timeout(time: 60, unit: 'MINUTES') }
+  environment {
+    ATAB_URL = '${o.apiUrl.replace(/\/+$/, '')}'
+    ATAB_PROJECT = '${o.projectId}'
+    ATAB_AGENT = '${o.agentId}'
+    // Test another address (a deployed preview): ATAB_BASE_URL = 'https://…'
+  }
+  stages {
+    stage('AI tests') {
+      steps {
+        withCredentials([string(credentialsId: 'atab-api-key', variable: 'ATAB_API_KEY')]) {
+          sh '''
+            export PROVIDER=jenkins SHA="\${GIT_COMMIT:-}" PR="\${CHANGE_ID:-}" REF="\${BRANCH_NAME:-\${GIT_BRANCH:-}}" CI_URL="\${BUILD_URL:-}"
+            # owner/name of the repository (for commit statuses through a GitHub / GitLab integration)
+            export REPO="$(echo "\${GIT_URL:-}" | sed -E 's#\\\\.git$##; s#^.*[:/]([^/]+/[^/]+)$#\\\\1#')"
+${indent(script, 12)}
+          '''
+        }
+      }
+    }
+  }
+  post {
+    always {
+      junit allowEmptyResults: true, testResults: 'ai-tests-junit.xml'
+    }
+  }
+}
+`;
+}
+
+export const CI_KINDS = ['github', 'gitlab', 'azure', 'jenkins'] as const;
+
+/** A CI template for an agent, by kind. */
+export function ciTemplate(kind: typeof CI_KINDS[number], o: { apiUrl: string; projectId: string; agentId: string; agentName: string; branch?: string }) {
+  if (kind === 'gitlab') return { kind, path: '.gitlab-ci.yml', secret: 'ATAB_API_KEY', secretWhere: 'Settings → CI/CD → Variables (masked)', text: gitlabCiJob(o) };
+  if (kind === 'azure') return { kind, path: 'azure-pipelines.yml', secret: 'ATAB_API_KEY', secretWhere: 'the pipeline\'s Variables (keep this value secret)', text: azurePipeline(o) };
+  if (kind === 'jenkins') return { kind, path: 'Jenkinsfile', secret: 'atab-api-key', secretWhere: 'Jenkins credentials (Secret text)', text: jenkinsfile(o) };
+  return { kind, path: '.github/workflows/ai-tests.yml', secret: 'ATAB_API_KEY', secretWhere: 'Settings → Secrets and variables → Actions', text: githubActionsWorkflow(o) };
+}

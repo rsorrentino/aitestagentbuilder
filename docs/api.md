@@ -151,6 +151,47 @@ Notification events:
 - `digest.daily`, with channel config `digest_time` (HH:MM) and `digest_timezone`; the webhook payload's `run.digest`
   has the per-agent details
 
+## Library
+
+| Method | Path | Role | Description |
+|---|---|---|---|
+| GET | `/blocks` | viewer | Step blocks: `{ id, name, description, params: [{ name, default?, description? }], steps }` |
+| GET | `/blocks/:id` | viewer | A block with `usage: { tests, blocks }` |
+| POST | `/blocks` | editor | Create (`409` if the name exists, any case) |
+| PUT | `/blocks/:id` | editor | Update; a new name is followed by every test and block using it |
+| DELETE | `/blocks/:id[?force=true]` | editor | `409 { usage }` while used, unless forced |
+| GET | `/elements` | viewer | Elements: `{ id, name, locator, alternatives, description, pageUrl, source, healedAt }` |
+| GET | `/elements/:id` | viewer | An element with `usage` |
+| POST / PUT / DELETE | `/elements[/:id]` | editor | As for blocks |
+
+| POST | `/steps/from-text` | editor | `{ text, agentId?, path? }` → `{ steps, lines: [{ text, steps, via: rules \| ai \| none, note? }], usedAi, pageOutline }`: plain English to steps |
+
+Steps: `{ "action": "use_block", "target": "<block>", "data": { "params": { … } } }`; `{{el.Name}}` in any target or value.
+
+## App map (discovery)
+
+| Method | Path | Role | Description |
+|---|---|---|---|
+| POST | `/agents/:id/discover` | editor | `{ maxPages (25, ≤200), maxDepth (3, ≤6), loginAs?, startPaths?, exclude? }` → `202` discovery (`409` while one runs in the project) |
+| GET | `/discoveries[?agentId=]` | viewer | Recent discoveries (counts) |
+| GET | `/discoveries/:id` | viewer | `{ status, progress, pages: [{ url, pattern, title, heading, name, elements: [{ name, role, label, locator, alternatives? }], covered }], proposals: [{ title, module, steps, data?, source, elements }], skipped, signedInAs }` |
+| POST | `/discoveries/:id/cancel` | editor | Stop a running discovery |
+| POST | `/discoveries/:id/elements` | editor | `{ names? }`: add elements to the library (existing names kept) → `{ created, skipped }` |
+| POST | `/discoveries/:id/tests` | editor | `{ indexes? }`: create proposed tests (and the elements they use) → `{ tests, elements }` |
+
+## Mock APIs and CI templates
+
+| Method | Path | Role | Description |
+|---|---|---|---|
+| GET / POST | `/mock-services` | viewer / editor | List; create `{ name, spec? (object, JSON or YAML text), specUrl?, routes?: [{ method, path, status, body, headers, delay_ms }] }` → `{ id, name, slug, path, operations, routes }` |
+| GET / PUT / DELETE | `/mock-services/:id` | viewer / editor | One mock; update `name`, `spec` (`null` removes), `routes` |
+| GET | `/mock-services/:id/requests` | viewer | Recorded requests, newest first: `{ at, method, path, query, body, status, source }` |
+| ANY | `/mocks/:slug/*` | none | The mock itself (`X-Mock-Source: test \| route \| spec \| none`) |
+| GET | `/agents/:id/ci-template?kind=github\|gitlab\|azure\|jenkins` | viewer | `{ path, secret, secretWhere, text }` |
+
+Steps: `mock_service_respond` (target = mock name; `method`, `path`, `status`, `body`, `headers`, `delay_ms`, `times`),
+`assert_mock_service_called` (target; `method`, `path`, `body_contains`, `times`).
+
 ## Integrations
 
 See [integrations.md](integrations.md). Secrets (`api_token`, `token`, `pat`, `webhook_secret`) are encrypted and returned as `••••••••`.

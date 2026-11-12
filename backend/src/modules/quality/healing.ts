@@ -4,8 +4,9 @@
  * When the AI repairs a broken selector during a run, the result records it
  * (metadata.steps[].healedSelector). From there it can be:
  *   - reused for the rest of the run without another model call,
- *   - written back into the test case, on request (POST …/apply-healing) or
- *     automatically (agent config ai.auto_apply_healing = true).
+ *   - written back, on request (POST …/apply-healing) or automatically (agent config
+ *     ai.auto_apply_healing = true): into the library element when the step used
+ *     {{el.Name}}, into the library block the step came from, or else the test case.
  */
 
 import type { TestStep } from '../../core/domain/test-case.js';
@@ -14,6 +15,9 @@ export interface HealedStep {
   stepId: number;
   from: string;
   to: string;
+  /** The step came from a library block: the repair is saved there */
+  block?: string;
+  blockStepId?: number;
 }
 
 /** Healed steps recorded in a result's metadata. */
@@ -21,7 +25,7 @@ export function healedStepsOf(metadata: any): HealedStep[] {
   const steps: any[] = Array.isArray(metadata?.steps) ? metadata.steps : [];
   return steps
     .filter((s) => s && s.healedSelector && s.target && s.status === 'passed' && s.healedSelector !== s.target)
-    .map((s) => ({ stepId: Number(s.stepId), from: String(s.target), to: String(s.healedSelector) }));
+    .map((s) => ({ stepId: Number(s.stepId), from: String(s.target), to: String(s.healedSelector), ...(s.block ? { block: String(s.block), blockStepId: Number(s.blockStepId) } : {}) }));
 }
 
 /**

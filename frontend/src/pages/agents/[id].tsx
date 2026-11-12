@@ -20,6 +20,8 @@ import PageSpeedCard from '../../components/PageSpeedCard';
 import SignInCard from '../../components/SignInCard';
 import UnattendedCard from '../../components/UnattendedCard';
 import BrowsersCard from '../../components/BrowsersCard';
+import DatabasesCard from '../../components/DatabasesCard';
+import CiCard from '../../components/CiCard';
 
 export default function AgentDetailPage() {
   const router = useRouter();
@@ -214,6 +216,8 @@ export default function AgentDetailPage() {
 
       <AgentSecretsCard agentId={agent.id} secrets={cfg.secrets ?? {}} canEdit={session.can('admin')} onSaved={setAgent} />
 
+      <CiCard key={`ci-${agent.id}`} agentId={agent.id} />
+      <DatabasesCard key={`databases-${agent.id}`} agentId={agent.id} config={cfg} canEdit={canEdit} onSaved={setAgent} />
       <BrowsersCard key={`browsers-${agent.id}`} agentId={agent.id} config={cfg} canEdit={canEdit} onSaved={setAgent} />
       <UnattendedCard key={`unattended-${agent.id}`} agentId={agent.id} config={cfg} canEdit={canEdit} onSaved={setAgent} />
       <ApiTestsCard key={`api-${agent.id}`} agentId={agent.id} config={cfg} canEdit={canEdit} onSaved={setAgent} />

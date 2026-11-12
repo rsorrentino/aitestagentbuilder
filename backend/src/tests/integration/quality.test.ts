@@ -405,7 +405,7 @@ describe('quality extensions (integration)', () => {
     const firstResult = r.results.find((x: any) => x.testCaseId === one);
     const applied = await call('POST', `/api/v1/runs/${r.id}/results/${firstResult.id}/apply-healing`, {});
     assert.equal(applied.status, 200, applied.text);
-    assert.deepEqual(applied.data.applied, [{ stepId: 2, from: '#old-id', to: '#new-id' }]);
+    assert.deepEqual(applied.data.applied, [{ stepId: 2, from: '#old-id', to: '#new-id', savedTo: 'test case' }]);
     assert.equal((await call('GET', `/api/v1/testcases/${one}`)).data.steps[1].target, '#new-id');
     const again = await call('POST', `/api/v1/runs/${r.id}/results/${firstResult.id}/apply-healing`, {});
     assert.equal(again.data.applied.length, 0, 'already applied: the step no longer has the broken selector');

@@ -8,8 +8,9 @@
  * device" prompts accepted. Selectors in the profile override what is found.
  */
 
+import { KeyedLock } from './keyed-lock.js';
 import type { Page } from 'playwright';
-import { secondsRemaining, totpFor, parseTotpKey } from '../salesforce/totp.js';
+import { freshTotp } from '../salesforce/totp.js';
 import { AuthSettings, findProfile, LoginProfile } from './profiles.js';
 import { applyState, captureState, SessionVault } from './session-vault.js';
 import type { CodeFetcher } from './code-sources.js';
@@ -55,10 +56,7 @@ function absolute(base: string, path: string): string {
 /** The authenticator-app code source, waiting out codes about to expire. */
 export const totpCode: CodeSource = async (profile, page) => {
   if (!profile.totp_secret) return null;
-  const { period } = parseTotpKey(profile.totp_secret);
-  const left = secondsRemaining(Date.now(), period);
-  if (left < 3) await page.waitForTimeout(left * 1000 + 200);
-  return totpFor(profile.totp_secret);
+  return freshTotp(profile.totp_secret, (ms) => page.waitForTimeout(ms));
 };
 
 export class AppSessions {
@@ -199,7 +197,14 @@ export class AppSessions {
     throw new Error(`Sign-in as ${p.name} did not complete: stuck on ${page.url()}. Set the profile's selectors or success check, or sign in once interactively`);
   }
 
+  private signIns = new KeyedLock();
+
+  /** Sign in (parallel tests as the same user take turns, the later ones reuse the saved session). */
   async login(page: Page, name?: string, opts: { fresh?: boolean; landing?: string } = {}): Promise<AppLoginResult> {
+    return this.signIns.run(this.profile(name).name, () => this.loginNow(page, name, opts));
+  }
+
+  private async loginNow(page: Page, name?: string, opts: { fresh?: boolean; landing?: string } = {}): Promise<AppLoginResult> {
     const p = this.profile(name);
     const context = page.context();
     const landing = absolute(this.baseUrl, opts.landing || p.landing_path || '/');

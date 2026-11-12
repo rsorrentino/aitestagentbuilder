@@ -56,7 +56,7 @@ export async function fetchSpec(url: string): Promise<any> {
 }
 
 /** Follow a local "$ref" ("#/components/schemas/Order"), at most a few levels. */
-function deref(spec: any, node: any, depth = 0): any {
+export function deref(spec: any, node: any, depth = 0): any {
   if (!node || typeof node !== 'object' || depth > 10) return node;
   if (typeof node.$ref === 'string' && node.$ref.startsWith('#/')) {
     const target = node.$ref.slice(2).split('/').reduce((acc: any, key: string) => acc?.[key.replace(/~1/g, '/').replace(/~0/g, '~')], spec);

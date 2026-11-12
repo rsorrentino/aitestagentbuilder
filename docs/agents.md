@@ -362,6 +362,127 @@ Persona matrix: `data.personas` on the test case (list or `"all"`) runs it once 
 
   It exits with code 1 when any test fails, so it works as a CI gate. Publish `reports/report-<run>.xml` as JUnit.
 
+## App map (discovery)
+
+**App map** (left menu) explores an agent's application and maps it:
+
+1. Choose the agent and who to **sign in as** (a login profile or Salesforce persona; saved sessions are reused).
+2. The explorer follows the application's links, breadth-first, up to *Screens at most* (default 25, up to 200) and
+   *Clicks deep* (default 3). Each kind of page is visited once: `/orders/101` and `/orders/102` are the screen `/orders/:id`,
+   Salesforce record pages likewise.
+3. On each screen it reads the accessibility tree — so it sees React, Angular and Vue apps the same way, and fields inside
+   Salesforce Lightning web components — and the `data-testid` attributes.
+
+It **never** follows sign-out or destructive links (log out, delete, remove, cancel, unsubscribe, deactivate …), other sites,
+files, `mailto:` links or Salesforce Setup, and never fills or submits forms. *Skip* excludes paths (`/admin/*`). Run it
+against a test environment all the same.
+
+The result:
+
+- **Screens**, each with its named elements (`{{el.Cart.CheckoutButton}}` → `[data-testid="checkout"]` when the element has a
+  test id, else `role=button[name="Checkout"]`), and whether one of the agent's tests (its test selection) already visits it
+  (a `navigate` to that page; tests without one count for the start page).
+- **Add to the library** the elements you choose.
+- **Proposed tests** for screens no test visits yet: a smoke test per screen (it opens and shows its heading and main
+  fields); with an AI provider also up to two functional tests per screen, using only the elements found. *Create* adds them
+  (tag `discovered`, signed in as the chosen user) together with the elements they use.
+
+API: `POST /agents/:id/discover { maxPages, maxDepth, loginAs, startPaths, exclude }`, `GET /discoveries/:id`,
+`POST /discoveries/:id/elements { names }`, `POST /discoveries/:id/tests { indexes }`. MCP: `discover_app`.
+
+## Writing tests in plain English
+
+In the test (or block) editor, **✍ Write in plain English**, one step per line or joined with “then”:
+
+```text
+Sign in with user alice
+Go to /cart, then check that Total shows 42.00
+Type "SPRING" into the Coupon field and click Apply
+Verify the page shows "Saved SPRING"
+```
+
+**Convert to steps** shows how each line was understood, then adds ordinary steps you can review and edit. They replay
+exactly on every run, without the AI.
+
+- Rules understand the usual phrasings without any AI (the same sentence always gives the same steps): go to / open a
+  path or URL; click, tap; type … into …, fill … with …, set … to …; select … from …; check / uncheck; press Enter;
+  wait 2 seconds, wait for …; check that / verify / make sure … shows / contains / is visible / is hidden, the page shows …,
+  the title / URL contains …; log in as *persona*; a library block by name, with its parameters (“Create opportunity
+  with account=Acme, amount=5000”).
+- Names of library elements become `{{el.…}}` (“click the Pay button” → `{{el.Checkout.PayButton}}`); other labels stay
+  readable (“Email”, “Save”) and are found by label, placeholder, role or text when the test runs.
+- Lines the rules do not understand go to the AI, with the action vocabulary and the library. Choose an agent (*Look at …*)
+  and the AI also sees that application's page, so it uses real labels and selectors. Without an AI provider, those lines
+  are listed for you to rephrase.
+- API: `POST /steps/from-text { text, agentId?, path? }`. MCP: `steps_from_text`.
+
+## Database steps
+
+Check what the application wrote, prepare data before a test and clean it up after. Agent page → **Databases**, or:
+
+```json
+"databases": [
+  { "name": "shop", "type": "postgres", "host": "db.internal", "database": "shop", "user": "qa_reader", "password": "…" },
+  { "name": "crm", "type": "sqlserver", "url": "Server=…;Database=crm;User Id=qa;Password=…", "read_only": false }
+]
+```
+
+Types: `postgres`, `mysql` (also MariaDB), `sqlserver` (also Azure SQL), `oracle` (no Oracle client needed). Host, port,
+database (Oracle: service name), user and password, or a connection `url`; `ssl` for TLS. Passwords and URLs are encrypted,
+never returned by the API and masked in logs.
+
+| Step | Data | |
+|---|---|---|
+| `db_query` | `sql`, `params`, `save_as`, `extract` | Run a query; `save_as` keeps the first value as `{{vars.name}}`, `extract: { "id": "order_id" }` keeps columns of the first row |
+| `assert_db` | `sql`, `params`, `rows` (`1`, `">0"`), `equals` (`{ "status": "paid" }`, first row), `contains`, `empty` | Check the result; without expectations, at least one row |
+| `db_execute` | `sql`, `params` | INSERT / UPDATE / DELETE, only on a database with `"read_only": false` |
+
+```json
+{ "action": "assert_db", "target": "shop", "data": { "sql": "SELECT status, total FROM orders WHERE email = ?", "params": ["{{fake.email:buyer}}"], "equals": { "status": "new", "total": "42.00" } } }
+```
+
+- Write `?` for parameters in every database (they become `$1`, `@p1`, `:1`); put `{{vars.x}}`, `{{data.x}}` and
+  `{{fake.x}}` values in `params`, never in the SQL text.
+- Databases are **read-only** unless `read_only` is `false`: only one SELECT-like statement runs, inside a read-only
+  transaction on PostgreSQL, MySQL and Oracle. Use a database account with only the rights the tests need.
+- Every statement stops after 30 seconds; connections are opened on first use and closed at the end of the run.
+- The target is the database name; it can be left out when the agent has one database.
+
+## Library: blocks and elements
+
+**Library** (left menu) keeps what many tests share, so a change in the application is fixed once.
+
+### Elements
+
+A named locator, used in any step as `{{el.Name}}` (names like `Checkout.PayButton`, dots for groups):
+
+```json
+{ "action": "click", "target": "{{el.Checkout.PayButton}}" }
+```
+
+- Prefer stable locators: `[data-testid="pay"]` (React and most front-end frameworks), `role=button[name="Pay"]`,
+  `role=textbox[name="Account Name"]` (accessible role and name — these reach inside the web components Salesforce
+  Lightning is built from), `text=Order total`. Avoid generated CSS classes: they change with every build.
+- **Alternatives**: other locators for the same element, tried in order when the main one stops matching.
+- **Self-healing saves here**: a repaired `{{el.…}}` step (agent setting `ai.auto_apply_healing`, or *Apply* on a result)
+  updates the element — the old locator is kept as an alternative — so every test using it is fixed at once.
+- ★ next to a step's target in the editor saves it as an element and puts `{{el.Name}}` in its place.
+- Renaming an element renames it in every test and block; deleting one that is used asks first.
+
+### Blocks
+
+A named group of steps with parameters, e.g. *Sign in* (`user`, `password`) or *Create opportunity* (`account`, `amount`):
+
+```json
+{ "action": "use_block", "target": "Create opportunity", "data": { "params": { "account": "Acme", "amount": "5000" } } }
+```
+
+- Inside the block, parameters are `{{param.account}}`; a parameter may have a default. Blocks can use other blocks
+  (up to 5 levels; a block using itself is reported).
+- Runs show each step of a block with its path (`3.2`) and the block's name; a failure says *Step 3.2 (click) in block
+  "Create opportunity"*. A selector repaired inside a block is saved in the block.
+- Renaming a block renames it in every test and block; deleting one that is used asks first.
+
 ## Browsers & devices
 
 Agent page → **Browsers & devices**, or in the agent JSON:
@@ -380,6 +501,23 @@ apart. All tests of one browser run together, in one browser start (one session 
   `<meta name="viewport">` are laid out 980 px wide, as on a real phone.
 - On this server, Firefox and WebKit must be installed: `cd backend && npx playwright install firefox webkit`
   (Windows: the same command). A browser that cannot start fails only its own tests, with that hint.
+
+### Parallel tests
+
+```json
+"parallel": 4
+```
+
+Up to 4 tests of a browser run at the same time (1–16; the server caps it with `MAX_PARALLEL_TESTS`, default 8), each in
+its own browser context, so a night suite finishes in a fraction of the time. Retries, the re-run of failures at the end,
+cancellation and the maximum run time work as before.
+
+- Tests must be independent: no test may rely on another having run first, and tests running together should not change the
+  same records — give each its own data (`{{fake.email}}`, data sets) or its own persona.
+- Parallel tests signing in as the same user take turns at the sign-in: the first signs in, the others reuse its session (no
+  second MFA prompt). Authenticator codes are never typed twice: a sign-in waits for the next code when the current one was just used.
+- On a cloud grid, all tests of a browser share one session; your plan's parallel limit applies to separate runs.
+- Page speed measured during parallel runs is slower than alone: keep speed budgets in agents with `parallel: 1`.
 
 ### Cloud grids
 
@@ -401,6 +539,37 @@ apart. All tests of one browser run together, in one browser start (one session 
 - BrowserStack and LambdaTest sessions are named after the agent and browser, grouped in a build per run, and marked
   passed / failed so their dashboards match.
 - Runs started from a grid still use everything else: sign-in sessions, test data, evidence, triage, integrations.
+
+## Mock APIs
+
+**Mock APIs** (left menu) are stand-ins for services that do not exist yet, cannot be reached from the test environment
+(payment providers, partner APIs) or must answer in a particular way. Point the application under test at the mock's
+address (`https://<server>/api/v1/mocks/<name>-<random>/…`, shown on the page; no login, the address is unguessable).
+
+A mock answers each request with, in order:
+
+1. a **one-off answer set by the running test**: `{ "action": "mock_service_respond", "target": "Payments", "data": { "method": "POST", "path": "/v1/payments", "status": 402, "body": { "error": "card declined" }, "times": 1 } }`;
+2. its **fixed routes** (`method`, `path` such as `/orders/{id}` or `/files/*`, `status`, `body`, `headers`, `delay_ms` up to 10 s);
+3. its **OpenAPI description** (pasted or by URL): the documented example of the operation's success response, else a value
+   generated from the schema;
+4. otherwise `404` with what was asked. The header `X-Mock-Source` says which (`test`, `route`, `spec`, `none`).
+
+Every request is recorded (the last 200, in memory). A test checks what the application sent:
+
+```json
+{ "action": "assert_mock_service_called", "target": "Payments", "data": { "method": "POST", "path": "/v1/payments", "body_contains": "4242", "times": 1 } }
+```
+
+(only calls made during that test count). API: `/mock-services` (create with `spec`, `specUrl` or `routes`),
+`/mock-services/:id/requests`.
+
+## Running from CI
+
+The agent page's **Run from CI** card writes the pipeline for the agent: GitHub Actions, GitLab CI, Azure Pipelines or
+**Jenkins** (a declarative `Jenkinsfile` stage: needs `curl` and `jq` on the Jenkins agent and a *Secret text* credential
+`atab-api-key`). Each one starts the run and waits, fails the job when tests fail, publishes the JUnit report, and passes the
+commit and pull request number — with a GitHub, GitLab or Azure DevOps integration for the repository, the commit gets a
+status and the pull request a comment, also when Jenkins runs the tests. API: `GET /agents/:id/ci-template?kind=github|gitlab|azure|jenkins`.
 
 ## Self-healing
 

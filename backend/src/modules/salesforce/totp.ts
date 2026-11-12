@@ -102,3 +102,27 @@ export function totpFor(key: string, at: number = Date.now()): string {
   const k = parseTotpKey(key);
   return totp(k.secret, at, { step: k.period, digits: k.digits });
 }
+
+/** Codes already typed, per key: a code is accepted once, so parallel sign-ins wait for the next one. */
+const typed = new Map<string, Set<string>>();
+
+/**
+ * A code nobody on this server has typed yet, with at least 3 seconds left: waits for the next
+ * period when the current code was just used (two tests signing in as the same user at once).
+ */
+export async function freshTotp(key: string, wait: (ms: number) => Promise<unknown>): Promise<string> {
+  const k = parseTotpKey(key);
+  for (let i = 0; i < 3; i++) {
+    const left = secondsRemaining(Date.now(), k.period);
+    const code = totpFor(key);
+    const used = typed.get(k.secret) ?? new Set<string>();
+    if (left >= 3 && !used.has(code)) {
+      used.add(code);
+      if (used.size > 8) used.delete(used.values().next().value as string);
+      typed.set(k.secret, used);
+      return code;
+    }
+    await wait(left * 1000 + 200);
+  }
+  return totpFor(key);
+}
