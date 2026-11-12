@@ -160,6 +160,14 @@ const PAGES: Record<string, (q: URLSearchParams) => string> = {
     <div>Lamp 40 € <button id="add-1" type="button" onclick="document.getElementById('cart').textContent='Cart: Lamp'">Add lamp</button></div>
     <div>Pen 2 € <button id="add-2" type="button" onclick="document.getElementById('cart').textContent='Cart: Pen'">Add pen</button></div>
     <label for="pw">Password</label><input id="pw" type="password">`),
+  // Recorder: controls at fixed positions, so the test can "click" on the screen
+  '/rec': () => `<!doctype html><html><head><title>Rec</title><style>body{margin:0} .p{position:absolute;left:20px;width:200px;height:30px}</style></head><body>
+    <input id="name" class="p" style="top:20px">
+    <select class="p" style="top:80px" name="size"><option>One</option><option>Two</option></select>
+    <input type="checkbox" class="p" style="top:140px;width:20px;height:20px" aria-label="Agree">
+    <button type="button" class="p" style="top:200px" onclick="document.getElementById('out').textContent = document.getElementById('name').value + '/' + document.querySelector('select').value + '/' + document.querySelector('[type=checkbox]').checked + '/' + document.querySelector('[type=password]').value.length">Save</button>
+    <input type="password" class="p" style="top:260px" placeholder="Password">
+    <div id="out" class="p" style="top:320px"></div></body></html>`,
   // Page speed: '/speed' answers after ?delay ms (time to first byte); '/heavy' blocks the main thread
   '/heavy': () => page('Heavy', '<p>Busy</p><script>const t = Date.now(); while (Date.now() - t < 300) {}</script>'),
   // Echoes a form back: data-driven tests fill it and check the result
@@ -785,6 +793,89 @@ describe('quality extensions (integration)', () => {
     const cleared = await call('DELETE', `/api/v1/agents/${agent}/ai-action-cache`);
     assert.equal(cleared.status, 200, cleared.text);
     assert.equal(cleared.data.cleared, 1);
+  });
+
+  it('records tests in a remote browser and imports Playwright codegen scripts', async (t) => {
+    if (!dbAvailable) return t.skip('database not available');
+    const agent = await newAgent('Recorder', { evidence: { trace: 'off', video: 'off' }, secrets: { PW: 'rec-S3cret' } });
+    const start = await call('POST', '/api/v1/recordings', { agentId: agent, startPath: '/rec' });
+    assert.equal(start.status, 201, start.text);
+    const id = start.data.id;
+    assert.deepEqual(start.data.steps, [{ action: 'navigate', target: '/rec' }]);
+    const at = async (x: number, y: number) => {
+      const r = await call('POST', `/api/v1/recordings/${id}/inspect`, { x, y });
+      assert.equal(r.status, 200, r.text);
+      return r.data;
+    };
+    const step = async (body: any, status = 201) => {
+      const r = await call('POST', `/api/v1/recordings/${id}/steps`, body);
+      assert.equal(r.status, status, r.text);
+      return r.data;
+    };
+
+    const name = await at(40, 30);
+    assert.equal(name.selector, '#name');
+    assert.equal(name.suggested, 'fill');
+    await step({ action: 'fill', target: name.selector, value: 'Ada' });
+    const size = await at(40, 90);
+    assert.equal(size.selector, 'select[name="size"]');
+    assert.deepEqual(size.options, ['One', 'Two']);
+    await step({ action: 'select', target: size.selector, value: 'Two' });
+    const agree = await at(28, 148);
+    assert.equal(agree.suggested, 'check');
+    assert.equal(agree.selector, 'role=checkbox[name="Agree"s]');
+    await step({ action: 'check', target: agree.selector });
+    const pw = await at(40, 270);
+    assert.equal(pw.isPassword, true);
+    assert.equal(pw.value, undefined, 'password values are never read back');
+    await step({ action: 'fill', target: pw.selector, secret: 'PW' });
+    const save = await at(40, 210);
+    assert.equal(save.selector, 'role=button[name="Save"s]');
+    await step({ action: 'click', target: save.selector });
+    const out = await at(40, 330);
+    assert.equal(out.text, 'Ada/Two/true/10');
+    const failed = await call('POST', `/api/v1/recordings/${id}/steps`, { action: 'click', target: '#nope' });
+    assert.equal(failed.status, 422, 'a failing action is reported and not recorded');
+    await step({ action: 'assert_url', value: '/rec' });
+    const last = await step({ action: 'assert_text', target: out.selector, value: out.text });
+    assert.equal(last.state.steps.length, 8);
+    assert.equal(last.state.steps[4].data.value, '{{secrets.PW}}', 'the secret is recorded as a placeholder');
+    assert.ok(!JSON.stringify(last).includes('rec-S3cret'));
+
+    const shot = await fetch(`${apiUrl}/api/v1/recordings/${id}/screenshot`);
+    assert.equal(shot.headers.get('content-type'), 'image/jpeg');
+    const bytes = Buffer.from(await shot.arrayBuffer());
+    assert.equal(bytes[0], 0xff);
+    assert.equal(bytes[1], 0xd8);
+
+    const removed = await call('DELETE', `/api/v1/recordings/${id}/steps/6`);
+    assert.equal(removed.data.removed.action, 'assert_url');
+    const saved = await call('POST', `/api/v1/recordings/${id}/save`, { title: 'Recorded form', module: 'Recorder', priority: 'High' });
+    assert.equal(saved.status, 201, saved.text);
+    assert.ok(saved.data.tags.includes('recorded') && saved.data.tags.includes(`agent:${agent}`));
+    assert.equal((await call('DELETE', `/api/v1/recordings/${id}`)).status, 204);
+    assert.equal((await call('GET', `/api/v1/recordings/${id}`)).status, 404);
+
+    // The recorded test replays green
+    const r = await run(agent, [saved.data.id]);
+    assert.equal(r.results[0].status, 'passed', r.results[0].error);
+
+    // Playwright codegen import
+    const script = `test('t', async ({ page }) => {
+      await page.goto('${fixtureUrl}/rec');
+      await page.locator('#name').fill('Bo');
+      await page.getByRole('button', { name: 'Save' }).click();
+      await expect(page.locator('#out')).toContainText('Bo/One');
+      await page.mouse.click(1, 1);
+    });`;
+    const preview = await call('POST', '/api/v1/recordings/import', { script, agentId: agent });
+    assert.equal(preview.status, 200, preview.text);
+    assert.equal(preview.data.steps[0].target, '/rec', 'URLs of the agent become paths');
+    assert.equal(preview.data.skipped.length, 1);
+    const imported = await call('POST', '/api/v1/recordings/import', { script, agentId: agent, save: true, title: 'Imported from codegen' });
+    assert.equal(imported.status, 201, imported.text);
+    const r2 = await run(agent, [imported.data.testCase.id]);
+    assert.equal(r2.results[0].status, 'passed', r2.results[0].error);
   });
 });
 

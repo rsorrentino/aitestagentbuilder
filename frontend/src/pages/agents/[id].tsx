@@ -102,6 +102,7 @@ export default function AgentDetailPage() {
       {agent && canEdit && (
         <>
           <Link href="/schedules" className="btn btn-secondary btn-sm">⏰ Schedule</Link>
+          {canEdit && <Link href={`/recorder?agentId=${agent.id}`} className="btn btn-secondary btn-sm">⏺ Record a test</Link>}
           <button className="btn btn-secondary btn-sm" onClick={() => setShowGen(!showGen)}>🤖 Generate Tests</button>
           <button className="btn btn-primary btn-sm" onClick={startRun} disabled={runLoading || agent.status !== 'active' || !plan?.count}>
             {runLoading ? 'Starting…' : '▶ Start Run'}

@@ -132,6 +132,23 @@ Screenshots are served at `GET /artifacts/<path from evidence.screenshots>`.
 | POST | `/demo/seed` | Creates/updates the *Demo Shop* agent and its 3 tests → `{ agentId, created }` |
 | GET | `/demo/` (outside `/api/v1`) | The demo web app itself (login `demo` / `demo123`) |
 
+## Recorder
+
+Editors only; a session belongs to the user and project that started it.
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/recordings` | `{ agentId, startPath?, persona? }` → session state `{ id, url, title, steps, viewport }` (429 when all `RECORDER_MAX_SESSIONS` are in use) |
+| GET | `/recordings`, `/recordings/:id` | Open sessions / one session's state |
+| GET | `/recordings/:id/screenshot` | Current screen, JPEG |
+| POST | `/recordings/:id/inspect` | `{ x, y }` → `{ selector, alternatives, tag, type, text, value, options, checked, suggested, isPassword }` |
+| POST | `/recordings/:id/steps` | `{ action, target?, value?, secret? }`: performed, then recorded (422 with the error when it fails); `secret: "NAME"` records `{{secrets.NAME}}` |
+| DELETE | `/recordings/:id/steps/:index` | Remove a recorded step |
+| POST | `/recordings/:id/scroll` | `{ dy }` (not recorded) |
+| POST | `/recordings/:id/save` | `{ title, module?, priority?, tags? }` → the new test case (tags `recorded`, `agent:<id>`) |
+| DELETE | `/recordings/:id` | Close the session |
+| POST | `/recordings/import` | `{ script, agentId?, save?, title?, module?, priority? }` → `{ steps, skipped, warnings, language, testCase? }` |
+
 ## AI action steps
 
 | Method | Path | Role | Description |

@@ -700,3 +700,93 @@ describe('AI action steps', () => {
     assert.equal(resolvePlaceholders('log in with {{secrets.PW}} as {{data.user}}', { PW: 'x' }, {}, { data: { user: 'ada' }, keepSecrets: true }), 'log in with {{secrets.PW}} as ada');
   });
 });
+
+describe('test recorder', () => {
+  const JS = `import { test, expect } from '@playwright/test';
+
+test('test', async ({ page }) => {
+  await page.goto('https://shop.example.com/login');
+  await page.getByLabel('Username').fill('demo');
+  await page.getByPlaceholder('Password').fill('hunter2');
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await page.locator('#menu').getByRole('link', { name: 'Orders' }).first().click();
+  await page.getByTestId('qty').selectOption('2');
+  await page.getByText('Accept terms').check();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('heading')).toContainText('Your orders');
+  await expect(page.locator('.spinner')).not.toBeVisible();
+  await expect(page).toHaveURL('https://shop.example.com/orders');
+  await expect(page).toHaveURL(/orders/);
+  await page.getByRole('img').screenshot();
+});`;
+
+  it('imports JavaScript codegen scripts, hiding typed passwords', async () => {
+    const { importCodegen } = await import('../modules/recorder/codegen-import.js');
+    const r = importCodegen(JS, { baseUrl: 'https://shop.example.com/' });
+    assert.equal(r.language, 'javascript');
+    assert.deepEqual(r.steps, [
+      { action: 'navigate', target: '/login' },
+      { action: 'fill', target: 'internal:label="Username"i', data: { value: 'demo' } },
+      { action: 'fill', target: '[placeholder="Password"]', data: { value: '{{secrets.PASSWORD}}' } },
+      { action: 'click', target: 'role=button[name="Sign in"s]' },
+      { action: 'click', target: '#menu >> role=link[name="Orders"i] >> nth=0' },
+      { action: 'select', target: '[data-testid="qty"]', data: { value: '2' } },
+      { action: 'check', target: 'text=Accept terms' },
+      { action: 'press', data: { value: 'Escape' } },
+      { action: 'assert_text', target: 'role=heading', data: { value: 'Your orders' } },
+      { action: 'assert_not_visible', target: '.spinner' },
+      { action: 'assert_url', data: { value: '/orders' } },
+    ]);
+    assert.deepEqual(r.skipped.map((s) => s.reason), ['only plain string expectations are supported (not regular expressions)', 'unsupported action screenshot']);
+    assert.match(r.warnings[0], /replaced by \{\{secrets\.PASSWORD\}\}/);
+  });
+
+  it('imports Python codegen scripts', async () => {
+    const { importCodegen } = await import('../modules/recorder/codegen-import.js');
+    const r = importCodegen(`import re
+from playwright.sync_api import Playwright, sync_playwright, expect
+
+
+def run(playwright: Playwright) -> None:
+    browser = playwright.chromium.launch(headless=False)
+    context = browser.new_context()
+    page = context.new_page()
+    page.goto("http://localhost:3000/demo/login")
+    page.get_by_label("Username").fill("demo")
+    page.get_by_role("button", name="Sign in").click()
+    expect(page.get_by_text("Welcome")).to_be_visible()
+    expect(page.locator("#error")).not_to_be_visible()
+
+    # ---------------------
+    context.close()
+    browser.close()
+`, { baseUrl: 'http://localhost:3000/demo' });
+    assert.equal(r.language, 'python');
+    assert.deepEqual(r.steps, [
+      { action: 'navigate', target: 'login', },
+      { action: 'fill', target: 'internal:label="Username"i', data: { value: 'demo' } },
+      { action: 'click', target: 'role=button[name="Sign in"i]' },
+      { action: 'assert_visible', target: 'text=Welcome' },
+      { action: 'assert_not_visible', target: '#error' },
+    ]);
+    assert.deepEqual(r.skipped, []);
+  });
+
+  it('produces selectors Playwright resolves to exactly one element', async () => {
+    const { launchBrowser } = await import('../modules/execution/browser.js');
+    const browser = await launchBrowser();
+    try {
+      const page = await browser.newPage();
+      await page.setContent(`<nav id="menu"><a href="#o">Orders</a></nav><a href="#o2">Old orders</a>
+        <label for="u">Username</label><input id="u"><label>Password <input type="password" placeholder="Password"></label>
+        <button>Sign in</button><button>Sign in with SSO</button><h2>Your orders</h2>`);
+      for (const sel of ['internal:label="Username"i', '[placeholder="Password"]', 'role=button[name="Sign in"s]', '#menu >> role=link[name="Orders"i] >> nth=0',
+        'role=link[name="Old orders"s]', 'internal:label="Password"s', 'text="Sign in with SSO"', 'css=nav:nth-of-type(1) > a:nth-of-type(1)']) {
+        assert.equal(await page.locator(sel).count(), 1, sel);
+      }
+      assert.equal(await page.locator('role=button[name="sign IN"i]').count(), 1, 'case-insensitive, whole name');
+    } finally {
+      await browser.close();
+    }
+  });
+});

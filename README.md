@@ -46,6 +46,7 @@
 | **Quality checks** | Accessibility (axe-core, WCAG 2.x), visual regression against approved baselines, Playwright trace + video of failures (secrets masked), AI-repaired selectors kept and written back to test cases |
 | **AI-judged assertions** | `assert_ai`: plain-language expectations judged by the AI against the live page (e.g. chatbot answers), with confidence threshold and per-run cache |
 | **API testing** | HTTP request steps with status / JSON / header / timing assertions and captured variables, tests generated from OpenAPI (with AI edge cases), mocked or blocked calls in UI tests |
+| **Test recorder** | Record tests by clicking through the application in a server-side browser (robust unique selectors, secrets as placeholders), or import `npx playwright codegen` scripts (JS/TS/Python) |
 | **AI action steps** | “AI: add the cheapest product to the cart”: the AI carries out an instruction on the live page; what worked is replayed without the AI, secrets never reach it, and the actions can be saved as ordinary steps |
 | **Page speed** | `assert_performance` and an agent-wide check: LCP, FCP, CLS, TBT, TTFB, load, bytes against budgets and against earlier runs (regressions), optional network/CPU throttling, per-page trend |
 | **Test data generation** | `{{fake.email}}`-style values (Faker, 30+ kinds, locales, reproducible with a seed), data-driven tests that run once per data set row, data sets generated from column kinds or by the AI with edge cases |

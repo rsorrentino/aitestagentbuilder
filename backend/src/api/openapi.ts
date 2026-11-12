@@ -41,7 +41,7 @@ export function buildOpenApi(serverUrl: string) {
     },
     servers: [{ url: serverUrl }],
     security: [{ bearer: [] }, { apiKey: [] }],
-    tags: ['Auth', 'Projects', 'Admin', 'Agents', 'Test cases', 'Documents', 'Runs', 'Quality', 'Test data', 'Schedules', 'Notifications', 'Analytics', 'Audit', 'AI']
+    tags: ['Auth', 'Projects', 'Admin', 'Agents', 'Test cases', 'Documents', 'Runs', 'Quality', 'Recorder', 'Test data', 'Schedules', 'Notifications', 'Analytics', 'Audit', 'AI']
       .map((name) => ({ name })),
     paths: {
       // ── Auth ─────────────────────────────────────────────────────────────
@@ -143,6 +143,21 @@ export function buildOpenApi(serverUrl: string) {
       '/agents/{id}/ai-action-cache': {
         delete: op('Quality', 'Forget cached AI action sequences of an agent (optionally ?testCaseId=): the AI decides again next run', { parameters: [id(), q('testCaseId', { type: 'string' })] }),
       },
+      '/recordings': {
+        get: op('Recorder', 'Your open recording sessions in this project'),
+        post: op('Recorder', 'Start recording: a server-side browser opens the agent\'s application ({ agentId, startPath?, persona? })'),
+      },
+      '/recordings/{id}': {
+        get: op('Recorder', 'Recording state: URL, title, recorded steps', { parameters: [id()] }),
+        delete: op('Recorder', 'Stop recording and close the browser', { parameters: [id()], responses: { 204: { description: 'Closed' } } }),
+      },
+      '/recordings/{id}/screenshot': { get: op('Recorder', 'Current screen (JPEG, 1280×800)', { parameters: [id()] }) },
+      '/recordings/{id}/inspect': { post: op('Recorder', 'Element at a point of the screen ({ x, y }) with its most robust unique selector and the suggested action', { parameters: [id()] }) },
+      '/recordings/{id}/steps': { post: op('Recorder', 'Perform and record a step ({ action, target?, value?, secret? }); record: false only performs it', { parameters: [id()] }) },
+      '/recordings/{id}/steps/{index}': { delete: op('Recorder', 'Remove a recorded step (not undone in the browser)', { parameters: [id(), id('index', 'Step index (0-based)')] }) },
+      '/recordings/{id}/scroll': { post: op('Recorder', 'Scroll the page ({ dy }), not recorded', { parameters: [id()] }) },
+      '/recordings/{id}/save': { post: op('Recorder', 'Save the recorded steps as a test case ({ title, module?, priority?, tags? })', { parameters: [id()] }) },
+      '/recordings/import': { post: op('Recorder', 'Convert a `npx playwright codegen` script (JS/TS or Python) to steps ({ script, agentId?, save?, title? })') },
       '/quarantine': { get: op('Quality', 'Quarantined (flaky) test cases of the project') },
       '/testcases/{id}/quarantine': {
         post: op('Quality', 'Quarantine a test case: it runs, but its failures do not fail runs', { parameters: [id()] }),

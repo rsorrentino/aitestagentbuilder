@@ -85,6 +85,35 @@ The agent page shows **Tests in the next run**: exactly what the planner will ex
 }
 ```
 
+## Recording tests
+
+**Recorder page.** Record a test by using the application instead of writing steps.
+- **How it works:** the browser runs on the server (Windows Server included), and the page shows its screen. Click on the
+  picture to act: links and buttons are clicked, fields ask for the text to type, lists for the option, check boxes
+  toggle. **✓ Text**, **👁 Visible** and **↗ Hover** turn the next click into a check or a hover. Buttons add key presses
+  (Enter, Tab, Escape) and URL / title checks, and the address bar navigates.
+- **Steps replay as recorded:** every action runs through the same executor as a test run, and a failing action is
+  reported and not recorded.
+- **Selectors:** each pick gets the most robust selector that is unique on the page: id, test id
+  (`data-testid`, `data-test`, `data-qa`), `name`, role and accessible name (`role=button[name="Save"s]`), label,
+  placeholder, text, and finally a CSS path. Ids that look generated (4+ digits) are skipped.
+- **Passwords:** pick one of the agent's secrets instead of typing it: the step stores `{{secrets.NAME}}`. Password
+  fields are never read back.
+- **Salesforce:** start *logged in as* a persona; the first step is then `salesforce_login`.
+- **Limits:** sessions belong to their user and project, close after 10 minutes without use, and at most
+  `RECORDER_MAX_SESSIONS` (default 4) run at once. The application must be reachable from the server.
+
+**Importing Playwright codegen.** Record on your own computer with `npx playwright codegen https://your-app`, then
+paste the script (JavaScript, TypeScript or Python) in the recorder's **Import** tab or send it to
+`POST /recordings/import`.
+- **What converts:** `goto`, click, fill, press, check/uncheck, `selectOption`, hover and the `expect` assertions
+  (`toBeVisible`, `toBeHidden`, `toHaveText`, `toContainText`, `toHaveValue`, `toHaveURL`, `toHaveTitle`, with `not`), on
+  `getByRole` / `getByText` / `getByLabel` / `getByPlaceholder` / `getByTestId` / `getByTitle` / `getByAltText` /
+  `locator`, chained, with `first()` / `last()` / `nth()`.
+- **Adjusted for the agent:** URLs of the agent become paths, and values typed into password-like fields become
+  `{{secrets.PASSWORD}}`, with a reminder to add that secret.
+- **Anything else** (regular expressions, screenshots, mouse coordinates, popups) is listed as skipped with its line.
+
 ## Test data
 
 **Generated values.** Steps can use `{{fake.<kind>}}` anywhere in a target or value:
